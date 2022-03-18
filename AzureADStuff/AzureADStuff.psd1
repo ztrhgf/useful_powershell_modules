@@ -12,7 +12,7 @@
 RootModule = 'AzureADStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0'
+ModuleVersion = '1.0.1'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -30,7 +30,7 @@ CompanyName = 'Unknown'
 Copyright = '(c) 2022 @AndrewZtrhgf. All rights reserved.'
 
 # Description of the functionality provided by this module
-Description = 'Various Azure related functions.'
+Description = 'Various Azure related functions. For example function Get-AzureADAccountOccurrence for getting all account occurrences in you Azure environment.'
 
 # Minimum version of the Windows PowerShell engine required by this module
 PowerShellVersion = '5.1'

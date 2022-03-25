@@ -1383,5 +1383,7 @@ function Invoke-GraphAPIRequest {
     }
 }
 
-Export-ModuleMember -function Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Get-AzureADAccountOccurrence, Get-AzureADRoleAssignments, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader
+
+
+Export-ModuleMember -function Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADRoleAssignments, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage
 Export-ModuleMember -alias Get-AzureADIAMRoleAssignments, Get-AzureADRBACRoleAssignments, Get-IntuneAuthHeader, New-IntuneAuthHeader

@@ -1,4 +1,215 @@
-﻿function Connect-AzureAD2 {
+﻿#Requires -Modules AzureAD
+
+function Add-AzureADAppCertificate {
+    <#
+    .SYNOPSIS
+    Function for (creating and) adding authentication certificate to selected AzureAD Application.
+
+    .DESCRIPTION
+    Function for (creating and) adding authentication certificate to selected AzureAD Application.
+
+    Use this function with cerPath parameter (if you already have existing certificate you want to add) or rest of the parameters (if you want to create it first). If new certificate will be create, it will be named as application ID of the corresponding enterprise app.
+
+    .PARAMETER appObjectId
+    ObjectId of the Azure application registration, to which you want to assign certificate.
+
+    .PARAMETER cerPath
+    Path to existing '.cer' certificate which should be added to the application.
+
+    .PARAMETER StartDate
+    Datetime object defining since when certificate will be valid.
+
+    Default value is now.
+
+    .PARAMETER EndDate
+    Datetime object defining to when certificate will be valid.
+
+    Default value is 2 years from now.
+
+    .PARAMETER Password
+    Secure string with password that will protect certificate private key.
+
+    Choose strong one!
+
+    .PARAMETER directory
+    Path to folder where pfx (cert. with private key) certificate will be exported.
+
+    .PARAMETER dontRemoveFromCertStore
+    Switch to NOT remove certificate from the local cert. store after it is created&exported to pfx.
+
+    .EXAMPLE
+    Add-AzureADAppCertificate -appObjectId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -cerPath C:\cert\appCert.cer
+
+    Adds certificate 'appCert' to the Azure application cc210920-4c75-48ad-868b-6aa2dbcd1d51.
+
+    .EXAMPLE
+    Add-AzureADAppCertificate -appObjectId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -password (Read-Host -AsSecureString)
+
+    Creates new self signed certificate, export it as pfx (cert with private key) into working directory and adds its public counterpart (.cer) it to the Azure application cc210920-4c75-48ad-868b-6aa2dbcd1d51.
+    Certificate private key will be protected by entered password and it will be valid 2 years from now.
+
+    .NOTES
+    http://vcloud-lab.com/entries/microsoft-azure/create-an-azure-app-registrations-in-azure-active-directory-using-powershell-azurecli
+    https://docs.microsoft.com/en-us/sharepoint/dev/solution-guidance/security-apponly-azuread
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'createCert')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "cerExists")]
+        [Parameter(Mandatory = $true, ParameterSetName = "createCert")]
+        [string] $appObjectId,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "cerExists")]
+        [ValidateScript( {
+                if ($_ -match ".cer$" -and (Test-Path -Path $_)) {
+                    $true
+                } else {
+                    throw "$_ is not a .cer file or doesn't exist"
+                }
+            })]
+        [string] $cerPath,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "createCert")]
+        [DateTime] $startDate = (Get-Date),
+
+        [Parameter(Mandatory = $false, ParameterSetName = "createCert")]
+        [ValidateScript( {
+                if ($_ -gt (Get-Date)) {
+                    $true
+                } else {
+                    throw "$_ has to be in the future"
+                }
+            })]
+        [DateTime] $endDate = (Get-Date).AddYears(2),
+
+        [Parameter(Mandatory = $true, ParameterSetName = "createCert")]
+        [SecureString]$password,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "createCert")]
+        [ValidateScript( {
+                if (Test-Path -Path $_ -PathType Container) {
+                    $true
+                } else {
+                    throw "$_ is not a folder or doesn't exist"
+                }
+            })]
+        [string] $directory = (Get-Location),
+
+        [switch] $dontRemoveFromCertStore
+    )
+
+    try {
+        # test if connection already exists
+        $null = Get-AzureADCurrentSessionInfo -ea Stop
+    } catch {
+        throw "You must call the Connect-AzureAD cmdlet before calling any other cmdlets."
+    }
+
+    # test that app exists
+    try {
+        $application = Get-AzureADApplication -ObjectId $appObjectId -ErrorAction Stop
+        # corresponding enterprise app ID
+        $entAppId = $application.AppId
+    } catch {
+        throw "Application registration with ObjectId $appObjectId doesn't exist"
+    }
+
+    if ($cerPath) {
+        $cert = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2($cerPath)
+    } else {
+        Write-Warning "Creating self signed certificate named '$entAppId'"
+        $cert = New-SelfSignedCertificate -CertStoreLocation 'cert:\currentuser\my' -Subject "CN=$entAppId" -NotBefore $startDate -NotAfter $endDate -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256
+
+        Write-Warning "Exporting '$entAppId.pfx' to '$directory'"
+        $pfxFile = Join-Path $directory "$entAppId.pfx"
+        $path = 'cert:\currentuser\my\' + $cert.Thumbprint
+        $null = Export-PfxCertificate -Cert $path -FilePath $pfxFile -Password $password
+
+        if (!$dontRemoveFromCertStore) {
+            Write-Verbose "Removing created certificate from cert. store"
+            Get-ChildItem 'cert:\currentuser\my' | ? { $_.thumbprint -eq $cert.Thumbprint } | Remove-Item
+        }
+    }
+
+    $keyValue = [System.Convert]::ToBase64String($cert.GetRawCertData())
+    $base64Thumbprint = [System.Convert]::ToBase64String($cert.GetCertHash())
+    $endDateTime = ($cert.NotAfter).ToUniversalTime().ToString( "yyyy-MM-ddTHH:mm:ssZ" )
+    $startDateTime = ($cert.NotBefore).ToUniversalTime().ToString( "yyyy-MM-ddTHH:mm:ssZ" )
+
+    Write-Warning "Adding certificate to the application $($application.DisplayName)"
+    New-AzureADApplicationKeyCredential -ObjectId $appObjectId -CustomKeyIdentifier $base64Thumbprint -Type AsymmetricX509Cert -Usage Verify -Value $keyValue -StartDate $startDateTime -EndDate $endDateTime
+}
+
+#Requires -Modules Az.Accounts
+
+function Connect-AzAccount2 {
+    <#
+    .SYNOPSIS
+    Function for connecting to Azure using Connect-AzAccount command (Az.Accounts module).
+
+    .DESCRIPTION
+    Function for connecting to Azure using Connect-AzAccount command (Az.Accounts module).
+    In case there is already existing connection, stop.
+
+    .PARAMETER credential
+    Credentials (User or App) for connecting to Azure.
+    For App credentials tenantId must be set too!
+
+    .PARAMETER servicePrincipal
+    Switch for using App/Service Principal authentication instead of User auth.
+
+    .PARAMETER tenantId
+    Azure tenant ID.
+    Mandatory when App authentication is used .
+
+    .EXAMPLE
+    Connect-AzAccount2
+
+    Authenticate to Azure interactively using user credentials. Doesn't work for accounts with MFA!
+
+    .EXAMPLE
+    $credential = get-credential
+    Connect-AzAccount2 -credential $credential
+
+    Authenticate to Azure using given user credentials. Doesn't work for accounts with MFA!
+
+    .EXAMPLE
+    $credential = get-credential
+    Connect-AzAccount2 -servicePrincipal -credential $credential -tenantId 1234-1234-1234
+
+    Authenticate to Azure using given app credentials (service principal).
+
+    .NOTES
+    Requires module Az.Accounts.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [System.Management.Automation.PSCredential] $credential,
+
+        [switch] $servicePrincipal,
+
+        [string] $tenantId = $_tenantId
+    )
+
+    if (Get-AzContext) {
+        Write-Verbose "Already connected to Azure"
+        return
+    } else {
+        if ($servicePrincipal -and !$tenantId) {
+            throw "When servicePrincipal auth is used tenantId has to be set"
+        }
+
+        $param = @{}
+        if ($servicePrincipal) { $param.servicePrincipal = $true }
+        if ($tenantId) { $param.tenantId = $tenantId }
+        if ($credential) { $param.credential = $credential }
+
+        Connect-AzAccount @param
+    }
+}
+
+function Connect-AzureAD2 {
     <#
     .SYNOPSIS
     Function for connecting to Azure AD. Reuse already existing session if possible.
@@ -746,115 +957,67 @@ function Get-AzureADAccountOccurrence {
     }
 }
 
-#Requires -Modules Az.Accounts
-
-function Connect-AzAccount2 {
+function Get-AzureADAppConsentRequest {
     <#
     .SYNOPSIS
-    Function for connecting to Azure using Connect-AzAccount command (Az.Accounts module).
+    Function for getting AzureAD app consent requests.
 
     .DESCRIPTION
-    Function for connecting to Azure using Connect-AzAccount command (Az.Accounts module).
-    In case there is already existing connection, stop.
+    Function for getting AzureAD app consent requests.
 
-    .PARAMETER credential
-    Credentials (User or App) for connecting to Azure.
-    For App credentials tenantId must be set too!
+    .PARAMETER header
+    Graph api authentication header.
+    Can be create via New-GraphAPIAuthHeader.
 
-    .PARAMETER servicePrincipal
-    Switch for using App/Service Principal authentication instead of User auth.
-
-    .PARAMETER tenantId
-    Azure tenant ID.
-    Mandatory when App authentication is used .
+    .PARAMETER openAdminConsentPage
+    Switch for opening web page with form for granting admin consent for each not yet review application.
 
     .EXAMPLE
-    Connect-AzAccount2
-
-    Authenticate to Azure interactively using user credentials. Doesn't work for accounts with MFA!
-
-    .EXAMPLE
-    $credential = get-credential
-    Connect-AzAccount2 -credential $credential
-
-    Authenticate to Azure using given user credentials. Doesn't work for accounts with MFA!
-
-    .EXAMPLE
-    $credential = get-credential
-    Connect-AzAccount2 -servicePrincipal -credential $credential -tenantId 1234-1234-1234
-
-    Authenticate to Azure using given app credentials (service principal).
+    $header = New-GraphAPIAuthHeader
+    Get-AzureADAppConsentRequest -header $header
 
     .NOTES
-    Requires module Az.Accounts.
+    Requires at least permission ConsentRequest.Read.All (to get requests), Directory.Read.All (to get service principal publisher)
+    https://docs.microsoft.com/en-us/graph/api/appconsentapprovalroute-list-appconsentrequests?view=graph-rest-1.0&tabs=http
+    https://docs.microsoft.com/en-us/graph/api/resources/consentrequests-overview?view=graph-rest-1.0
     #>
 
     [CmdletBinding()]
     param (
-        [System.Management.Automation.PSCredential] $credential,
+        $header,
 
-        [switch] $servicePrincipal,
-
-        [string] $tenantId = $_tenantId
+        [switch] $openAdminConsentPage
     )
 
-    if (Get-AzContext) {
-        Write-Verbose "Already connected to Azure"
-        return
-    } else {
-        if ($servicePrincipal -and !$tenantId) {
-            throw "When servicePrincipal auth is used tenantId has to be set"
+    if (!$header) {
+        try {
+            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+        } catch {
+            throw "Unable to retrieve authentication header for graph api. Create it using New-GraphAPIAuthHeader and pass it using header parameter"
+        }
+    }
+
+    Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/identityGovernance/appConsent/appConsentRequests" -header $Header | % {
+        $userConsentRequestsUri = $_.'userConsentRequests@odata.context' -replace [regex]::escape('$metadata#')
+        Write-Verbose "Getting user consent requests via '$userConsentRequestsUri'"
+        $userConsentRequests = Invoke-GraphAPIRequest -uri $userConsentRequestsUri -header $Header
+
+        $userConsentRequests = $userConsentRequests | select status, reason, @{name = 'createdBy'; expression = { $_.createdBy.user.userPrincipalName } }, createdDateTime, @{name = 'approval'; expression = { $_.approval.steps | select @{name = 'reviewedBy'; expression = { $_.reviewedBy.userPrincipalName } }, reviewResult, reviewedDateTime, justification } }, @{name = 'RequestId'; expression = { $_.Id } }
+
+        $appVerifiedPublisher = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/servicePrincipals?`$filter=(appId%20eq%20%27$($_.appId)%27)&`$select=verifiedPublisher" -header $Header
+        if ($appVerifiedPublisher | Get-Member | ? Name -EQ 'verifiedPublisher') {
+            $appVerifiedPublisher = $appVerifiedPublisher.verifiedPublisher.DisplayName
+        } else {
+            # service principal wasn't found (new application)
+            $appVerifiedPublisher = "*unknown*"
         }
 
-        $param = @{}
-        if ($servicePrincipal) { $param.servicePrincipal = $true }
-        if ($tenantId) { $param.tenantId = $tenantId }
-        if ($credential) { $param.credential = $credential }
+        $_ | select appDisplayName, consentType, @{name = 'verifiedPublisher'; expression = { $appVerifiedPublisher } }, @{name = 'pendingScopes'; e = { $_.pendingScopes.displayName } }, @{name = 'consentRequest'; expression = { $userConsentRequests } }
 
-        Connect-AzAccount @param
+        if ($openAdminConsentPage -and $userConsentRequests.status -eq 'InProgress') {
+            Open-AzureADAdminConsentPage -appId $_.appId
+        }
     }
-}
-
-function Get-AzureDevOpsOrganizationOverview {
-    <#
-    .SYNOPSIS
-    Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
-
-    .DESCRIPTION
-    Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
-    It is the same data as downloaded csv from https://dev.azure.com/<organizationName>/_settings/organizationAad.
-
-    Function uses MSAL to authenticate (requires MSAL.PS module).
-
-    .PARAMETER tenantId
-    (optional) ID of your Azure tenant.
-    Of omitted, tenantId from MSAL auth. ticket will be used.
-
-    .EXAMPLE
-    Get-AzureDevOpsOrganizationOverview
-
-    Returns all DevOps organizations in your Azure tenant.
-
-    .NOTES
-    PowerShell module AzSK.ADO > ContextHelper.ps1 > GetCurrentContext
-    https://stackoverflow.com/questions/56355274/getting-oauth-tokens-for-azure-devops-api-consumption
-    https://stackoverflow.com/questions/52896114/use-azure-ad-token-to-authenticate-with-azure-devops
-    #>
-
-    [CmdletBinding()]
-    param (
-        [string] $tenantId = $_tenantId
-    )
-
-    $header = New-AzureDevOpsAuthHeader -ErrorAction Stop
-
-    if (!$tenantId) {
-        $tenantId = $msalToken.tenantId
-        Write-Verbose "Set TenantId to $tenantId (retrieved from MSAL token)"
-    }
-
-    # URL retrieved thanks to developer mod at page https://dev.azure.com/<organizationName>/_settings/organizationAad
-    Invoke-WebRequest -Uri "https://aexprodweu1.vsaex.visualstudio.com/_apis/EnterpriseCatalog/Organizations?tenantId=$tenantId" -Method get -ContentType "application/json" -Headers $header | select -ExpandProperty content | ConvertFrom-Csv | select @{name = 'OrganizationName'; expression = { $_.'Organization Name' } }, @{name = 'OrganizationId'; expression = { $_.'Organization Id' } }, Url, Owner, @{name = 'ExceptionType'; expression = { $_.'Exception Type' } }, @{name = 'ErrorMessage'; expression = { $_.'Error Message' } } -ExcludeProperty 'Organization Name', 'Organization Id', 'Exception Type', 'Error Message'
 }
 
 #Requires -Modules Az.Accounts,Az.Resources
@@ -1003,118 +1166,46 @@ function Get-AzureADRoleAssignments {
     }
 }
 
-function New-GraphAPIAuthHeader {
+function Get-AzureDevOpsOrganizationOverview {
     <#
     .SYNOPSIS
-    Function for generating header that can be used for authentication of Graph API requests.
+    Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
 
     .DESCRIPTION
-    Function for generating header that can be used for authentication of Graph API requests.
-    Credentials can be given or existing AzureAD session can be reused to obtain auth. header.
+    Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
+    It is the same data as downloaded csv from https://dev.azure.com/<organizationName>/_settings/organizationAad.
 
-    .PARAMETER credential
-    Credentials for Graph API authentication (AppID + AppSecret) that will be used to obtain auth. header.
+    Function uses MSAL to authenticate (requires MSAL.PS module).
 
-    .PARAMETER reuseExistingAzureADSession
-    Switch for using existing AzureAD session (created via Connect-AzureAD) to obtain auth. header.
-
-    .PARAMETER TenantDomainName
-    Name of your Azure tenant.
-
-    .PARAMETER showDialogType
-    Modify behavior of auth. dialog window.
-
-    Possible values are: auto, always, never.
-
-    Default is 'never'.
+    .PARAMETER tenantId
+    (optional) ID of your Azure tenant.
+    Of omitted, tenantId from MSAL auth. ticket will be used.
 
     .EXAMPLE
-    $header = New-GraphAPIAuthHeader -credential $cred
-    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
-    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+    Get-AzureDevOpsOrganizationOverview
 
-    .EXAMPLE
-    (there is existing AzureAD session already (made via Connect-AzureAD))
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
-    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
-    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+    Returns all DevOps organizations in your Azure tenant.
 
     .NOTES
-    https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
-    https://thesleepyadmins.com/2020/10/24/connecting-to-microsoft-graphapi-using-powershell/
-    https://github.com/microsoftgraph/powershell-intune-samples
-    https://tech.nicolonsky.ch/explaining-microsoft-graph-access-token-acquisition/
-    https://gist.github.com/psignoret/9d73b00b377002456b24fcb808265c23
+    PowerShell module AzSK.ADO > ContextHelper.ps1 > GetCurrentContext
+    https://stackoverflow.com/questions/56355274/getting-oauth-tokens-for-azure-devops-api-consumption
+    https://stackoverflow.com/questions/52896114/use-azure-ad-token-to-authenticate-with-azure-devops
     #>
 
     [CmdletBinding()]
-    [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader")]
     param (
-        [Parameter(ParameterSetName = "authenticate")]
-        [System.Management.Automation.PSCredential] $credential,
-
-        [Parameter(ParameterSetName = "reuseSession")]
-        [switch] $reuseExistingAzureADSession,
-
-        [ValidateNotNullOrEmpty()]
-        $tenantDomainName = $_tenantDomain,
-
-        [ValidateSet('auto', 'always', 'never')]
-        [string] $showDialogType = 'never'
+        [string] $tenantId = $_tenantId
     )
 
-    if (!$credential -and !$reuseExistingAzureADSession) {
-        $credential = (Get-Credential -Message "Enter AppID as UserName and AppSecret as Password")
+    $header = New-AzureDevOpsAuthHeader -ErrorAction Stop
+
+    if (!$tenantId) {
+        $tenantId = $msalToken.tenantId
+        Write-Verbose "Set TenantId to $tenantId (retrieved from MSAL token)"
     }
-    if (!$credential -and !$reuseExistingAzureADSession) { throw "Credentials for creating Graph API authentication header is missing" }
 
-    if (!$tenantDomainName -and !$reuseExistingAzureADSession) { throw "TenantDomainName is missing" }
-
-    Write-Verbose "Getting token"
-
-    if ($reuseExistingAzureADSession) {
-        # get auth. token using the existing session created by the AzureAD PowerShell module
-        try {
-            # test if connection already exists
-            $c = Get-AzureADCurrentSessionInfo -ea Stop
-        } catch {
-            throw "There is no active session to AzureAD. Omit reuseExistingAzureADSession parameter or call this function after Connect-AzureAD."
-        }
-
-        try {
-            $ErrorActionPreference = "Stop"
-
-            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
-            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
-            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
-            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
-            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
-
-            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
-
-            return @{ Authorization = $token }
-        } catch {
-            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
-        }
-    } else {
-        # authenticate to obtain the token
-        $body = @{
-            Grant_Type    = "client_credentials"
-            Scope         = "https://graph.microsoft.com/.default"
-            Client_Id     = $credential.username
-            Client_Secret = $credential.GetNetworkCredential().password
-        }
-
-        $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
-
-        $token = $connectGraph.access_token
-
-        if ($token) {
-            return @{ Authorization = "Bearer $($token)" }
-        } else {
-            throw "Unable to obtain token"
-        }
-    }
+    # URL retrieved thanks to developer mod at page https://dev.azure.com/<organizationName>/_settings/organizationAad
+    Invoke-WebRequest -Uri "https://aexprodweu1.vsaex.visualstudio.com/_apis/EnterpriseCatalog/Organizations?tenantId=$tenantId" -Method get -ContentType "application/json" -Headers $header | select -ExpandProperty content | ConvertFrom-Csv | select @{name = 'OrganizationName'; expression = { $_.'Organization Name' } }, @{name = 'OrganizationId'; expression = { $_.'Organization Id' } }, Url, Owner, @{name = 'ExceptionType'; expression = { $_.'Exception Type' } }, @{name = 'ErrorMessage'; expression = { $_.'Error Message' } } -ExcludeProperty 'Organization Name', 'Organization Id', 'Exception Type', 'Error Message'
 }
 
 #Requires -Modules Pnp.PowerShell
@@ -1196,47 +1287,6 @@ function Get-SharepointSiteOwner {
             Owner = $owner
             Title = $site.Title
         }
-    }
-}
-
-#Requires -Modules MSAL.PS
-
-function New-AzureDevOpsAuthHeader {
-    <#
-    .SYNOPSIS
-    Function for getting authentication header for web requests against Azure DevOps.
-
-    .DESCRIPTION
-    Function for getting authentication header for web requests against Azure DevOps.
-
-    Function uses MSAL to authenticate (requires MSAL.PS module).
-
-    .EXAMPLE
-    $header = New-AzureDevOpsAuthHeader
-    Invoke-WebRequest -Uri $uri -Headers $header
-
-    .NOTES
-    https://docs.microsoft.com/en-us/rest/api/azure/devops/?view=azure-devops-rest-7.1
-    PowerShell module AzSK.ADO > ContextHelper.ps1 > GetCurrentContext
-    https://stackoverflow.com/questions/56355274/getting-oauth-tokens-for-azure-devops-api-consumption
-    https://stackoverflow.com/questions/52896114/use-azure-ad-token-to-authenticate-with-azure-devops
-    #>
-
-    [CmdletBinding()]
-    param ()
-
-    # TODO oAuth auth https://github.com/microsoft/azure-devops-auth-samples/tree/master/OAuthWebSample
-    # $msalToken = Get-MsalToken -TenantId $TenantID -ClientId $ClientID -UserCredential $Credential -Scopes ([String]::Concat($($ApplicationIdUri), '/user_impersonation')) -ErrorAction Stop
-
-    $clientId = "872cd9fa-d31f-45e0-9eab-6e460a02d1f1" # Visual Studio
-    $adoResourceId = "499b84ac-1321-427f-aa17-267ca6975798" # Azure DevOps app ID
-    $msalToken = Get-MsalToken -Scopes "$adoResourceId/.default" -ClientId $clientId
-
-    if ($msalToken.accessToken) {
-        $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("{0}:{1}" -f "", $msalToken.accessToken)))
-        return @{Authorization = "Basic $base64AuthInfo" }
-    } else {
-        throw "Unable to obtain DevOps MSAL token"
     }
 }
 
@@ -1383,7 +1433,223 @@ function Invoke-GraphAPIRequest {
     }
 }
 
+#Requires -Modules MSAL.PS
 
+function New-AzureDevOpsAuthHeader {
+    <#
+    .SYNOPSIS
+    Function for getting authentication header for web requests against Azure DevOps.
 
-Export-ModuleMember -function Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADRoleAssignments, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage
+    .DESCRIPTION
+    Function for getting authentication header for web requests against Azure DevOps.
+
+    Function uses MSAL to authenticate (requires MSAL.PS module).
+
+    .EXAMPLE
+    $header = New-AzureDevOpsAuthHeader
+    Invoke-WebRequest -Uri $uri -Headers $header
+
+    .NOTES
+    https://docs.microsoft.com/en-us/rest/api/azure/devops/?view=azure-devops-rest-7.1
+    PowerShell module AzSK.ADO > ContextHelper.ps1 > GetCurrentContext
+    https://stackoverflow.com/questions/56355274/getting-oauth-tokens-for-azure-devops-api-consumption
+    https://stackoverflow.com/questions/52896114/use-azure-ad-token-to-authenticate-with-azure-devops
+    #>
+
+    [CmdletBinding()]
+    param ()
+
+    # TODO oAuth auth https://github.com/microsoft/azure-devops-auth-samples/tree/master/OAuthWebSample
+    # $msalToken = Get-MsalToken -TenantId $TenantID -ClientId $ClientID -UserCredential $Credential -Scopes ([String]::Concat($($ApplicationIdUri), '/user_impersonation')) -ErrorAction Stop
+
+    $clientId = "872cd9fa-d31f-45e0-9eab-6e460a02d1f1" # Visual Studio
+    $adoResourceId = "499b84ac-1321-427f-aa17-267ca6975798" # Azure DevOps app ID
+    $msalToken = Get-MsalToken -Scopes "$adoResourceId/.default" -ClientId $clientId
+
+    if ($msalToken.accessToken) {
+        $base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("{0}:{1}" -f "", $msalToken.accessToken)))
+        return @{Authorization = "Basic $base64AuthInfo" }
+    } else {
+        throw "Unable to obtain DevOps MSAL token"
+    }
+}
+
+function New-GraphAPIAuthHeader {
+    <#
+    .SYNOPSIS
+    Function for generating header that can be used for authentication of Graph API requests.
+
+    .DESCRIPTION
+    Function for generating header that can be used for authentication of Graph API requests.
+    Credentials can be given or existing AzureAD session can be reused to obtain auth. header.
+
+    .PARAMETER credential
+    Credentials for Graph API authentication (AppID + AppSecret) that will be used to obtain auth. header.
+
+    .PARAMETER reuseExistingAzureADSession
+    Switch for using existing AzureAD session (created via Connect-AzureAD) to obtain auth. header.
+
+    .PARAMETER TenantDomainName
+    Name of your Azure tenant.
+
+    .PARAMETER showDialogType
+    Modify behavior of auth. dialog window.
+
+    Possible values are: auto, always, never.
+
+    Default is 'never'.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -credential $cred
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .EXAMPLE
+    (there is existing AzureAD session already (made via Connect-AzureAD))
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .NOTES
+    https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
+    https://thesleepyadmins.com/2020/10/24/connecting-to-microsoft-graphapi-using-powershell/
+    https://github.com/microsoftgraph/powershell-intune-samples
+    https://tech.nicolonsky.ch/explaining-microsoft-graph-access-token-acquisition/
+    https://gist.github.com/psignoret/9d73b00b377002456b24fcb808265c23
+    #>
+
+    [CmdletBinding()]
+    [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader")]
+    param (
+        [Parameter(ParameterSetName = "authenticate")]
+        [System.Management.Automation.PSCredential] $credential,
+
+        [Parameter(ParameterSetName = "reuseSession")]
+        [switch] $reuseExistingAzureADSession,
+
+        [ValidateNotNullOrEmpty()]
+        $tenantDomainName = $_tenantDomain,
+
+        [ValidateSet('auto', 'always', 'never')]
+        [string] $showDialogType = 'never'
+    )
+
+    if (!$credential -and !$reuseExistingAzureADSession) {
+        $credential = (Get-Credential -Message "Enter AppID as UserName and AppSecret as Password")
+    }
+    if (!$credential -and !$reuseExistingAzureADSession) { throw "Credentials for creating Graph API authentication header is missing" }
+
+    if (!$tenantDomainName -and !$reuseExistingAzureADSession) { throw "TenantDomainName is missing" }
+
+    Write-Verbose "Getting token"
+
+    if ($reuseExistingAzureADSession) {
+        # get auth. token using the existing session created by the AzureAD PowerShell module
+        try {
+            # test if connection already exists
+            $c = Get-AzureADCurrentSessionInfo -ea Stop
+        } catch {
+            throw "There is no active session to AzureAD. Omit reuseExistingAzureADSession parameter or call this function after Connect-AzureAD."
+        }
+
+        try {
+            $ErrorActionPreference = "Stop"
+
+            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
+            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
+            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
+            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+
+            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+
+            return @{ Authorization = $token }
+        } catch {
+            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
+        }
+    } else {
+        # authenticate to obtain the token
+        $body = @{
+            Grant_Type    = "client_credentials"
+            Scope         = "https://graph.microsoft.com/.default"
+            Client_Id     = $credential.username
+            Client_Secret = $credential.GetNetworkCredential().password
+        }
+
+        $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
+
+        $token = $connectGraph.access_token
+
+        if ($token) {
+            return @{ Authorization = "Bearer $($token)" }
+        } else {
+            throw "Unable to obtain token"
+        }
+    }
+}
+
+function Open-AzureADAdminConsentPage {
+    <#
+    .SYNOPSIS
+    Function for opening web page with admin consent to requested/selected permissions to selected application.
+
+    .DESCRIPTION
+    Function for opening web page with admin consent to requested/selected permissions to selected application.
+
+    .PARAMETER appId
+    Application (client) ID.
+
+    .PARAMETER tenantId
+    Your Azure tenant ID.
+
+    .EXAMPLE
+    Open-AzureADAdminConsentPage -appId 123412341234 -scope openid, profile, email, user.read, Mail.Send -tenantId 111122223333
+
+    Grant admin consent for selected permissions to app with client ID 123412341234.
+
+    .EXAMPLE
+    Open-AzureADAdminConsentPage -appId 123412341234 -tenantId 111122223333
+
+    Grant admin consent for requested permissions to app with client ID 123412341234.
+
+    .NOTES
+    https://docs.microsoft.com/en-us/azure/active-directory/manage-apps/grant-admin-consent
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $appId,
+
+        [Parameter(Mandatory = $true)]
+        [string] $tenantId,
+
+        [string[]] $scope,
+
+        [switch] $justURL
+    )
+
+    if ($scope) {
+        # grant custom permission
+        $scope = $scope.trim() -join "%20"
+        $URL = "https://login.microsoftonline.com/$tenantId/v2.0/adminconsent?client_id=$appId&scope=$scope"
+
+        if ($justURL) {
+            return $URL
+        } else {
+            Start-Process $URL
+        }
+    } else {
+        # grant requested permissions
+        $URL = "https://login.microsoftonline.com/$tenantId/adminconsent?client_id=$appId"
+        if ($justURL) {
+            return $URL
+        } else {
+            Start-Process $URL
+        }
+    }
+}
+
+Export-ModuleMember -function Add-AzureADAppCertificate, Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADRoleAssignments, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage
+
 Export-ModuleMember -alias Get-AzureADIAMRoleAssignments, Get-AzureADRBACRoleAssignments, Get-IntuneAuthHeader, New-IntuneAuthHeader

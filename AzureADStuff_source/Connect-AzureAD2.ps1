@@ -50,7 +50,7 @@
     Connect using user credentials.
 
     .EXAMPLE
-    $thumbprint = Get-ChildItem Cert:\LocalMachine\My | ? subject -EQ "CN=kenticosoftware.onmicrosoft.com" | select -ExpandProperty Thumbprint
+    $thumbprint = Get-ChildItem Cert:\LocalMachine\My | ? subject -EQ "CN=contoso.onmicrosoft.com" | select -ExpandProperty Thumbprint
     Connect-AzureAD2 -ApplicationId 'cd2ae428-35f9-21b4-a527-7d3gf8f1e5cf' -CertificateThumbprint $thumbprint
 
     Connect using app. authentication (certificate).

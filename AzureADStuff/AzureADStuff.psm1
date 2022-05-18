@@ -336,6 +336,86 @@ function Add-AzureADAppUserConsent {
     #endregion assign the app to the user.
 }
 
+function Add-AzureADGuest {
+    <#
+    .SYNOPSIS
+    Function for inviting guest user to Azure AD.
+
+    .DESCRIPTION
+    Function for inviting guest user to Azure AD.
+
+    .PARAMETER displayName
+    Display name of the user.
+    Suffix (guest) will be added automatically.
+
+    a.k.a Jan Novak
+
+    .PARAMETER emailAddress
+    Email address of the user.
+
+    a.k.a novak@seznam.cz
+
+    .PARAMETER parentTeamsGroup
+    Optional parameter.
+
+    Name of Teams group, where the guest should be added as member. (it can take several minutes, before this change propagates!)
+
+    .EXAMPLE
+    Add-AzureADGuest -displayName "Jan Novak" -emailAddress "novak@seznam.cz"
+    #>
+
+    [CmdletBinding()]
+    [Alias("New-AzureADGuest")]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript( {
+                If ($_ -match "\(guest\)") {
+                    throw "$_ (guest) will be added automatically."
+                } else {
+                    $true
+                }
+            })]
+        [string] $displayName
+        ,
+        [Parameter(Mandatory = $true)]
+        [ValidateScript( {
+                If ($_ -match "@") {
+                    $true
+                } else {
+                    Throw "$_ isn't email address"
+                }
+            })]
+        [string] $emailAddress
+        ,
+        [ValidateScript( {
+                If ($_ -notmatch "^External_") {
+                    throw "$_ doesn't allow guest members (doesn't start with External_ prefix, so guests will be automatically removed)"
+                } else {
+                    $true
+                }
+            })]
+        [string] $parentTeamsGroup
+    )
+
+    Connect-AzureAD2
+
+    # naming conventions
+    (Get-Variable displayName).Attributes.Clear()
+    $displayName = $displayName.trim() + " (guest)"
+    $emailAddress = $emailAddress.trim()
+
+    "Creating Guest: $displayName EMAIL: $emailaddress"
+
+    $null = New-AzureADMSInvitation -InvitedUserDisplayName $displayName -InvitedUserEmailAddress $emailAddress -InviteRedirectUrl "https://myapps.microsoft.com" -SendInvitationMessage $true -InvitedUserType Guest
+
+    if ($parentTeamsGroup) {
+        $groupID = Get-AzureADGroup -SearchString $parentTeamsGroup | select -exp ObjectId
+        if (!$groupID) { throw "Unable to find group $parentTeamsGroup" }
+        $userId = Get-AzureADUser -SearchString $emailaddress | select -exp ObjectId
+        Add-AzureADGroupMember -ObjectId $groupID -RefObjectId $userId
+    }
+}
+
 #Requires -Modules Az.Accounts
 
 function Connect-AzAccount2 {
@@ -457,7 +537,7 @@ function Connect-AzureAD2 {
     Connect using user credentials.
 
     .EXAMPLE
-    $thumbprint = Get-ChildItem Cert:\LocalMachine\My | ? subject -EQ "CN=kenticosoftware.onmicrosoft.com" | select -ExpandProperty Thumbprint
+    $thumbprint = Get-ChildItem Cert:\LocalMachine\My | ? subject -EQ "CN=contoso.onmicrosoft.com" | select -ExpandProperty Thumbprint
     Connect-AzureAD2 -ApplicationId 'cd2ae428-35f9-21b4-a527-7d3gf8f1e5cf' -CertificateThumbprint $thumbprint
 
     Connect using app. authentication (certificate).
@@ -655,6 +735,69 @@ function Connect-PnPOnline2 {
                 Connect-PnPOnline -Url $url
             }
         }
+    }
+}
+
+function Disable-AzureADGuest {
+    <#
+    .SYNOPSIS
+    Function for disabling guest user in Azure AD.
+
+    .DESCRIPTION
+    Function for disabling guest user in Azure AD.
+
+    Do NOT REMOVE the account, because lot of connected systems use UPN as identifier instead of SID.
+    Therefore if someone in the future add such guest again, he would get access to all stuff, previous guest had access to.
+
+    .PARAMETER displayName
+    Display name of the user.
+
+    If not specified, GUI with all guests will popup.
+
+    .EXAMPLE
+    Disable-AzureADGuest -displayName "Jan Novak (guest)"
+
+    Disables "Jan Novak (guest)" guest Azure AD account.
+
+    .EXAMPLE
+    Disable-AzureADGuest
+
+    Show GUI with all available guest accounts. The selected one will be disabled.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Remove-AzureADGuest")]
+    param (
+        [string[]] $displayName
+    )
+
+    Connect-AzureAD2 -ea Stop
+
+    $guestId = @()
+
+    if (!$displayName) {
+        # Get all the Guest Users
+        $guest = Get-AzureADUser -Filter "UserType eq 'Guest' and AccountEnabled eq true" | select DisplayName, Mail, ObjectId | Out-GridView -OutputMode Multiple -Title "Select accounts for disable"
+        $guestId = $guest.ObjectId
+    } else {
+        $displayName | % {
+            $guest = Get-AzureADUser -Filter "DisplayName eq '$_' and UserType eq 'Guest' and AccountEnabled eq true"
+            if ($guest) {
+                $guestId += $guest.ObjectId
+            } else {
+                Write-Warning "$_ wasn't found or it is not guest account or is disabled already"
+            }
+        }
+    }
+
+    if ($guestId) {
+        # block Sign-In
+        Set-AzureADUser -ObjectId $_ -AccountEnabled $false
+
+        # invalidate Azure AD Tokens
+        Revoke-AzureADUserAllRefreshToken -ObjectId $_
+    } else {
+        Write-Warning "No guest to disable"
     }
 }
 
@@ -1216,6 +1359,733 @@ function Get-AzureADAppConsentRequest {
     }
 }
 
+function Get-AzureADAppRegistration {
+    <#
+    .SYNOPSIS
+    Function for getting Azure AD App registration(s) as can be seen in Azure web portal.
+
+    .DESCRIPTION
+    Function for getting Azure AD App registration(s) as can be seen in Azure web portal.
+    App registrations are global app representations with unique ID across all tenants. Enterprise app is then its local representation for specific tenant.
+
+    .PARAMETER objectId
+    (optional) objectID of app registration.
+
+    If not specified, all app registrations will be processed.
+
+    .PARAMETER credential
+    Credentials for connecting to AzureAD.
+
+    .PARAMETER data
+    Type of extra data you want to get.
+
+    Possible values:
+     - owner
+        get service principal owner
+     - permission
+        get delegated (OAuth2PermissionGrants) and application (AppRoleAssignments) permissions
+     - users&Groups
+        get explicit Users and Groups roles (omits users and groups listed because they gave permission consent)
+
+    By default all these possible values are selected (this can take several minutes!).
+
+    .EXAMPLE
+    Get-AzureADAppRegistration
+
+    Get all data for all AzureAD application registrations.
+
+    .EXAMPLE
+    Get-AzureADAppRegistration -objectId 1234-1234-1234 -data 'owner'
+
+    Get basic + owner data for selected AzureAD application registration.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $objectId,
+
+        [System.Management.Automation.PSCredential] $credential,
+
+        [ValidateSet('owner', 'permission', 'users&Groups')]
+        [string[]] $data = ('owner', 'permission', 'users&Groups')
+    )
+
+    if ($credential) {
+        Connect-AzureAD2 -ErrorAction Stop -credential $credential
+    } else {
+        Connect-AzureAD2 -ErrorAction Stop
+    }
+
+    $param = @{}
+    if ($objectId) { $param.objectId = $objectId }
+    else { $param.all = $true }
+
+    Get-AzureADApplication @param | % {
+        $appObj = $_
+
+        $appName = $appObj.DisplayName
+        $appID = $appObj.AppId
+
+        Write-Warning "Processing $appName"
+
+        Write-Verbose "Getting corresponding Service Principal"
+        $SPObject = Get-AzureADServicePrincipal -Filter "AppId eq '$appID'"
+        $SPObjectId = $SPObject.ObjectId
+        if ($SPObjectId) {
+            Write-Verbose " - found service principal (enterprise app) with objectId: $SPObjectId"
+
+            $appObj | Add-Member -MemberType NoteProperty -Name AppRoleAssignmentRequired -Value $SPObject.AppRoleAssignmentRequired
+        } else {
+            Write-Error "Registered app '$appName' doesn't have corresponding service principal (enterprise app). This shouldn't happen"
+        }
+
+        if ($data -contains 'owner') {
+            Write-Verbose "Getting owner"
+
+            $ownerResult = Get-AzureADApplicationOwner -ObjectId $appObj.ObjectId -All:$true | % {
+                if ($_.UserPrincipalName) {
+                    $name = $_.UserPrincipalName
+                } elseif (!$_.UserPrincipalName -and $_.DisplayName) {
+                    $name = $_.DisplayName + " **<This is an Application>**"
+                } else {
+                    $name = ""
+                }
+
+                $_ | select @{name = 'Name'; expression = { $name } }, ObjectId, ObjectType, AccountEnabled
+            }
+
+            $appObj | Add-Member -MemberType NoteProperty -Name Owner -Value $ownerResult
+        }
+
+        if ($data -contains 'permission') {
+            Write-Verbose "Getting permission grants"
+
+            if ($SPObjectId) {
+                $SPPermission = Get-AzureADSPPermissions -objectId $SPObjectId
+            } else {
+                Write-Verbose "Unable to get permissions because corresponding ent. app is missing"
+                $SPPermission = $null
+            }
+
+            $appObj | Add-Member -MemberType NoteProperty -Name Permission_AdminConsent -Value ($SPPermission | ? { $_.ConsentType -eq "AllPrincipals" -or $_.PermissionType -eq 'Application' } | select Permission, ResourceDisplayName, PermissionDisplayName, PermissionType)
+            $appObj | Add-Member -MemberType NoteProperty -Name Permission_UserConsent -Value ($SPPermission | ? { $_.PermissionType -eq 'Delegated' -and $_.ConsentType -ne "AllPrincipals" } | select Permission, ResourceDisplayName, PermissionDisplayName, PrincipalObjectId, PrincipalDisplayName, PermissionType)
+        }
+
+        if ($data -contains 'users&Groups') {
+            Write-Verbose "Getting users&Groups assignments"
+
+            if ($SPObjectId) {
+                $appObj | Add-Member -MemberType NoteProperty -Name UsersAndGroups -Value (Get-AzureADAppUsersAndGroups -objectId $SPObjectId | select * -ExcludeProperty ObjectId, DeletionTimestamp, ObjectType, Id, ResourceId, ResourceDisplayName)
+            } else {
+                Write-Verbose "Unable to get role assignments because corresponding ent. app is missing"
+            }
+        }
+
+        $appObj | Add-Member -MemberType NoteProperty -Name EnterpriseAppId -Value $SPObjectId
+
+        # expired secret?
+        $expiredPasswordCredentials = $appObj.PasswordCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($appObj.PasswordCredentials.EndDate -gt (Get-Date))) }
+        if ($expiredPasswordCredentials) {
+            $expiredPasswordCredentials = $true
+        } else {
+            if ($appObj.PasswordCredentials) {
+                $expiredPasswordCredentials = $false
+            } else {
+                $expiredPasswordCredentials = $null
+            }
+        }
+        $appObj | Add-Member -MemberType NoteProperty -Name ExpiredPasswordCredentials -Value $expiredPasswordCredentials
+
+        # expired certificate?
+        $expiredKeyCredentials = $appObj.KeyCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($appObj.KeyCredentials.EndDate -gt (Get-Date))) }
+        if ($expiredKeyCredentials) {
+            $expiredKeyCredentials = $true
+        } else {
+            if ($appObj.KeyCredentials) {
+                $expiredKeyCredentials = $false
+            } else {
+                $expiredKeyCredentials = $null
+            }
+        }
+        $appObj | Add-Member -MemberType NoteProperty -Name ExpiredKeyCredentials -Value $expiredKeyCredentials
+        #endregion add secret(s)
+
+        # output
+        $appObj
+    }
+}
+
+function Get-AzureADAppUsersAndGroups {
+    <#
+    .SYNOPSIS
+    Get users and groups roles of (selected) service principal.
+
+    .DESCRIPTION
+    Get users and groups roles of (selected) service principal.
+
+    .PARAMETER objectId
+    ObjectId of service principal.
+
+    If not provided all service principals will be processed.
+
+    .EXAMPLE
+    Get-AzureADAppUsersAndGroups
+
+    Returns all service principals and their users and groups roles assignments.
+
+    .EXAMPLE
+    Get-AzureADAppUsersAndGroups -objectId 123123
+
+    Returns service principal with objectId 123123 and its users and groups roles assignments.
+
+    .NOTES
+    https://github.com/MicrosoftDocs/azure-docs/issues/48159
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-AzureADServiceAppRoleAssignment2")]
+    param (
+        [string] $objectId
+    )
+
+    Connect-AzureAD2
+
+    $sessionInfo = Get-AzureADCurrentSessionInfo -ea Stop
+
+    $param = @{}
+    if ($objectId) {
+        Write-Verbose "Get $objectId service principal"
+        $param.objectId = $objectId
+    } else {
+        Write-Verbose "Get all service principals"
+        $param.all = $true
+    }
+
+    Get-AzureADServicePrincipal @param | % {
+        # Build a hash table of the service principal's app roles. The 0-Guid is
+        # used in an app role assignment to indicate that the principal is assigned
+        # to the default app role (or rather, no app role).
+        $appRoles = @{ [Guid]::Empty.ToString() = "(default)" }
+        $_.AppRoles | % { $appRoles[$_.Id] = $_.DisplayName }
+
+        # Get the app role assignments for this app, and add a field for the app role name
+
+        if ($sessionInfo.Account.Type -eq 'user') {
+            Get-AzureADServiceAppRoleAssignment -ObjectId $_.ObjectId -All:$true | % {
+                $_ | Add-Member -Name "AppRoleDisplayName" -Value $appRoles[$_.Id] -MemberType NoteProperty -PassThru
+            }
+        } else {
+            # running under service principal
+            # there is super weird bug when under service principal Get-AzureADServiceAppRoleAssignedTo behaves like Get-AzureADServiceAppRoleAssignment and vice versa (https://github.com/Azure/azure-docs-powershell-azuread/issues/766)!!!
+            Get-AzureADServiceAppRoleAssignedTo -ObjectId $_.ObjectId -All:$true | % {
+                $_ | Add-Member -Name "AppRoleDisplayName" -Value $appRoles[$_.Id] -MemberType NoteProperty -PassThru
+            }
+        }
+    }
+}
+
+function Get-AzureADAppVerificationStatus {
+    param (
+        [Parameter(Mandatory = $false, ParameterSetName = "entApp")]
+        [string] $servicePrincipalObjectId,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "appReg")]
+        [string] $appRegObjectId,
+
+        $header
+    )
+
+    if (!$header) {
+        try {
+            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+        } catch {
+            throw "Unable to retrieve authentication header for graph api. Create it using New-GraphAPIAuthHeader and pass it using header parameter"
+        }
+    }
+
+    if ($appRegObjectId) {
+        $URL = "https://graph.microsoft.com/v1.0/applications/$appRegObjectId`?`$select=displayName,verifiedPublisher"
+    } elseif ($servicePrincipalObjectId) {
+        $URL = "https://graph.microsoft.com/v1.0/servicePrincipals/$servicePrincipalObjectId`?`$select=displayName,verifiedPublisher"
+    } else {
+        $URL = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=displayName,verifiedPublisher"
+    }
+
+    Invoke-GraphAPIRequest -uri $URL -header $header | select displayName, @{name = 'publisherName'; expression = { $_.verifiedPublisher.displayName } }, @{name = 'publisherId'; expression = { $_.verifiedPublisher.verifiedPublisherId } }, @{name = 'publisherAdded'; expression = { Get-Date $_.verifiedPublisher.addedDateTime } }
+}
+
+function Get-AzureADAssessNotificationEmail {
+    <#
+    .SYNOPSIS
+    Function returns email(s) of organization technical contact(s) and privileged roles members.
+
+    .DESCRIPTION
+    Function returns email(s) of organization technical contact(s) and privileged roles members.
+
+    .EXAMPLE
+    $authHeader = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    Get-AzureADAssessNotificationEmail -authHeader $authHeader
+
+    .NOTES
+    Stolen from Get-AADAssessNotificationEmailsReport function (module AzureADAssessment)
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        $authHeader
+    )
+
+    #region get Organization Technical Contacts
+    $OrganizationData = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/organization?`$select=technicalNotificationMails" -header $authHeader
+    if ($OrganizationData) {
+        foreach ($technicalNotificationMail in $OrganizationData.technicalNotificationMails) {
+            $result = [PSCustomObject]@{
+                notificationType           = "Technical Notification"
+                notificationScope          = "Tenant"
+                recipientType              = "emailAddress"
+                recipientEmail             = $technicalNotificationMail
+                recipientEmailAlternate    = $null
+                recipientId                = $null
+                recipientUserPrincipalName = $null
+                recipientDisplayName       = $null
+            }
+
+            $user = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,otherMails,proxyAddresses&`$filter=proxyAddresses/any(c:c eq 'smtp:$technicalNotificationMail') or otherMails/any(c:c eq 'smtp:$technicalNotificationMail')" -header $authHeader | Select-Object -First 1
+        }
+
+        if ($user) {
+            $result.recipientType = 'user'
+            $result.recipientId = $user.id
+            $result.recipientUserPrincipalName = $user.userPrincipalName
+            $result.recipientDisplayName = $user.displayName
+            $result.recipientEmailAlternate = $user.otherMails -join ';'
+        }
+
+        $group = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/groups?`$filter=proxyAddresses/any(c:c eq 'smtp:$technicalNotificationMail')" -header $authHeader | Select-Object -First 1
+        if ($group) {
+            $result.recipientType = 'group'
+            $result.recipientId = $group.id
+            $result.recipientDisplayName = $group.displayName
+        }
+
+        Write-Output $result
+    }
+    #endregion get Organization Technical Contacts
+
+    #region get email addresses of all users with privileged roles
+    $DirectoryRoleData = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/directoryRoles?`$select=id,displayName&`$expand=members" -header $authHeader
+
+    foreach ($role in $DirectoryRoleData) {
+        foreach ($roleMember in $role.members) {
+            $member = $null
+            if ($roleMember.'@odata.type' -eq '#microsoft.graph.user') {
+                $member = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,otherMails,proxyAddresses&`$filter=id eq '$($roleMember.id)'" -header $authHeader | Select-Object -First 1
+            } elseif ($roleMember.'@odata.type' -eq '#microsoft.graph.group') {
+                $member = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/groups?`$select=id,displayName,mail,proxyAddresses&`$filter=id eq '$($roleMember.id)'" -header $authHeader | Select-Object -First 1
+            } elseif ($roleMember.'@odata.type' -eq '#microsoft.graph.servicePrincipal') {
+                $member = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/servicePrincipals?`$select=id,displayName&`$filter=id eq '$($roleMember.id)'" -header $authHeader | Select-Object -First 1
+            } else {
+                Write-Error "Undefined type $($roleMember.'@odata.type')"
+            }
+
+            [PSCustomObject]@{
+                notificationType           = $role.displayName
+                notificationScope          = 'Role'
+                recipientType              = ($roleMember.'@odata.type') -replace '#microsoft.graph.', ''
+                recipientEmail             = ($member.'mail')
+                recipientEmailAlternate    = ($member.'otherMails') -join ';'
+                recipientId                = ($member.'id')
+                recipientUserPrincipalName = ($member.'userPrincipalName')
+                recipientDisplayName       = ($member.'displayName')
+            }
+        }
+    }
+    #endregion get email addresses of all users with privileged roles
+}
+
+function Get-AzureADEnterpriseApplication {
+    <#
+    .SYNOPSIS
+    Function for getting Azure AD Service Principal(s) \ Enterprise Application(s) as can be seen in Azure web portal.
+
+    .DESCRIPTION
+    Function for getting Azure AD Service Principal(s) \ Enterprise Application(s) as can be seen in Azure web portal.
+
+    .PARAMETER objectId
+    (optional) objectID(s) of Service Principal(s) \ Enterprise Application(s).
+
+    If not specified, all enterprise applications will be processed.
+
+    .PARAMETER data
+    Type of extra data you want to get to the ones returned by Get-AzureADServicePrincipal.
+
+    Possible values:
+     - owner
+        get service principal owner
+     - permission
+        get delegated (OAuth2PermissionGrants) and application (AppRoleAssignments) permissions
+     - users&Groups
+        get explicit Users and Groups roles (omits users and groups listed because they gave permission consent)
+
+    By default all these possible values are selected (this can take several minutes!).
+
+    .PARAMETER includeBuiltInApp
+    Switch for including also builtin Azure apps.
+
+    .PARAMETER excludeAppWithAppRegistration
+    Switch for excluding enterprise app(s) for which exists corresponding app registration.
+
+    .EXAMPLE
+    Get-AzureADEnterpriseApplication
+
+    Get all data for all AzureAD enterprise applications. Builtin apps are excluded.
+
+    .EXAMPLE
+    Get-AzureADEnterpriseApplication -excludeAppWithAppRegistration
+
+    Get all data for all AzureAD enterprise applications. Builtin apps and apps for which app registration exists are excluded.
+
+    .EXAMPLE
+    Get-AzureADEnterpriseApplication -objectId 1234-1234-1234 -data 'owner'
+
+    Get basic + owner data for selected AzureAD enterprise application.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-AzureADServicePrincipal2")]
+    param (
+        [string[]] $objectId,
+
+        [ValidateSet('owner', 'permission', 'users&Groups')]
+        [string[]] $data = ('owner', 'permission', 'users&Groups'),
+
+        [switch] $includeBuiltInApp,
+
+        [switch] $excludeAppWithAppRegistration
+    )
+
+    try {
+        # test if connection already exists
+        $null = Get-AzureADCurrentSessionInfo -ea Stop
+    } catch {
+        throw "You must call the Connect-AzureAD cmdlet before calling any other cmdlets."
+    }
+
+    $servicePrincipalList = $null
+
+    if ($data -contains 'permission' -and !$objectId) {
+        # it is much faster to get all SP permissions at once instead of one-by-one processing in foreach (thanks to caching)
+        Write-Verbose "Getting granted permission(s)"
+
+        $SPPermission = Get-AzureADSPPermissions -ErrorAction 'Continue'
+    }
+
+    if (!$objectId) {
+        $enterpriseApp = Get-AzureADServicePrincipal -Filter "servicePrincipalType eq 'Application'" -All:$true
+
+        if ($excludeAppWithAppRegistration) {
+            $appRegistrationObj = Get-AzureADApplication -All:$true
+            $enterpriseApp = $enterpriseApp | ? AppId -NotIn $appRegistrationObj.AppId
+        }
+
+        if (!$includeBuiltInApp) {
+            $enterpriseApp = $enterpriseApp | ? tags -Contains 'WindowsAzureActiveDirectoryIntegratedApp'
+        }
+
+        $servicePrincipalList = $enterpriseApp
+    } else {
+        $objectId | % {
+            $servicePrincipalList += Get-AzureADServicePrincipal -ObjectId $_
+        }
+    }
+
+    $servicePrincipalList | ? { $_ } | % {
+        $SPObj = $_
+
+        Write-Verbose "Processing '$($SPObj.DisplayName)' ($($SPObj.ObjectId))"
+
+        if ($data -contains 'owner') {
+            Write-Verbose "Getting owner"
+
+            $ownerResult = Get-AzureADServicePrincipalOwner -ObjectId $SPObj.ObjectId -All:$true | % {
+                if ($_.UserPrincipalName) {
+                    $name = $_.UserPrincipalName
+                } elseif (!$_.UserPrincipalName -and $_.DisplayName) {
+                    $name = $_.DisplayName + " **<This is an Application>**"
+                } else {
+                    $name = ""
+                }
+
+                $_ | select @{name = 'Name'; expression = { $name } }, ObjectId, ObjectType, AccountEnabled
+            }
+
+            $SPObj | Add-Member -MemberType NoteProperty -Name Owner -Value $ownerResult
+        }
+
+        if ($data -contains 'permission') {
+            Write-Verbose "Getting permission grants"
+
+            if ($SPPermission) {
+                $permission = $SPPermission | ? ClientObjectId -EQ $SPObj.ObjectId
+            } else {
+                $permission = Get-AzureADSPPermissions -objectId $SPObj.ObjectId
+            }
+
+            $SPObj | Add-Member -MemberType NoteProperty -Name Permission_AdminConsent -Value ($permission | ? { $_.ConsentType -eq "AllPrincipals" -or $_.PermissionType -eq 'Application' } | select Permission, ResourceDisplayName, PermissionDisplayName, PermissionType)
+            $SPObj | Add-Member -MemberType NoteProperty -Name Permission_UserConsent -Value ($permission | ? { $_.PermissionType -eq 'Delegated' -and $_.ConsentType -ne "AllPrincipals" } | select Permission, ResourceDisplayName, PermissionDisplayName, PrincipalObjectId, PrincipalDisplayName, PermissionType)
+        }
+
+        if ($data -contains 'users&Groups') {
+            Write-Verbose "Getting users&Groups assignments"
+
+            $SPObj | Add-Member -MemberType NoteProperty UsersAndGroups -Value (Get-AzureADAppUsersAndGroups -objectId $SPObj.ObjectId | select * -ExcludeProperty ObjectId, DeletionTimestamp, ObjectType, Id, ResourceId, ResourceDisplayName)
+        }
+
+        # expired secret?
+        $expiredCertificate = $SPObj.PasswordCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($SPObj.PasswordCredentials.EndDate -gt (Get-Date))) }
+        if ($expiredSecret) {
+            $expiredSecret = $true
+        } else {
+            if ($SPObj.PasswordCredentials) {
+                $expiredSecret = $false
+            } else {
+                $expiredSecret = $null
+            }
+        }
+        $SPObj | Add-Member -MemberType NoteProperty ExpiredSecret -Value $expiredSecret
+
+        # expired certificate?
+        $expiredCertificate = $SPObj.KeyCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($SPObj.KeyCredentials.EndDate -gt (Get-Date))) }
+        if ($expiredCertificate) {
+            $expiredCertificate = $true
+        } else {
+            if ($SPObj.KeyCredentials) {
+                $expiredCertificate = $false
+            } else {
+                $expiredCertificate = $null
+            }
+        }
+        $SPObj | Add-Member -MemberType NoteProperty expiredCertificate -Value $expiredCertificate
+
+        # output
+        $SPObj
+    }
+}
+
+function Get-AzureAdGroupMemberRecursive {
+    <#
+    .SYNOPSIS
+    Function for recursive enumeration of all Azure AD group.
+
+    .DESCRIPTION
+    Function for recursive enumeration of all Azure AD group.
+    Group can be identified via id or name.
+
+    .PARAMETER azureGroupObj
+    AzureAD group object.
+
+    .PARAMETER azureGroupName
+    AzureAD group name.
+
+    .PARAMETER azureGroupId
+    AzureAD group id.
+
+    .PARAMETER includeNestedGroup
+    Switch for outputting of nested groups (not just their members).
+
+    .EXAMPLE
+    Get-AzureAdGroupMemberRecursive -azureGroupName "IT RBAC"
+
+    .EXAMPLE
+    Get-AzureAdGroupMemberRecursive -azureGroupId 123412341234
+
+    .NOTES
+    #https://gist.github.com/alexmags/cb69108c65fb38614b6625b4400c98c2
+    #>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(ValueFromPipeline = $true, Mandatory = $true, ParameterSetName = "azureGroupObj")]
+        $azureGroupObj,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "azureGroupName")]
+        [string] $azureGroupName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "azureGroupId")]
+        [string] $azureGroupId,
+
+        [switch] $includeNestedGroup
+    )
+
+    Begin {
+        Connect-AzureAD2
+    }
+
+    Process {
+        if ($azureGroupObj) {
+            $azureGroupName = $azureGroupObj.DisplayName
+            $azureGroupId = $azureGroupObj.ObjectId
+        } elseif ($azureGroupName) {
+            $azureGroupId = Get-AzureADGroup -SearchString $azureGroupName | select -ExpandProperty ObjectId
+        } elseif ($azureGroupId) {
+            $azureGroupName = Get-AzureADGroup -ObjectId $azureGroupId | select -ExpandProperty DisplayName
+        } else {
+            throw "You haven't specified any parameter"
+        }
+
+        Write-Verbose -Message "Enumerating $azureGroupName ($azureGroupId)"
+
+        Get-AzureADGroupMember -ObjectId $azureGroupId -All $true | % {
+            if ($_.ObjectType -eq 'Group') {
+                if ($includeNestedGroup) {
+                    $_
+                }
+
+                Get-AzureAdGroupMemberRecursive -AzureGroupObj $_
+            } else {
+                $_
+            }
+        }
+    }
+}
+
+function Get-AzureADManagedIdentity {
+    <#
+    .SYNOPSIS
+    Function for getting Azure AD Managed Identity(ies).
+
+    .DESCRIPTION
+    Function for getting Azure AD Managed Identity(ies).
+
+    .PARAMETER objectId
+    (optional) objectID of Managed Identity(ies).
+
+    If not specified, all app registrations will be processed.
+
+    .EXAMPLE
+    Get-AzureADManagedIdentity
+
+    Get all Managed Identities.
+
+    .EXAMPLE
+    Get-AzureADManagedIdentity -objectId 1234-1234-1234
+
+    Get selected Managed Identity.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string[]] $objectId
+    )
+
+    try {
+        # test if connection already exists
+        $null = Get-AzureADCurrentSessionInfo -ea Stop
+    } catch {
+        throw "You must call the Connect-AzureAD cmdlet before calling any other cmdlets."
+    }
+
+    $servicePrincipalList = @()
+
+    if (!$objectId) {
+        $servicePrincipalList = Get-AzureADServicePrincipal -Filter "servicePrincipalType eq 'ManagedIdentity'" -All:$true
+    } else {
+        $objectId | % {
+            $servicePrincipalList += Get-AzureADServicePrincipal -ObjectId $_
+        }
+    }
+
+    $azureSubscriptions = Get-AzSubscription
+
+    $servicePrincipalList | % {
+        $SPObj = $_
+
+        # output
+        $SPObj | select *, @{n = 'SubscriptionId'; e = { $_.alternativeNames | ? { $_ -Match "/subscriptions/([^/]+)/" } | % { ([regex]"/subscriptions/([^/]+)/").Matches($_).captures.groups[1].value } } }, @{name = 'SubscriptionName'; expression = { $alternativeNames = $_.alternativeNames; $azureSubscriptions | ? { $_.Id -eq ($alternativeNames | ? { $_ -Match "/subscriptions/([^/]+)/" } | % { ([regex]"/subscriptions/([^/]+)/").Matches($_).captures.groups[1].value }) } | select -exp Name } }, @{n = 'ResourceGroup'; e = { $_.alternativeNames | ? { $_ -Match "/resourcegroups/([^/]+)/" } | % { ([regex]"/resourcegroups/([^/]+)/").Matches($_).captures.groups[1].value } } },
+        @{n = 'Type'; e = { if ($_.alternativeNames -match "/Microsoft.ManagedIdentity/userAssignedIdentities/") { 'UserManagedIdentity' } else { 'SystemManagedIdentity' } } }
+    }
+}
+
+function Get-AzureADResource {
+    <#
+    .SYNOPSIS
+    Returns resources for all or just selected Azure subscription(s).
+
+    .DESCRIPTION
+    Returns resources for all or just selected Azure subscription(s).
+
+    .PARAMETER subscriptionId
+    ID of subscription you want to get resources for.
+
+    .PARAMETER selectCurrentSubscription
+    Switch for getting data just for currently set subscription.
+
+    .EXAMPLE
+    Get-AzureADResource
+
+    Returns resources for all subscriptions.
+
+    .EXAMPLE
+    Get-AzureADResource -subscriptionId 1234-1234-1234-1234
+
+    Returns resources for subscription with ID 1234-1234-1234-1234.
+
+    .EXAMPLE
+    Get-AzureADResource -selectCurrentSubscription
+
+    Returns resources just for current subscription.
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    param (
+        [Parameter(ParameterSetName = "subscriptionId")]
+        [string] $subscriptionId,
+
+        [Parameter(ParameterSetName = "currentSubscription")]
+        [switch] $selectCurrentSubscription
+    )
+
+    # get Current Context
+    $currentContext = Get-AzContext
+
+    # get Azure Subscriptions
+    if ($selectCurrentSubscription) {
+        Write-Verbose "Only running for current subscription $($currentContext.Subscription.Name)"
+        $subscriptions = Get-AzSubscription -SubscriptionId $currentContext.Subscription.Id -TenantId $currentContext.Tenant.Id
+    } elseif ($subscriptionId) {
+        Write-Verbose "Only running for selected subscription $subscriptionId"
+        $subscriptions = Get-AzSubscription -SubscriptionId $subscriptionId -TenantId $currentContext.Tenant.Id
+    } else {
+        Write-Verbose "Running for all subscriptions in tenant"
+        $subscriptions = Get-AzSubscription -TenantId $currentContext.Tenant.Id
+    }
+
+    Write-Verbose "Getting information about Role Definitions..."
+    $allRoleDefinition = Get-AzRoleDefinition
+
+    foreach ($subscription in $subscriptions) {
+        Write-Verbose "Changing to Subscription $($subscription.Name)"
+
+        $Context = Set-AzContext -TenantId $subscription.TenantId -SubscriptionId $subscription.Id -Force
+
+        # getting information about Role Assignments for chosen subscription
+        Write-Verbose "Getting information about Role Assignments..."
+        $allRoleAssignment = Get-AzRoleAssignment
+
+        Write-Verbose "Getting information about Resources..."
+
+        Get-AzResource | % {
+            $resourceId = $_.ResourceId
+            Write-Verbose "Processing $resourceId"
+
+            $roleAssignment = $allRoleAssignment | ? { $resourceId -match [regex]::escape($_.scope) -or $_.scope -like "/providers/Microsoft.Authorization/roleAssignments/*" -or $_.scope -like "/providers/Microsoft.Management/managementGroups/*" } | select RoleDefinitionName, DisplayName, Scope, SignInName, ObjectType, ObjectId, @{n = 'CustomRole'; e = { ($allRoleDefinition | ? Name -EQ $_.RoleDefinitionName).IsCustom } }, @{n = 'Inherited'; e = { if ($_.scope -eq $resourceId) { $false } else { $true } } }
+
+            $_ | select *, @{n = "SubscriptionName"; e = { $subscription.Name } }, @{n = "SubscriptionId"; e = { $subscription.SubscriptionId } }, @{n = 'IAM'; e = { $roleAssignment } } -ExcludeProperty SubscriptionId, ResourceId, ResourceType
+        }
+    }
+}
+
 #Requires -Modules Az.Accounts,Az.Resources
 
 function Get-AzureADRoleAssignments {
@@ -1357,6 +2227,480 @@ function Get-AzureADRoleAssignments {
                 Write-Warning "At subscription $($Subscription.Name) there is no resource provider registered"
             } else {
                 Write-Error $_
+            }
+        }
+    }
+}
+
+function Get-AzureADServicePrincipalOverview {
+    <#
+    .SYNOPSIS
+    Function for getting overall information for AzureAD Service principal(s).
+
+    .DESCRIPTION
+    Function for getting overall information for AzureAD Service principal(s).
+
+    .PARAMETER objectId
+    (optional) objectId of the service principal you want information for.
+
+    .PARAMETER data
+    Type of extra data you want to get.
+
+    Possible values:
+     - owner
+        get service principal owner
+     - permission
+        get delegated permissions (OAuth2PermissionGrants) and application permissions (AppRoleAssignments)
+     - users&Groups
+        get explicit Users and Groups roles (omits users and groups listed because they gave permission consent)
+     - lastUsed
+        get last date this service principal was used according the audit logs
+
+    By default all these possible values are selected (this can take dozens of minutes!).
+
+    .PARAMETER credential
+    Credentials for AzureAD authentication.
+
+    .PARAMETER header
+    Header for authentication of graph calls.
+    Use if calling Get-AzureADServicePrincipalOverview several times in short time period. Otherwise you will end with error: We couldn't sign you in.
+    Header object can be created via New-GraphAPIAuthHeader function.
+
+    .EXAMPLE
+    Get-AzureADServicePrincipalOverview
+
+    Get all data for all service principals.
+
+    .EXAMPLE
+    Get-AzureADServicePrincipalOverview -objectId 1234-1234-1234 -data 'owner', 'permission'
+
+    Get basic service principal data plus owner and permissions for SP with given objectId.
+
+    .NOTES
+    Nice similar solution https://github.com/michevnew/PowerShell/blob/master/app_Permissions_inventory_GraphAPI.ps1
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $objectId,
+
+        [ValidateSet('owner', 'permission', 'users&Groups', 'lastUsed')]
+        [string[]] $data = ('owner', 'permission', 'users&Groups', 'lastUsed'),
+
+        [System.Management.Automation.PSCredential] $credential,
+
+        $header
+    )
+
+    #region authenticate
+    if ($credential) {
+        Connect-AzureAD2 -credential $credential -ErrorAction Stop
+    } else {
+        Connect-AzureAD2 -ErrorAction Stop
+    }
+    if (!$header) {
+        $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+    }
+    #endregion authenticate
+
+    if ($data -contains 'permission') {
+        # it is much faster to get all SP permissions at once instead of one-by-one processing in foreach (thanks to caching)
+        Write-Verbose "Getting granted permission(s)"
+
+        $param = @{ ErrorAction = 'Continue' }
+        if ($objectId) { $param.objectId = $objectId }
+
+        $SPPermission = Get-AzureADSPPermissions @param
+    }
+
+    $param = @{}
+    if ($objectId) { $param.objectId = $objectId }
+    else { $param.all = $true }
+
+    Get-AzureADServicePrincipal @param | % {
+        $SP = $_
+
+        $SPName = $SP.AppDisplayName
+        if (!$SPName) { $SPName = $SP.DisplayName }
+        Write-Warning "Processing '$SPName' ($($SP.AppId))"
+
+        if ($data -contains 'owner') {
+            Write-Verbose "Getting owner"
+            $SP = $SP | select *, @{n = 'Owner'; e = { Get-AzureADServicePrincipalOwner -ObjectId $_.ObjectId -All:$true } }
+        }
+
+        if ($data -contains 'permission') {
+            $permission = $SPPermission | ? ClientObjectId -EQ $SP.objectId
+
+            $SP = $SP | select *, @{n = 'Permission_AdminConsent'; e = { $permission | ? { $_.ConsentType -eq "AllPrincipals" -or $_.PermissionType -eq 'Application' } | select Permission, ResourceDisplayName, PermissionDisplayName, PermissionType } }
+            $SP = $SP | select *, @{n = 'Permission_UserConsent'; e = { $permission | ? { $_.PermissionType -eq 'Delegated' -and $_.ConsentType -ne "AllPrincipals" } | select Permission, ResourceDisplayName, PermissionDisplayName, PrincipalObjectId, PrincipalDisplayName, PermissionType } }
+        }
+
+        if ($data -contains 'users&Groups') {
+            Write-Verbose "Getting explicitly assigned users and groups"
+            # show just explicitly added members, not added via granting consent
+            $consentPrincipalId = @($SP.Permission_AdminConsent.PrincipalObjectId) + @($SP.Permission_UserConsent.PrincipalObjectId)
+            $SP = $SP | select *, @{n = 'UsersAndGroups'; e = { Get-AzureADAppUsersAndGroups -objectId $SP.objectId | select ObjectType , CreationTimestamp, PrincipalDisplayName, PrincipalId, PrincipalType | ? PrincipalId -NotIn $consentPrincipalId } }
+        }
+
+        #region check secrets
+        $sResult = @()
+        $cResult = @()
+
+        #region process secret(s)
+        $secret = $SP.PasswordCredentials
+        $cert = $SP.KeyCredentials
+
+        foreach ($s in $secret) {
+            $startDate = $s.StartDate
+            $endDate = $s.EndDate
+
+            $sResult += [PSCustomObject]@{
+                StartDate = $startDate
+                EndDate   = $endDate
+            }
+        }
+
+        foreach ($c in $cert) {
+            $startDate = $c.StartDate
+            $endDate = $c.EndDate
+
+            $cResult += [PSCustomObject]@{
+                StartDate = $startDate
+                EndDate   = $endDate
+            }
+        }
+        #endregion process secret(s)
+
+        # expired secret
+        $expiredSecret = $sResult | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($_.EndDate -gt (Get-Date))) }
+        if ($expiredSecret) {
+            $expiredSecret = $true
+        } else {
+            if ($sResult) {
+                $expiredSecret = $false
+            } else {
+                $expiredSecret = $null
+            }
+        }
+        # $SP = $SP | Add-Member -MemberType NoteProperty -Name ExpiredSecret -Value $expiredSecret
+        $SP = $SP | select *, @{n = 'ExpiredSecret'; e = { $expiredSecret } }
+
+        # expired certificate
+        $expiredCertificate = $cResult | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($_.EndDate -gt (Get-Date))) }
+        if ($expiredCertificate) {
+            $expiredCertificate = $true
+        } else {
+            if ($cResult) {
+                $expiredCertificate = $false
+            } else {
+                $expiredCertificate = $null
+            }
+        }
+        # $SP = $SP | Add-Member -MemberType NoteProperty -Name ExpiredCertificate -Value $expiredCertificate
+        $SP = $SP | select *, @{n = 'ExpiredCertificate'; e = { $expiredCertificate } }
+        #endregion check secrets
+
+        if ($data -contains 'lastUsed') {
+            Write-Verbose "Getting last used date"
+            # Get-AzureADAuditSignInLogs has problems with throttling 'Too Many Requests', Invoke-GraphAPIRequest has builtin fix for that
+            $signInResult = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/beta/auditLogs/signIns?api-version=beta&`$filter=(appId eq '$($SP.AppId)')&`$top=1&`$orderby=createdDateTime desc" -header $header
+            if ($signInResult.count -ge 1) {
+                $SP = $SP | select *, @{n = 'LastUsed'; e = { $signInResult.CreatedDateTime } }
+            } else {
+                $SP = $SP | select *, @{n = 'LastUsed'; e = { $null } }
+            }
+        }
+
+        #output
+        $SP
+    }
+}
+
+function Get-AzureADSPPermissions {
+    <#
+    .SYNOPSIS
+        Lists granted delegated (OAuth2PermissionGrants) and application (AppRoleAssignments) permissions.
+
+    .PARAMETER objectId
+        Service principal objectId. If not specified, all service principals will be processed.
+
+    .PARAMETER DelegatedPermissions
+        If set, will return delegated permissions. If neither this switch nor the ApplicationPermissions switch is set,
+        both application and delegated permissions will be returned.
+
+    .PARAMETER ApplicationPermissions
+        If set, will return application permissions. If neither this switch nor the DelegatedPermissions switch is set,
+        both application and delegated permissions will be returned.
+
+    .PARAMETER UserProperties
+        The list of properties of user objects to include in the output. Defaults to DisplayName only.
+
+    .PARAMETER ServicePrincipalProperties
+        The list of properties of service principals (i.e. apps) to include in the output. Defaults to DisplayName only.
+
+    .PARAMETER ShowProgress
+        Whether or not to display a progress bar when retrieving application permissions (which could take some time).
+
+    .PARAMETER PrecacheSize
+        The number of users to pre-load into a cache. For tenants with over a thousand users,
+        increasing this may improve performance of the script.
+    .EXAMPLE
+        PS C:\> Get-AzureADSPPermissions -objectId f1c5b03c-6605-46ac-8ddb-453b953af1fc
+        Generates report of all permissions granted to app f1c5b03c-6605-46ac-8ddb-453b953af1fc.
+
+    .EXAMPLE
+        PS C:\> Get-AzureADSPPermissions | Export-Csv -Path "permissions.csv" -NoTypeInformation
+        Generates a CSV report of all permissions granted to all apps.
+
+    .EXAMPLE
+        PS C:\> Get-AzureADSPPermissions -ApplicationPermissions -ShowProgress | Where-Object { $_.Permission -eq "Directory.Read.All" }
+        Get all apps which have application permissions for Directory.Read.All.
+
+    .EXAMPLE
+        PS C:\> Get-AzureADSPPermissions -UserProperties @("DisplayName", "UserPrincipalName", "Mail") -ServicePrincipalProperties @("DisplayName", "AppId")
+        Gets all permissions granted to all apps and includes additional properties for users and service principals.
+
+    .NOTES
+        https://docs.microsoft.com/en-us/microsoft-365/security/office-365-security/detect-and-remediate-illicit-consent-grants?view=o365-worldwide
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-AzureADPSPermissionGrants", "Get-AzureADPSPermissions", "Get-AzureADServicePrincipalPermissions")]
+    param(
+        [string] $objectId,
+
+        [switch] $DelegatedPermissions,
+
+        [switch] $ApplicationPermissions,
+
+        [string[]] $UserProperties = @("DisplayName"),
+
+        [string[]] $ServicePrincipalProperties = @("DisplayName"),
+
+        [switch] $ShowProgress,
+
+        [int] $PrecacheSize = 999
+    )
+
+    Connect-AzureAD2
+
+    $sessionInfo = Get-AzureADCurrentSessionInfo -ea Stop
+
+    # An in-memory cache of objects by {object ID} and by {object class, object ID}
+    $script:ObjectByObjectId = @{}
+    $script:ObjectByObjectClassId = @{}
+
+    #region helper functions
+    # Function to add an object to the cache
+    function CacheObject ($Object) {
+        if ($Object) {
+            if (-not $script:ObjectByObjectClassId.ContainsKey($Object.ObjectType)) {
+                $script:ObjectByObjectClassId[$Object.ObjectType] = @{}
+            }
+            $script:ObjectByObjectClassId[$Object.ObjectType][$Object.ObjectId] = $Object
+            $script:ObjectByObjectId[$Object.ObjectId] = $Object
+        }
+    }
+
+    # Function to retrieve an object from the cache (if it's there), or from Azure AD (if not).
+    function GetObjectByObjectId ($ObjectId) {
+        if (-not $script:ObjectByObjectId.ContainsKey($ObjectId)) {
+            Write-Verbose ("Querying Azure AD for object '{0}'" -f $ObjectId)
+            try {
+                $object = Get-AzureADObjectByObjectId -ObjectId $ObjectId
+                CacheObject -Object $object
+            } catch {
+                Write-Verbose "Object not found."
+            }
+        }
+        return $script:ObjectByObjectId[$ObjectId]
+    }
+
+    # Function to retrieve all OAuth2PermissionGrants, either by directly listing them (-FastMode)
+    # or by iterating over all ServicePrincipal objects. The latter is required if there are more than
+    # 999 OAuth2PermissionGrants in the tenant, due to a bug in Azure AD.
+    function GetOAuth2PermissionGrants ([switch]$FastMode) {
+        if ($FastMode) {
+            Get-AzureADOAuth2PermissionGrant -All $true
+        } else {
+            # clone to avoid "An error occurred while enumerating through a collection: Collection was modified; enumeration operation may not execute.."
+            $($script:ObjectByObjectClassId['ServicePrincipal'].GetEnumerator().Clone()) | ForEach-Object { $i = 0 } {
+                if ($ShowProgress) {
+                    Write-Progress -Activity "Retrieving delegated permissions..." `
+                        -Status ("Checked {0}/{1} apps" -f $i++, $servicePrincipalCount) `
+                        -PercentComplete (($i / $servicePrincipalCount) * 100)
+                }
+
+                $client = $_.Value
+                Get-AzureADServicePrincipalOAuth2PermissionGrant -ObjectId $client.ObjectId
+            }
+        }
+    }
+    #endregion helper functions
+
+    $empty = @{} # Used later to avoid null checks
+
+    # Get ServicePrincipal object(s) and add to the cache
+    if ($objectId) {
+        Write-Verbose "Retrieving $objectId ServicePrincipal object..."
+        Get-AzureADServicePrincipal -ObjectId $objectId | ForEach-Object {
+            CacheObject -Object $_
+        }
+    } else {
+        Write-Verbose "Retrieving all ServicePrincipal objects..."
+        Get-AzureADServicePrincipal -All $true | ForEach-Object {
+            CacheObject -Object $_
+        }
+    }
+
+    $servicePrincipalCount = $script:ObjectByObjectClassId['ServicePrincipal'].Count
+
+    if ($DelegatedPermissions -or (!$DelegatedPermissions -and !$ApplicationPermissions)) {
+        # Get one page of User objects and add to the cache
+        if (!$objectId) {
+            Write-Verbose ("Retrieving up to {0} User objects..." -f $PrecacheSize)
+            Get-AzureADUser -Top $PrecacheSize | Where-Object {
+                CacheObject -Object $_
+            }
+
+            Write-Verbose "Testing for OAuth2PermissionGrants bug before querying..."
+            $fastQueryMode = $false
+            try {
+                # There's a bug in Azure AD Graph which does not allow for directly listing
+                # oauth2PermissionGrants if there are more than 999 of them. The following line will
+                # trigger this bug (if it still exists) and throw an exception.
+                $null = Get-AzureADOAuth2PermissionGrant -Top 999
+                $fastQueryMode = $true
+            } catch {
+                if ($_.Exception.Message -and $_.Exception.Message.StartsWith("Unexpected end when deserializing array.")) {
+                    Write-Verbose ("Fast query for delegated permissions failed, using slow method...")
+                } else {
+                    throw $_
+                }
+            }
+        } else {
+            # false means grants will be searched for just cached service principals i.e. those we actually need
+            $fastQueryMode = $false
+        }
+
+        # Get all existing OAuth2 permission grants, get the client, resource and scope details
+        Write-Verbose "Retrieving OAuth2PermissionGrants..."
+        GetOAuth2PermissionGrants -FastMode:$fastQueryMode | ForEach-Object {
+            $grant = $_
+            if ($grant.Scope) {
+                $grant.Scope.Split(" ") | Where-Object { $_ } | ForEach-Object {
+
+                    $scope = $_
+                    $resource = GetObjectByObjectId -ObjectId $grant.ResourceId
+                    $permission = $resource.OAuth2Permissions | Where-Object { $_.Value -eq $scope }
+
+                    $grantDetails = [ordered]@{
+                        "PermissionType"        = "Delegated"
+                        "ClientObjectId"        = $grant.ClientId
+                        "ResourceObjectId"      = $grant.ResourceId
+                        "GrantId"               = $grant.ObjectId
+                        "Permission"            = $scope
+                        # "PermissionId"          = $permission.Id
+                        "PermissionDisplayName" = $permission.AdminConsentDisplayName
+                        "PermissionDescription" = $permission.AdminConsentDescription
+                        "ConsentType"           = $grant.ConsentType
+                        "PrincipalObjectId"     = $grant.PrincipalId
+                    }
+
+                    # Add properties for client and resource service principals
+                    if ($ServicePrincipalProperties.Count -gt 0) {
+
+                        $client = GetObjectByObjectId -ObjectId $grant.ClientId
+                        $resource = GetObjectByObjectId -ObjectId $grant.ResourceId
+
+                        $insertAtClient = 2
+                        $insertAtResource = 3
+                        foreach ($propertyName in $ServicePrincipalProperties) {
+                            $grantDetails.Insert($insertAtClient++, "Client$propertyName", $client.$propertyName)
+                            $insertAtResource++
+                            $grantDetails.Insert($insertAtResource, "Resource$propertyName", $resource.$propertyName)
+                            $insertAtResource ++
+                        }
+                    }
+
+                    # Add properties for principal (will all be null if there's no principal)
+                    if ($UserProperties.Count -gt 0) {
+
+                        $principal = $empty
+                        if ($grant.PrincipalId) {
+                            $principal = GetObjectByObjectId -ObjectId $grant.PrincipalId
+                        }
+
+                        foreach ($propertyName in $UserProperties) {
+                            $grantDetails["Principal$propertyName"] = $principal.$propertyName
+                        }
+                    }
+
+                    New-Object PSObject -Property $grantDetails
+                }
+            }
+        }
+    }
+
+    if ($ApplicationPermissions -or (!$DelegatedPermissions -and !$ApplicationPermissions)) {
+        # Iterate over all ServicePrincipal objects and get app permissions
+        Write-Verbose "Retrieving AppRoleAssignments..."
+        # clone to avoid "An error occurred while enumerating through a collection: Collection was modified; enumeration operation may not execute.."
+        if ($objectId) {
+            $spObjectId = $objectId
+        } else {
+            $spObjectId = $script:ObjectByObjectClassId['ServicePrincipal'].GetEnumerator() | % { $_.Value.ObjectId }
+        }
+        $spObjectId | ForEach-Object { $i = 0 } {
+            Write-Progress "Processing $_ service principal"
+            if ($ShowProgress) {
+                Write-Progress -Activity "Retrieving application permissions..." `
+                    -Status ("Checked {0}/{1} apps" -f $i++, $servicePrincipalCount) `
+                    -PercentComplete (($i / $servicePrincipalCount) * 100)
+            }
+
+            if ($sessionInfo.Account.Type -eq 'user') {
+                $serviceAppRoleAssignedTo = Get-AzureADServiceAppRoleAssignedTo -ObjectId $_ -All:$true
+            } else {
+                # running under service principal
+                #FIXME this is some kind of bug, so probably will be fixed in the future
+                # there is super weird bug when under service principal Get-AzureADServiceAppRoleAssignedTo behaves like Get-AzureADServiceAppRoleAssignment and vice versa (https://github.com/Azure/azure-docs-powershell-azuread/issues/766)!!!
+                $serviceAppRoleAssignedTo = Get-AzureADServiceAppRoleAssignment -ObjectId $_ -All:$true
+            }
+
+            $serviceAppRoleAssignedTo | Where-Object { $_.PrincipalType -eq "ServicePrincipal" } | ForEach-Object {
+                $assignment = $_
+
+                $resource = GetObjectByObjectId -ObjectId $assignment.ResourceId
+                $appRole = $resource.AppRoles | Where-Object { $_.Id -eq $assignment.Id }
+
+                $grantDetails = [ordered]@{
+                    "PermissionType"        = "Application"
+                    "ClientObjectId"        = $assignment.PrincipalId
+                    "ResourceObjectId"      = $assignment.ResourceId
+                    "Permission"            = $appRole.Value
+                    # "PermissionId"          = $assignment.appRoleId
+                    "PermissionDisplayName" = $appRole.DisplayName
+                    "PermissionDescription" = $appRole.Description
+                }
+
+                # Add properties for client and resource service principals
+                if ($ServicePrincipalProperties.Count -gt 0) {
+
+                    $client = GetObjectByObjectId -ObjectId $assignment.PrincipalId
+
+                    $insertAtClient = 2
+                    $insertAtResource = 3
+                    foreach ($propertyName in $ServicePrincipalProperties) {
+                        $grantDetails.Insert($insertAtClient++, "Client$propertyName", $client.$propertyName)
+                        $insertAtResource++
+                        $grantDetails.Insert($insertAtResource, "Resource$propertyName", $resource.$propertyName)
+                        $insertAtResource ++
+                    }
+                }
+
+                New-Object PSObject -Property $grantDetails
             }
         }
     }
@@ -1629,6 +2973,274 @@ function Invoke-GraphAPIRequest {
     }
 }
 
+function New-AzureADMSIPConditionalAccessPolicy {
+    <#
+    .SYNOPSIS
+    Function for creating new Azure Conditional Policy where access for given users/group/roles will be allowed only from given IP range(s) (Named Location(s)).
+
+    .DESCRIPTION
+    Function for creating new Azure Conditional Policy where access for given users/group/roles will be allowed only from given IP range(s) (Named Location(s)).
+
+    .PARAMETER ruleName
+    Name of new Conditional Access policy.
+    Prefix '_' will be automatically added.
+    Same name will be used for new Named Location if needed.
+
+    .PARAMETER includeUsers
+    Azure GUID of the user(s) to include in this policy.
+
+    .PARAMETER excludeUsers
+    Azure GUID of the user(s) to exclude from this policy.
+
+    .PARAMETER includeGroups
+    Azure GUID of the group(s) to include in this policy.
+
+    .PARAMETER excludeGroups
+    Azure GUID of the group(s) to exclude from this policy.
+
+    .PARAMETER includeRoles
+    Azure GUID of the role(s) to include in this policy.
+
+    .PARAMETER excludeRoles
+    Azure GUID of the role(s) to exclude from this policy.
+
+    .PARAMETER ipRange
+    List of IP ranges in CIDR notation (for example 1.1.1.1/32).
+    New Named Location will be created and used.
+
+    .PARAMETER ipRangeIsTrusted
+    Switch for setting defined ipRange(s) as trusted.
+
+    .PARAMETER namedLocation
+    Name or ID of the existing Named Location that should be used.
+    Can be used instead of ipRange parameter.
+
+    .PARAMETER justReport
+    Switch for using 'enabledForReportingButNotEnforced' instead of forcing application of the new policy.
+    Therefore violations against the policy will be audited instead of denied.
+
+    .PARAMETER force
+    Switch for omitting warning in case justReport parameter wasn't specified.
+
+    .EXAMPLE
+    New-AzureADMSIPConditionalAccessPolicy -ruleName otestik -includeUsers 'e5834928-0f19-492d-8a69-3fbc98fd84eb' -ipRange 192.168.1.1/32
+
+    New Named Location named _otestik will be created with IP range 192.168.1.1/32.
+    New Conditional Policy named _otestik in forced mode will be created with these conditions:
+     - user condition: user with ID 'e5834928-0f19-492d-8a69-3fbc98fd84eb'
+     - location condition: created Named Location
+
+    .EXAMPLE
+    New-AzureADMSIPConditionalAccessPolicy -justReport -ruleName otestik -includeUsers 'e5834928-0f19-492d-8a69-3fbc98fd84eb', 'a3c58ecb-924c-4ae9-b90c-a5a423f8bd5d' -namedLocation HQ_Brno
+
+    New Conditional Policy named _otestik in audit mode will be created with these conditions:
+     - user condition: users with ID 'e5834928-0f19-492d-8a69-3fbc98fd84eb', 'a3c58ecb-924c-4ae9-b90c-a5a423f8bd5d'
+     - location condition: existing Named Location 'HQ_Brno'
+
+    .NOTES
+    https://github.com/Azure-Samples/azure-ad-conditional-access-apis/tree/main/01-configure/powershell
+
+    pokud bych chtel nastavovat 'workload identities' (ale vyzaduji P2 licenci!) tak zrejme pres JSON protoze $conditions to neukazuje https://github.com/MicrosoftDocs/azure-docs/blob/master/articles/active-directory/conditional-access/workload-identity.md viz https://github.com/Azure-Samples/azure-ad-conditional-access-apis/tree/main/01-configure/graphapi
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $ruleName,
+
+        [guid[]] $includeUsers,
+
+        [guid[]] $excludeUsers,
+
+        [guid[]] $includeGroups,
+
+        [guid[]] $excludeGroups,
+
+        [guid[]] $includeRoles,
+
+        [guid[]] $excludeRoles,
+
+        [ValidateScript( {
+                if ($_ -match "/") {
+                    $true
+                } elseif ($_ -match '^[0-9a-d:.]+/\d+$') {
+                    $true
+                } else {
+                    throw "IpRange $_ is not in correct form. It has to be in CIDR format (for example 1.2.3.4/32)"
+                }
+            })]
+        [string[]] $ipRange,
+
+        [switch] $ipRangeIsTrusted,
+
+        [string] $namedLocation,
+
+        [switch] $justReport,
+
+        [switch] $force
+    )
+
+    $ErrorActionPreference = 'Stop'
+
+    # required for creation of [Microsoft.Open.MSGraph.Model]
+    Import-Module AzureADPreview
+
+    #region validations
+    if (!$ipRange -and !$namedLocation) {
+        throw "You have to specify ipRange or namedLocation parameter."
+    }
+    if ($ipRange -and $namedLocation) {
+        throw "You have to specify ipRange or namedLocation parameter. Not both!"
+    }
+
+    $ipRange | ? { $_ } | % {
+        $ip = $_.Split("/")[0]
+        $mask = $_.Split("/")[-1]
+
+        if ($ip -ne [IPAddress]$ip) {
+            throw "IP $ip isn't correct IP"
+        }
+
+        if ($mask -lt 24 -or $mask -gt 32) {
+            throw "Mask ($mask) for IP $ip is too big or too small"
+        }
+    }
+
+    if (!$includeUsers -and !$includeGroups -and !$includeRoles) {
+        throw "You have to enter some user, group or role to apply this conditional rule for"
+    }
+
+    if (!$justReport -and !$force) {
+        Write-Warning "You are going to create new Conditional Policy that will restrict access of selected users/groups/roles to all applications just from selected IPs/location."
+        $choice = ""
+        while ($choice -notmatch "^[Y|N]$") {
+            $choice = Read-Host "Continue? (Y|N)"
+        }
+        if ($choice -eq "N") {
+            return
+        }
+    }
+    #endregion validations
+
+    Connect-AzureAD2
+
+    #region helper functions
+    function _getObject {
+        param ($id, $type)
+
+        try {
+            if (Get-AzureADObjectByObjectId -ObjectIds $id -ErrorAction Stop | ? ObjectType -EQ $type) {
+                # ok
+            } else {
+                throw "'$id' Object Id doesn't exist in Azure"
+            }
+        } catch {
+            throw "'$id' isn't correct Azure Object Id."
+        }
+    }
+
+    #region named location
+    #region validations
+    if (Get-AzureADMSNamedLocationPolicy | ? DisplayName -EQ "_$ruleName") {
+        throw "Named location with name '_$ruleName' already exists! Choose a different name."
+    }
+    if (Get-AzureADMSConditionalAccessPolicy | ? DisplayName -EQ "_$ruleName") {
+        throw "Conditional policy with name '_$ruleName' already exists! Choose a different name."
+    }
+    if ($includeUsers -or $excludeUsers) {
+        $includeUsers, $excludeUsers | ? { $_ } | % {
+            _getObject -id $_ -type 'User'
+        }
+    }
+    if ($includeGroups -or $excludeGroups) {
+        $includeGroups, $excludeGroups | ? { $_ } | % {
+            _getObject -id $_ -type 'Group'
+        }
+    }
+    if ($includeRoles -or $excludeRoles) {
+        $includeRoles, $excludeRoles | ? { $_ } | % {
+            _getObject -id $_ -type 'Role'
+        }
+    }
+    #endregion validations
+
+    if ($namedLocation) {
+        # use existing named location
+        $namedLocationObj = Get-AzureADMSNamedLocationPolicy | ? { $_.id -eq $namedLocation -or $_.DisplayName -eq $namedLocation }
+        #region validations
+        if ($namedLocationObj.count -gt 1) {
+            throw "There are multiple matching Named Locations ($($namedLocationObj.count)). Use ID instead."
+        }
+        if (!$namedLocationObj) {
+            throw "Unable to find named location with name/id $namedLocation"
+        }
+        #endregion validations
+    } else {
+        # create new named location
+        "Creating Named location '_$ruleName'"
+        if ($ipRangeIsTrusted) {
+            $namedLocationObj = New-AzureADMSNamedLocationPolicy -DisplayName "_$ruleName" -OdataType '#microsoft.graph.ipNamedLocation' -IpRanges $ipRange -IsTrusted:$true
+        } else {
+            $namedLocationObj = New-AzureADMSNamedLocationPolicy -DisplayName "_$ruleName" -OdataType '#microsoft.graph.ipNamedLocation' -IpRanges $ipRange -IsTrusted:$false
+        }
+    }
+    #endregion named location
+
+    #region conditional policy
+    "Creating Conditional Rule '_$ruleName'"
+
+    #region define conditions
+    $conditions = New-Object -TypeName Microsoft.Open.MSGraph.Model.ConditionalAccessConditionSet
+    $conditions.ClientAppTypes = 'All'
+
+    # conditions apps settings
+    $conditions.Applications = New-Object -TypeName Microsoft.Open.MSGraph.Model.ConditionalAccessApplicationCondition
+    $conditions.Applications.IncludeApplications = "All"
+
+    # conditions users settings
+    $conditions.Users = New-Object -TypeName Microsoft.Open.MSGraph.Model.ConditionalAccessUserCondition
+    if ($includeUsers) {
+        $conditions.Users.includeUsers = $includeUsers
+    }
+    if ($excludeUsers) {
+        $conditions.Users.excludeUsers = $excludeUsers
+    }
+    if ($includeGroups) {
+        $conditions.Users.includeGroups = $includeGroups
+    }
+    if ($excludeGroups) {
+        $conditions.Users.excludeGroups = $excludeGroups
+    }
+    if ($includeRoles) {
+        $conditions.Users.includeRoles = $includeRoles
+    }
+    if ($excludeRoles) {
+        $conditions.Users.excludeRoles = $excludeRoles
+    }
+
+    # conditions location settings
+    $conditions.Locations = New-Object -TypeName Microsoft.Open.MSGraph.Model.ConditionalAccessLocationCondition
+    Write-Verbose "Using named location $($namedLocationObj.id)"
+    $conditions.Locations.IncludeLocations = "All"
+    $conditions.Locations.ExcludeLocations = $namedLocationObj.id
+    #endregion define conditions
+
+    #region define controls
+    $controls = New-Object -TypeName Microsoft.Open.MSGraph.Model.ConditionalAccessGrantControls
+    $controls._Operator = "OR"
+    $controls.BuiltInControls = "Block"
+    #endregion define controls
+
+    if ($justReport) {
+        $state = "enabledForReportingButNotEnforced"
+    } else {
+        $state = "enabled"
+    }
+
+    $null = New-AzureADMSConditionalAccessPolicy -DisplayName "_$ruleName" -State $state -Conditions $conditions -GrantControls $controls
+    #endregion conditional policy
+}
+
 #Requires -Modules MSAL.PS
 
 function New-AzureDevOpsAuthHeader {
@@ -1846,6 +3458,625 @@ function Open-AzureADAdminConsentPage {
     }
 }
 
-Export-ModuleMember -function Add-AzureADAppCertificate, Add-AzureADAppUserConsent, Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADRoleAssignments, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage
+function Remove-AzureADAccountOccurrence {
+    <#
+    .SYNOPSIS
+    Function for removal of selected AAD account occurrences in various parts of AAD.
 
-Export-ModuleMember -alias Get-AzureADIAMRoleAssignments, Get-AzureADRBACRoleAssignments, Get-IntuneAuthHeader, New-IntuneAuthHeader
+    .DESCRIPTION
+    Function for removal of selected AAD account occurrences in various parts of AAD.
+
+    .PARAMETER inputObject
+    PSCustomObject that is outputted by Get-AzureADAccountOccurrence function.
+    Contains information about account and its occurrences i.e. is used in this function as information about what to remove and from where.
+
+    Object (as a output of Get-AzureADAccountOccurrence) should have these properties:
+        UPN
+        DisplayName
+        ObjectType
+        ObjectId
+        IAM
+        MemberOfDirectoryRole
+        MemberOfGroup
+        PermissionConsent
+        Owner
+        SharepointSiteOwner
+        AppUsersAndGroupsRoleAssignment
+
+    .PARAMETER replaceByUser
+    (optional) ObjectId or UPN of the AAD user that will replace processed user as a new owner/manager.
+    But if there are other owners, the one being removed won't be replaced, just deleted!
+
+    Cannot be used with replaceByManager.
+
+    .PARAMETER replaceByManager
+    Switch for using user's manager as a new owner/manager.
+    Applies ONLY for processed USERS (because only users have managers) and not other object types!
+
+    If there are other owners, the one being removed won't be replaced, just deleted!
+
+    Cannot be used with replaceByUser.
+
+    .PARAMETER whatIf
+    Switch for omitting any changes, just output what would be done.
+
+    .PARAMETER removeRegisteredDevice
+    Switch for removal of registered devices. Otherwise registered devices stays intact.
+
+    This doesn't apply to joined device.
+
+    .PARAMETER informNewManOwn
+    Switch for sending email notification to new owners/managers about what and why was transferred to them.
+
+    .EXAMPLE
+    Get-AzureADAccountOccurrence -userPrincipalName pavel@contoso.com | Remove-AzureADAccountOccurrence -whatIf
+
+    Get all occurrences of specified user and just output what would be done with them.
+
+    .EXAMPLE
+    Get-AzureADAccountOccurrence -userPrincipalName pavel@contoso.com | Remove-AzureADAccountOccurrence
+
+    Get all occurrences of specified user and remove them.
+    In case user has registered some devices, they stay intact.
+
+    .EXAMPLE
+    Get-AzureADAccountOccurrence -userPrincipalName pavel@contoso.com | Remove-AzureADAccountOccurrence -removeRegisteredDevice
+
+    Get all occurrences of specified user and remove them.
+    In case user has registered some devices, they will be deleted.
+
+    .EXAMPLE
+    Get-AzureADAccountOccurrence -userPrincipalName pavel@contoso.com | Remove-AzureADAccountOccurrence -replaceByUser 1234-1234-1234-1234
+
+    Get all occurrences of specified user and remove them.
+    In case user is owner or manager on some object(s) he will be replaced there by specified user (for ownerships this apply only if removed user is last owner).
+    In case user has registered some devices, they stay intact.
+
+    .EXAMPLE
+    Get-AzureADAccountOccurrence -userPrincipalName pavel@contoso.com | Remove-AzureADAccountOccurrence -replaceByManager
+
+    Get all occurrences of specified user and remove them.
+    In case user is owner or manager on some object(s) he will be replaced there by his manager (for ownerships this apply only if removed user is last owner).
+    In case user has registered some devices, they stay intact.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [PSCustomObject] $inputObject,
+
+        [string] $replaceByUser,
+
+        [switch] $replaceByManager,
+
+        [switch] $whatIf,
+
+        [switch] $removeRegisteredDevice,
+
+        [switch] $informNewManOwn
+    )
+
+    begin {
+        if ($replaceByUser -and $replaceByManager) {
+            throw "replaceByUser and replaceByManager cannot be used together. Choose one of them."
+        }
+
+        if ($informNewManOwn -and (!$replaceByUser -and !$replaceByManager)) {
+            Write-Warning "Parameter 'informNewManOwn' will be ignored because no replacements will be made."
+            $informNewManOwn = $false
+        }
+
+        #region connect
+        # connect to AzureAD
+        Write-Verbose "Connecting to AzureAD"
+        $null = Connect-AzureAD2 -asYourself -ea Stop
+
+        Write-Verbose "Connecting to AzAccount"
+        $null = Connect-AzAccount2 -ea Stop
+
+        # connect sharepoint online
+        if ($inputObject.SharepointSiteOwner) {
+            Write-Verbose "Connecting to Sharepoint"
+            Connect-PnPOnline2 -asMFAUser -ea Stop
+        }
+        #endregion connect
+
+        if ($informNewManOwn) {
+            $newManOwnReport = @()
+        }
+    }
+
+    process {
+        # check replacement user account
+        if ($replaceByUser) {
+            $replacementAADAccountObj = Get-AzureADUser -ObjectId $replaceByUser
+            if (!$replacementAADAccountObj) {
+                throw "Replacement account $replaceByUser was not found in AAD"
+            } else {
+                Write-Warning "'$($replacementAADAccountObj.DisplayName)' will be new manager/owner instead of account that is being removed"
+            }
+        }
+
+        $inputObject | % {
+            <#
+            Object (as a output of Get-AzureADAccountOccurrence) should have these properties:
+                UPN
+                DisplayName
+                ObjectType
+                ObjectId
+                IAM
+                MemberOfDirectoryRole
+                MemberOfGroup
+                PermissionConsent
+                Owner
+                SharepointSiteOwner
+                AppUsersAndGroupsRoleAssignment
+            #>
+
+            $accountId = $_.ObjectId
+            $accountDisplayName = $_.DisplayName
+
+            "Processing cleanup on account '$accountDisplayName' ($accountId)"
+
+            $AADAccountObj = Get-AzureADObjectByObjectId -ObjectId $accountId
+            if (!$AADAccountObj) {
+                Write-Error "Account $accountId was not found in AAD"
+            }
+
+            if ($replaceByManager) {
+                if ($_.ObjectType -eq 'user') {
+                    $replacementAADAccountObj = Get-AzureADUserManager -ObjectId $accountId
+                    if (!$replacementAADAccountObj) {
+                        throw "Account '$accountDisplayName' doesn't have a manager. Specify replacement account via 'replaceByUser' parameter?"
+                    } else {
+                        Write-Warning "User's manager '$($replacementAADAccountObj.DisplayName)' will be new manager/owner instead of account that is being removed"
+                    }
+                } else {
+                    Write-Warning "Account $accountId isn't a user ($($_.ObjectType)). Parameter 'replaceByManager' will be ignored."
+                }
+            }
+
+            # prepare base object for storing data for later email notification
+            if ($informNewManOwn -and $replacementAADAccountObj) {
+                $newManOwnObj = [PSCustomObject]@{
+                    replacedUserObjectId = $accountId
+                    replacedUserName     = $accountDisplayName
+                    newUserEmail         = $replacementAADAccountObj.mail
+                    newUserName          = $replacementAADAccountObj.DisplayName
+                    newUserObjectId      = $replacementAADAccountObj.ObjectId
+                    message              = @()
+                }
+            }
+
+            #region remove AAD account occurrences
+
+            #region IAM
+            if ($_.IAM) {
+                Write-Verbose "Removing IAM assignments"
+                $tenantId = (Get-AzContext).tenant.id
+
+                $_.IAM | select ObjectId, AssignmentScope, RoleDefinitionName -Unique | % {
+                    # $Context = Set-AzContext -TenantId $tenantId -SubscriptionId $_.SubscriptionId -Force
+                    "Removing IAM role '$($_.RoleDefinitionName)' at scope '$($_.AssignmentScope)'"
+                    if (!$whatIf) {
+                        Remove-AzRoleAssignment -ObjectId $_.ObjectId -Scope $_.AssignmentScope -RoleDefinitionName $_.RoleDefinitionName
+                    }
+                }
+            }
+            #endregion IAM
+
+            #region group membership
+            if ($_.MemberOfGroup) {
+                $_.MemberOfGroup | % {
+                    "Removing from group '$($_.displayName)' ($($_.id))"
+                    if (!$whatIf) {
+                        Remove-AzureADGroupMember -ObjectId $_.id -MemberId $accountId
+                    }
+                }
+            }
+            #endregion group membership
+
+            #region membership directory role
+            if ($_.MemberOfDirectoryRole) {
+                $_.MemberOfDirectoryRole | % {
+                    "Removing from directory role '$($_.displayName)' ($($_.id))"
+                    if (!$whatIf) {
+                        Remove-AzureADDirectoryRoleMember -ObjectId $_.id -MemberId $accountId
+                    }
+                }
+            }
+            #endregion membership directory role
+
+            #region user perm consents
+            if ($_.PermissionConsent) {
+                $_.PermissionConsent | % {
+                    "Removing user consent from app '$($_.AppName)', permission '$($_.scope)' to '$($_.ResourceDisplayName)'"
+                    if (!$whatIf) {
+                        Remove-AzureADOAuth2PermissionGrant -ObjectId $_.ObjectId
+                    }
+                }
+            }
+            #endregion user perm consents
+
+            #region manager
+            if ($_.Manager) {
+                $_.Manager | % {
+                    $manager = $_
+                    $managerObjectType = $_.ObjectType
+                    $managerDisplayName = $_.DisplayName
+                    $managerObjectId = $_.ObjectId
+
+                    switch ($manager.ObjectType) {
+                        User {
+                            "Removing as a manager of the $managerObjectType '$managerDisplayName' ($managerObjectId)"
+                            if (!$whatIf) {
+                                Remove-AzureADUserManager -ObjectId $managerObjectId
+                            }
+                            if ($replacementAADAccountObj) {
+                                "Adding '$($replacementAADAccountObj.DisplayName)' as a manager of the $managerObjectType '$managerDisplayName' ($managerObjectId)"
+                                if (!$whatIf) {
+                                    Set-AzureADUserManager -ObjectId $managerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
+
+                                    if ($informNewManOwn) {
+                                        $newManOwnObj.message += @("new manager of the $managerObjectType '$managerDisplayName' ($managerObjectId)")
+                                    }
+                                }
+                            }
+                        }
+
+                        Contact {
+                            "Removing as a manager of the $managerObjectType '$managerDisplayName' ($managerObjectId)"
+                            if (!$whatIf) {
+                                Remove-AzureADContactManager -ObjectId $managerObjectId
+                            }
+                            if ($replacementAADAccountObj) {
+                                Write-Warning "Add '$($replacementAADAccountObj.DisplayName)' as a manager of the $managerObjectType '$managerDisplayName' ($managerObjectId) manually!"
+                            }
+                        }
+
+                        default {
+                            Write-Error "Not defined action for object type $managerObjectType. User won't be removed as a manager of this object."
+                        }
+                    }
+                }
+            }
+            #endregion manager
+
+            #region ownership
+            # application, group, .. owner
+            if ($_.Owner) {
+                $_.Owner | % {
+                    $owner = $_
+                    $ownerDisplayName = $_.DisplayName
+                    $ownerObjectId = $_.ObjectId
+
+                    switch ($owner.ObjectType) {
+                        Application {
+                            # app registration
+                            "Removing owner from app registration '$ownerDisplayName'"
+                            if (!$whatIf) {
+                                Remove-AzureADApplicationOwner -ObjectId $ownerObjectId -OwnerId $accountId
+                            }
+
+                            if ($replacementAADAccountObj) {
+                                $recentObjOwner = Get-AzureADApplicationOwner -ObjectId $ownerObjectId -All:$true | ? ObjectId -NE $accountId
+                                if (!$recentObjOwner) {
+                                    "Adding '$($replacementAADAccountObj.DisplayName)' as owner of the '$ownerDisplayName' application"
+                                    if (!$whatIf) {
+                                        Add-AzureADApplicationOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
+
+                                        if ($informNewManOwn) {
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' application ($ownerObjectId)")
+                                        }
+                                    }
+                                } else {
+                                    Write-Warning "App registration has some owners left. '$($replacementAADAccountObj.DisplayName)' won't be added."
+                                }
+                            }
+                        }
+
+                        ServicePrincipal {
+                            # enterprise apps owner
+                            "Removing owner from service principal '$ownerDisplayName'"
+                            if (!$whatIf) {
+                                Remove-AzureADServicePrincipalOwner -ObjectId $ownerObjectId -OwnerId $accountId
+                            }
+
+                            if ($replacementAADAccountObj) {
+                                $recentObjOwner = Get-AzureADServicePrincipalOwner -ObjectId $ownerObjectId -All:$true | ? ObjectId -NE $accountId
+                                if (!$recentObjOwner) {
+                                    "Adding '$($replacementAADAccountObj.DisplayName)' as owner of the '$ownerDisplayName' service principal"
+                                    if (!$whatIf) {
+                                        Add-AzureADServicePrincipalOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
+
+                                        if ($informNewManOwn) {
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' service principal ($ownerObjectId)")
+                                        }
+                                    }
+                                } else {
+                                    Write-Warning "Service principal has some owners left. '$($replacementAADAccountObj.DisplayName)' won't be added."
+                                }
+                            }
+                        }
+
+                        Group {
+                            # adding new owner before removing the old one because group won't let you remove last owner
+                            if ($replacementAADAccountObj) {
+                                $recentObjOwner = Get-AzureADGroupOwner -ObjectId $ownerObjectId -All:$true | ? ObjectId -NE $accountId
+                                if (!$recentObjOwner) {
+                                    "Adding '$($replacementAADAccountObj.DisplayName)' as owner of the '$ownerDisplayName' group"
+                                    if (!$whatIf) {
+                                        Add-AzureADGroupOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
+
+                                        if ($informNewManOwn) {
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' group ($ownerObjectId)")
+                                        }
+                                    }
+                                } else {
+                                    Write-Warning "Group has some owners left. '$($replacementAADAccountObj.DisplayName)' won't be added."
+                                }
+                            }
+
+                            "Removing owner from group '$ownerDisplayName'"
+                            if (!$whatIf) {
+                                Remove-AzureADGroupOwner -ObjectId $ownerObjectId -OwnerId $accountId
+                            }
+                        }
+
+                        Device {
+                            if ($owner.DeviceTrustType -eq 'Workplace') {
+                                # registered device
+                                if ($removeRegisteredDevice) {
+                                    "Removing registered device '$ownerDisplayName' ($ownerObjectId)"
+                                    if (!$whatIf) {
+                                        Remove-AzureADDevice -ObjectId $ownerObjectId
+                                    }
+                                } else {
+                                    Write-Warning "Registered device '$ownerDisplayName' won't be deleted nor owner of this device will be removed"
+                                }
+                            } else {
+                                # joined device
+                                "Removing owner from device '$ownerDisplayName' ($ownerObjectId)"
+                                if (!$whatIf) {
+                                    Remove-AzureADDeviceRegisteredOwner -ObjectId $ownerObjectId -OwnerId $accountId
+                                }
+                            }
+
+                            if ($replacementAADAccountObj) {
+                                Write-Verbose "Device owner won't be replaced by '$($replacementAADAccountObj.DisplayName)' because I don't want to"
+                            }
+                        }
+
+                        default {
+                            Write-Error "Not defined action for object type $($owner.ObjectType). User won't be removed as a owner of this object."
+                        }
+                    }
+                }
+            }
+
+            # sharepoint sites owner
+            if ($_.SharepointSiteOwner) {
+                $_.SharepointSiteOwner | % {
+                    if ($_.template -like 'GROUP*') {
+                        # it is sharepoint site based on group (owners are group members)
+                        "Removing from group '$($_.Title)' that has owner rights on Sharepoint site '$($_.Site)'"
+                        if (!$whatIf) {
+                            Remove-PnPMicrosoft365GroupOwner -Identity $_.GroupId -Users $userPrincipalName
+                        }
+
+                        if ($replacementAADAccountObj) {
+                            $recentObjOwner = Get-PnPMicrosoft365GroupOwner -Identity $_.GroupId -All:$true | ? Id -NE $accountId
+                            if (!$recentObjOwner) {
+                                "Adding '$($replacementAADAccountObj.DisplayName)' as owner of the '$($_.Title)' group"
+                                if (!$whatIf) {
+                                    Add-PnPMicrosoft365GroupOwner -Identity $_.GroupId -Users $replacementAADAccountObj.UserPrincipalName
+
+                                    if ($informNewManOwn) {
+                                        $newManOwnObj.message += @("new owner of the '$($_.Title)' group ($($_.GroupId))")
+                                    }
+                                }
+                            } else {
+                                Write-Warning "Sharepoint site has some owners left. '$($replacementAADAccountObj.DisplayName)' won't be added."
+                            }
+                        }
+                    } else {
+                        # it is common sharepoint site
+                        Write-Warning "Remove owner from Sharepoint site '$($_.url)' manually"
+                        # "Removing from sharepoint site '$($_.url)'"
+                        # https://www.sharepointdiary.com/2018/02/change-site-owner-in-sharepoint-online-using-powershell.html
+                        # https://www.sharepointdiary.com/2020/05/sharepoint-online-grant-site-owner-permission-to-user-with-powershell.html
+
+                        if ($replacementAADAccountObj) {
+                            Write-Warning "Add '$($replacementAADAccountObj.UserPrincipalName)' as new owner at Sharepoint site '$($_.url)' manually"
+                            # "Adding '$($replacementAADAccountObj.DisplayName)' as owner of the '$($_.url)' sharepoint site"
+                            # Set-PnPSite -Identity $_.url -Owners $replacementAADAccountObj.UserPrincipalName # prida jen jako admina..ne primary admina (ownera)
+                            # Set-PnPTenantSite -Identity $_.url -Owners $replacementAADAccountObj.UserPrincipalName # prida jen jako admina..ne primary admina (ownera)
+                        }
+                    }
+                }
+            }
+            #endregion ownership
+
+            #region app Users and groups role assignments
+            if ($_.AppUsersAndGroupsRoleAssignment) {
+                $_.AppUsersAndGroupsRoleAssignment | % {
+                    "Removing $($_.PrincipalType) from app's '$($_.ResourceDisplayName)' role '$($_.AppRoleDisplayName)'"
+                    if (!$whatIf) {
+                        Remove-AzureADServiceAppRoleAssignment -ObjectId $_.ResourceId -AppRoleAssignmentId $_.ObjectId
+                    }
+                }
+            }
+            #endregion app Users and groups role assignments
+
+            #region devops
+            if ($_.DevOpsOrganizationOwner) {
+                $_.DevOpsOrganizationOwner | % {
+                    Write-Warning "Remove owner of DevOps organization '$($_.OrganizationName))' manually"
+                    if ($replacementAADAccountObj) {
+                        Write-Warning "Add '$($replacementAADAccountObj.UserPrincipalName)' as new owner of the DevOps organization '$($_.OrganizationName))' manually"
+                    }
+                }
+            }
+
+            if ($_.DevOpsMemberOf) {
+                $header = New-AzureDevOpsAuthHeader
+
+                $_.DevOpsMemberOf | % {
+                    $accountDescriptor = $_.Descriptor
+                    $organizationName = $_.OrganizationName
+                    $_.memberOf | % {
+                        $groupDescriptor = $_.descriptor
+                        "Removing from DevOps organization's '$organizationName' group '$($_.principalName)'"
+
+                        if (!$whatIf) {
+                            $result = Invoke-WebRequest -Uri "https://vssps.dev.azure.com/$organizationName/_apis/graph/memberships/$accountDescriptor/$($groupDescriptor)?api-version=7.1-preview.1" -Method delete -ContentType "application/json" -Headers $header
+                            if ($result.StatusCode -ne 200) {
+                                Write-Error "Removal of account '$accountDisplayName' in DevOps organization '$organizationName' from group '$($_.displayName)' wasn't successful. Do it manually."
+                            }
+                        }
+                    }
+                }
+            }
+            #endregion devops
+
+            #endregion remove AAD account occurrences
+
+            # save object with made changes for later email notification
+            if ($informNewManOwn -and $replacementAADAccountObj) {
+                $newManOwnReport += $newManOwnObj
+            }
+        }
+    }
+
+    end {
+        if ($informNewManOwn -and $newManOwnReport.count) {
+            $newManOwnReport | % {
+                if ($_.message) {
+                    # there were some changes in ownership
+                    if ($_.newUserEmail) {
+                        # new owner/manager has email address defined
+                        $newUserRole = "as chosen successor"
+                        if ($replaceByManager -or ((Get-AzureADUserManager -ObjectId $_.replacedUserObjectId).ObjectId -eq $_.newUserObjectId)) {
+                            $newUserRole = "as his/her manager"
+                        }
+
+                        $body = "Hi,`nemployee '$($_.replacedUserName)' left the company and you $newUserRole are now:`n`n$(($_.message | % {" - $_"}) -join "`n")`n`nThese changes are related to Azure environment.`n`n`Sincerely your IT"
+
+                        Write-Warning "Sending email to: $($_.newUserEmail) body:`n`n$body"
+                        Send-Email -to $_.newUserEmail -subject "Notification of new Azure assets responsibility" -body $body
+                    } else {
+                        Write-Warning "Cannot inform new owner/manager '$($_.newUserName)' about transfer of Azure asset from '$($_.replacedUserName)'. Email address is missing.`n`n$($_.message -join "`n")"
+                    }
+                } else {
+                    Write-Verbose "No asset was transferred to the '$($_.newUserName)' from the '$($_.replacedUserName)'"
+                }
+            }
+        }
+    }
+}
+
+#Requires -Modules Microsoft.Graph.Identity.SignIns,AzureAD
+
+function Remove-AzureADAppUserConsent {
+    <#
+    .SYNOPSIS
+    Function for removing permission consents.
+
+    .DESCRIPTION
+    Function for removing permission consents.
+
+    For selected OAuth2PermissionGrantId(s) or OGV with filtered grants will be shown (based on servicePrincipalObjectId, principalObjectId, resourceObjectId you specify).
+
+    .PARAMETER OAuth2PermissionGrantId
+    ID of the OAuth permission grant(s).
+
+    .PARAMETER servicePrincipalObjectId
+    ObjectId of the enterprise app for which was the consent given.
+
+    .PARAMETER principalObjectId
+    ObjectId of the user which have given the consent.
+
+    .PARAMETER resourceObjectId
+    ObjectId of the resource to which the consent have given permission to.
+
+    .EXAMPLE
+    Remove-AzureADAppUserConsent -OAuth2PermissionGrantId L5awNI6RwE-QWiIIWcNMqYIrr-lfQ2BBnaYK1kev_X5Q2a7DBw0rSKTgiBsrZi4z
+
+    Consent with ID L5awNI6RwE-QWiIIWcNMqYIrr-lfQ2BBnaYK1kev_X5Q2a7DBw0rSKTgiBsrZi4z will be deleted.
+
+    .EXAMPLE
+    Remove-AzureADAppUserConsent
+
+    OGV with all grants will be shown and just selected consent(s) will be deleted.
+
+    .EXAMPLE
+    Remove-AzureADAppUserConsent -principalObjectId 1234 -servicePrincipalObjectId 5678
+
+    OGV with consent(s) related to user with ID 1234 and enterprise application with ID 5678 will be shown and just selected consent(s) will be deleted.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "id")]
+        [string[]] $OAuth2PermissionGrantId,
+
+        [Parameter(ParameterSetName = "filter")]
+        [string] $servicePrincipalObjectId,
+
+        [Parameter(ParameterSetName = "filter")]
+        [string] $principalObjectId,
+
+        [Parameter(ParameterSetName = "filter")]
+        [string] $resourceObjectId
+    )
+
+    Connect-AzureAD2
+    Connect-MSGraph
+
+    $objectByObjectId = @{}
+    function GetObjectByObjectId ($objectId) {
+        if (!$objectByObjectId.ContainsKey($objectId)) {
+            Write-Verbose ("Querying Azure AD for object '{0}'" -f $objectId)
+            try {
+                $object = Get-AzureADObjectByObjectId -ObjectId $objectId -ea stop
+                $objectByObjectId.$objectId = $object
+                return $object
+            } catch {
+                Write-Verbose "Object not found."
+            }
+        }
+        return $objectByObjectId.$objectId
+    }
+
+    if ($OAuth2PermissionGrantId) {
+        $OAuth2PermissionGrantId | % {
+            Remove-MgOauth2PermissionGrant -OAuth2PermissionGrantId $_ -Confirm:$true
+        }
+    } else {
+        $filter = ""
+
+        if ($servicePrincipalObjectId) {
+            if ($filter) { $filter = $filter + " and " }
+            $filter = $filter + "clientId eq '$servicePrincipalObjectId'"
+        }
+        if ($principalObjectId) {
+            if ($filter) { $filter = $filter + " and " }
+            $filter = $filter + "principalId eq '$principalObjectId'"
+        }
+        if ($resourceObjectId) {
+            if ($filter) { $filter = $filter + " and " }
+            $filter = $filter + "resourceId eq '$resourceObjectId'"
+        }
+
+        $param = @{}
+        if ($filter) { $param.filter = $filter }
+
+        Get-MgOauth2PermissionGrant @param -Property ClientId, ConsentType, PrincipalId, ResourceId, Scope, Id | select @{n = 'App'; e = { (GetObjectByObjectId $_.ClientId).DisplayName } }, ConsentType, @{n = 'Principal'; e = { (GetObjectByObjectId $_.PrincipalId).DisplayName } }, @{n = 'Resource'; e = { (GetObjectByObjectId $_.ResourceId).DisplayName } }, Scope, Id | Out-GridView -OutputMode Multiple | % {
+            Remove-MgOauth2PermissionGrant -OAuth2PermissionGrantId $_.Id -Confirm:$true
+        }
+    }
+}
+
+Export-ModuleMember -function Add-AzureADAppCertificate, Add-AzureADAppUserConsent, Add-AzureADGuest, Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Disable-AzureADGuest, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADAppRegistration, Get-AzureADAppUsersAndGroups, Get-AzureADAppVerificationStatus, Get-AzureADAssessNotificationEmail, Get-AzureADEnterpriseApplication, Get-AzureAdGroupMemberRecursive, Get-AzureADManagedIdentity, Get-AzureADResource, Get-AzureADRoleAssignments, Get-AzureADServicePrincipalOverview, Get-AzureADSPPermissions, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureADMSIPConditionalAccessPolicy, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage, Remove-AzureADAccountOccurrence, Remove-AzureADAppUserConsent
+
+Export-ModuleMember -alias Get-AzureADIAMRoleAssignments, Get-AzureADPSPermissionGrants, Get-AzureADPSPermissions, Get-AzureADRBACRoleAssignments, Get-AzureADServiceAppRoleAssignment2, Get-AzureADServicePrincipal2, Get-AzureADServicePrincipalPermissions, Get-IntuneAuthHeader, New-AzureADGuest, New-IntuneAuthHeader, Remove-AzureADGuest

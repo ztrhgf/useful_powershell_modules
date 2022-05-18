@@ -1,4 +1,141 @@
-﻿function ConvertFrom-MDMDiagReport {
+﻿#Requires -Modules Microsoft.Graph.Intune,WindowsAutoPilotIntune
+
+function Connect-MSGraph2 {
+    <#
+    .SYNOPSIS
+    Function for connecting to Microsoft Graph.
+
+    .DESCRIPTION
+    Function for connecting to Microsoft Graph.
+    Support (interactive) user or application authentication
+    Without specifying any parameters, interactive user auth. will be used.
+
+    To use app. auth. tenantId, appId and appSecret parameters have to be specified!
+    TIP: you can use credential parameter to pass appId and appSecret securely
+
+    .PARAMETER TenantId
+    ID of your tenant.
+
+    Default is $_tenantId.
+
+    .PARAMETER AppId
+    Azure AD app ID (GUID) for the application that will be used to authenticate
+
+    .PARAMETER AppSecret
+    Specifies the Azure AD app secret corresponding to the app ID that will be used to authenticate.
+    Can be generated in Azure > 'App Registrations' > SomeApp > 'Certificates & secrets > 'Client secrets'.
+
+    .PARAMETER Credential
+    Credential object that can be used both for user and app authentication.
+
+    .PARAMETER Beta
+    Set schema to beta.
+
+    .PARAMETER returnConnection
+    Switch for returning connection info (like original Connect-AzureAD command do).
+
+    .EXAMPLE
+    Connect-MSGraph2
+
+    Connect to MS Graph interactively using user authentication.
+
+    .EXAMPLE
+    Connect-MSGraph2 -TenantId 1111 -AppId 1234 -AppSecret 'pass'
+
+    Connect to MS Graph using app. authentication.
+
+    .EXAMPLE
+    Connect-MSGraph2 -TenantId 1111 -credential (Get-Credential)
+
+    Connect to MS Graph using app. authentication. AppId and AppSecret will be extracted from credential object.
+
+    .EXAMPLE
+    Connect-MSGraph2 -credential (Get-Credential)
+
+    Connect to MS Graph using user authentication.
+
+    .NOTES
+    Requires module Microsoft.Graph.Intune
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    [Alias("Connect-MSGraphApp2")]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
+        [Parameter(Mandatory = $true, ParameterSetName = "App2Auth")]
+        [string] $tenantId = $_tenantId
+        ,
+        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
+        [string] $appId
+        ,
+        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
+        [string] $appSecret
+        ,
+        [Parameter(Mandatory = $true, ParameterSetName = "App2Auth")]
+        [Parameter(Mandatory = $true, ParameterSetName = "UserAuth")]
+        [System.Management.Automation.PSCredential] $credential,
+
+        [switch] $beta,
+
+        [switch] $returnConnection
+    )
+
+    if (!(Get-Command Connect-MSGraph -ea silent)) {
+        throw "Module Microsoft.Graph.Intune is missing"
+    }
+    if (!(Get-Command Connect-MSGraphApp -ea silent)) {
+        throw "Module WindowsAutoPilotIntune is missing"
+    }
+
+    if ($beta) {
+        if ((Get-MSGraphEnvironment).SchemaVersion -ne "beta") {
+            $null = Update-MSGraphEnvironment -SchemaVersion beta
+        }
+    }
+
+    if ($tenantId -and (($appId -and $appSecret) -or $credential)) {
+        Write-Verbose "Authenticating using app auth."
+
+        if (!$appId -and $credential) {
+            $appId = $credential.UserName
+        }
+        if (!$appSecret -and $credential) {
+            $appSecret = $credential.GetNetworkCredential().password
+        }
+
+        $param = @{
+            Tenant      = $tenantId
+            AppId       = $appId
+            AppSecret   = $appSecret
+            ErrorAction = 'Stop'
+        }
+
+        if ($returnConnection) {
+            Connect-MSGraphApp @param
+        } else {
+            $null = Connect-MSGraphApp @param
+        }
+        Write-Verbose "Connected to Intune tenant $tenantId"
+    } else {
+        Write-Verbose "Authenticating using user auth."
+
+        $param = @{
+            ErrorAction = 'Stop'
+        }
+        if ($credential) {
+            $param.Credential = $credential
+        }
+
+        if ($returnConnection) {
+            Connect-MSGraph @param
+        } else {
+            $null = Connect-MSGraph @param
+        }
+        Write-Verbose "Connected to Intune tenant using user authentication"
+    }
+}
+
+function ConvertFrom-MDMDiagReport {
     <#
     .SYNOPSIS
     Function for converting MDMDiagReport.html to PowerShell object.
@@ -902,6 +1039,128 @@ function ConvertFrom-MDMDiagReportXML {
     }
 }
 
+#Requires -Modules AzureRM.Profile
+
+function Get-BitlockerEscrowStatusForAzureADDevices {
+    <#
+      .SYNOPSIS
+      Retrieves bitlocker key upload status for all azure ad devices
+
+      .DESCRIPTION
+      Use this report to determine which of your devices have backed up their bitlocker key to AzureAD (and find those that haven't and are at risk of data loss!).
+      Report will be stored in current folder.
+
+      .PARAMETER Credential
+      Optional, pass a credential object to automatically sign in to Azure AD. Global Admin permissions required
+
+      .PARAMETER showBitlockerKeysInReport
+      Switch, is supplied, will show the actual recovery keys in the report. Be careful where you distribute the report to if you use this
+
+      .PARAMETER showAllOSTypesInReport
+      By default, only the Windows OS is reported on, if for some reason you like the additional information this report gives you about devices in general, you can add this switch to show all OS types
+
+      .EXAMPLE
+      Get-BitlockerEscrowStatusForAzureADDevices | ? {$_.DeviceAccountEnabled -and $_.'OS Drive encrypted' -and $_.OS -eq "Windows" -and !$_.lastKeyUploadDate}
+
+      Returns devices with enabled Bitlocker but no recovery key in Azure
+
+      .NOTES
+      filename: get-bitlockerEscrowStatusForAzureADDevices.ps1
+      author: Jos Lieben
+      blog: www.lieben.nu
+      created: 9/4/2019
+    #>
+
+    [cmdletbinding()]
+    Param(
+        $Credential,
+
+        [Switch]$showBitlockerKeysInReport,
+
+        [Switch]$showAllOSTypesInReport
+    )
+
+    Import-Module AzureRM.Profile -ErrorAction Stop
+    if (!(Get-Module -Name "AzureADPreview", "AzureAD" -ListAvailable)) {
+        throw "AzureADPreview nor AzureAD module is available"
+    }
+    if (Get-Module -Name "AzureADPreview" -ListAvailable) {
+        Import-Module AzureADPreview
+    } elseif (Get-Module -Name "AzureAD" -ListAvailable) {
+        Import-Module AzureAD
+    }
+
+    if ($Credential) {
+        Try {
+            Connect-AzureAD -Credential $Credential -ErrorAction Stop | Out-Null
+        } Catch {
+            Write-Warning "Couldn't connect to Azure AD non-interactively, trying interactively."
+            Connect-AzureAD -TenantId $(($Credential.UserName.Split("@"))[1]) -ErrorAction Stop | Out-Null
+        }
+
+        Try {
+            Login-AzureRmAccount -Credential $Credential -ErrorAction Stop | Out-Null
+        } Catch {
+            Write-Warning "Couldn't connect to Azure RM non-interactively, trying interactively."
+            Login-AzureRmAccount -TenantId $(($Credential.UserName.Split("@"))[1]) -ErrorAction Stop | Out-Null
+        }
+    } else {
+        Login-AzureRmAccount -ErrorAction Stop | Out-Null
+    }
+    $context = Get-AzureRmContext
+    $tenantId = $context.Tenant.Id
+    $refreshToken = @($context.TokenCache.ReadItems() | where { $_.tenantId -eq $tenantId -and $_.ExpiresOn -gt (Get-Date) })[0].RefreshToken
+    $body = "grant_type=refresh_token&refresh_token=$($refreshToken)&resource=74658136-14ec-4630-ad9b-26e160ff0fc6"
+    $apiToken = Invoke-RestMethod "https://login.windows.net/$tenantId/oauth2/token" -Method POST -Body $body -ContentType 'application/x-www-form-urlencoded'
+    $restHeader = @{
+        'Authorization'          = 'Bearer ' + $apiToken.access_token
+        'X-Requested-With'       = 'XMLHttpRequest'
+        'x-ms-client-request-id' = [guid]::NewGuid()
+        'x-ms-correlation-id'    = [guid]::NewGuid()
+    }
+    Write-Verbose "Connected, retrieving devices..."
+    $restResult = Invoke-RestMethod -Method GET -UseBasicParsing -Uri "https://main.iam.ad.ext.azure.com/api/Devices?nextLink=&queryParams=%7B%22searchText%22%3A%22%22%7D&top=15" -Headers $restHeader
+    $allDevices = @()
+    $allDevices += $restResult.value
+    while ($restResult.nextLink) {
+        $restResult = Invoke-RestMethod -Method GET -UseBasicParsing -Uri "https://main.iam.ad.ext.azure.com/api/Devices?nextLink=$([System.Web.HttpUtility]::UrlEncode($restResult.nextLink))&queryParams=%7B%22searchText%22%3A%22%22%7D&top=15" -Headers $restHeader
+        $allDevices += $restResult.value
+    }
+
+    Write-Verbose "Retrieved $($allDevices.Count) devices from AzureAD, processing information..."
+
+    $csvEntries = @()
+    foreach ($device in $allDevices) {
+        if (!$showAllOSTypesInReport -and $device.deviceOSType -notlike "Windows*") {
+            Continue
+        }
+        $keysKnownToAzure = $False
+        $osDriveEncrypted = $False
+        $lastKeyUploadDate = $Null
+        if ($device.deviceOSType -eq "Windows" -and $device.bitLockerKey.Count -gt 0) {
+            $keysKnownToAzure = $True
+            $keys = $device.bitLockerKey | Sort-Object -Property creationTime -Descending
+            if ($keys.driveType -contains "Operating system drive") {
+                $osDriveEncrypted = $True
+            }
+            $lastKeyUploadDate = $keys[0].creationTime
+            if ($showBitlockerKeysInReport) {
+                $bitlockerKeys = ""
+                foreach ($key in $device.bitlockerKey) {
+                    $bitlockerKeys += "$($key.creationTime)|$($key.driveType)|$($key.recoveryKey)|"
+                }
+            } else {
+                $bitlockerKeys = "HIDDEN FROM REPORT: READ INSTRUCTIONS TO REVEAL KEYS"
+            }
+        } else {
+            $bitlockerKeys = "NOT UPLOADED YET OR N/A"
+        }
+
+        $csvEntries += [PSCustomObject]@{"Name" = $device.displayName; "BitlockerKeysUploadedToAzureAD" = $keysKnownToAzure; "OS Drive encrypted" = $osDriveEncrypted; "lastKeyUploadDate" = $lastKeyUploadDate; "DeviceAccountEnabled" = $device.accountEnabled; "managed" = $device.isManaged; "ManagedBy" = $device.managedBy; "lastLogon" = $device.approximateLastLogonTimeStamp; "Owner" = $device.Owner.userPrincipalName; "bitlockerKeys" = $bitlockerKeys; "OS" = $device.deviceOSType; "OSVersion" = $device.deviceOSVersion; "Trust Type" = $device.deviceTrustType; "dirSynced" = $device.dirSyncEnabled; "Compliant" = $device.isCompliant; "trustTypeDisplayValue" = $device.trustTypeDisplayValue; "creationTimeStamp" = $device.creationTimeStamp }
+    }
+    $csvEntries
+}
+
 function Get-ClientIntunePolicyResult {
     <#
         .SYNOPSIS
@@ -1612,6 +1871,1256 @@ function Get-ClientIntunePolicyResult {
     #endregion output the results (as object or HTML report)
 }
 
+function Get-HybridADJoinStatus {
+    <#
+    .SYNOPSIS
+    Function returns computer's Hybrid AD Join status.
+
+    .DESCRIPTION
+    Function returns computer's Hybrid AD Join status.
+
+    .PARAMETER computerName
+    Name of the computer you want to get status of.
+
+    .PARAMETER wait
+    How many seconds should function wait when checking AAD certificates creation.
+
+    .EXAMPLE
+    Get-HybridADJoinStatus
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $computerName,
+
+        [int] $wait = 0
+    )
+
+    $param = @{
+        scriptBlock  = {
+            param ($wait)
+
+            # check certificates
+            Write-Verbose "Two valid certificates should exist in Computer Personal cert. store (issuer: MS-Organization-Access, MS-Organization-P2P-Access [$(Get-Date -Format yyyy)]"
+
+            while (!($hybridJoinCert = Get-ChildItem 'Cert:\LocalMachine\My\' | ? { $_.Issuer -match "MS-Organization-Access|MS-Organization-P2P-Access \[\d+\]" }) -and $wait -gt 0) {
+                Start-Sleep 1
+                --$wait
+                Write-Verbose $wait
+            }
+
+            # check certificate validity
+            if ($hybridJoinCert) {
+                $validHybridJoinCert = $hybridJoinCert | ? { $_.NotAfter -gt [datetime]::Now -and $_.NotBefore -lt [datetime]::Now }
+            }
+
+            # check AzureAd join status
+            $dsreg = dsregcmd.exe /status
+            if (($dsreg | Select-String "AzureAdJoined :") -match "YES") {
+                ++$AzureAdJoined
+            }
+
+            if ($AzureAdJoined -and $validHybridJoinCert -and @($validHybridJoinCert).count -ge 2 ) {
+                return $true
+            } else {
+                if (!$AzureAdJoined) {
+                    Write-Warning "$env:COMPUTERNAME is not AzureAD joined"
+                } elseif (!$hybridJoinCert) {
+                    Write-Warning "AzureAD certificates doesn't exist"
+                } elseif ($hybridJoinCert -and !$validHybridJoinCert) {
+                    Write-Warning "AzureAD certificates exists but are expired"
+                } elseif ($hybridJoinCert -and @($validHybridJoinCert).count -lt 2) {
+                    Write-Warning "AzureAD certificates exists but one of them is expired"
+                }
+
+                return $false
+            }
+        }
+
+        argumentList = $wait
+    }
+
+    if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        $param.computerName = $computerName
+    }
+
+    Invoke-Command @param
+}
+
+function Get-IntuneDeviceComplianceStatus {
+    <#
+    .SYNOPSIS
+    Function for getting device compliance status from Intune.
+
+    .DESCRIPTION
+    Function for getting device compliance status from Intune.
+    Devices can be selected by name or id. If omitted, all devices will be processed.
+
+    .PARAMETER deviceName
+    Name of device(s).
+
+    Can be combined with deviceId parameter.
+
+    .PARAMETER deviceId
+    Id(s) of device(s).
+
+    Can be combined with deviceName parameter.
+
+    .PARAMETER header
+    Authentication header.
+
+    Can be created via New-GraphAPIAuthHeader.
+
+    .PARAMETER justProblematic
+    Switch for outputting only non-compliant items.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader
+    Get-IntuneDeviceComplianceStatus -header $header
+
+    Will return compliance information for all devices in your Intune.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader
+    Get-IntuneDeviceComplianceStatus -header $header -deviceName PC-1, PC-2
+
+    Will return compliance information for PC-1, PC-2 from Intune.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string[]] $deviceName,
+
+        [string[]] $deviceId,
+
+        [hashtable] $header,
+
+        [switch] $justProblematic
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    if (!$header) {
+        # authenticate
+        Import-Module Variables
+        $header = New-GraphAPIAuthHeader -ErrorAction Stop
+    }
+
+    if (!$deviceName -and !$deviceId) {
+        # all devices will be processed
+        Write-Warning "You haven't specified device name or id, all devices will be processed"
+        $deviceId = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$select=id" -Method Get).value | select -ExpandProperty Id
+    } elseif ($deviceName) {
+        $deviceName | % {
+            #TODO limit returned properties using select filter
+            $id = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$_'" -Method Get).value | select -ExpandProperty Id
+            if ($id) {
+                Write-Verbose "$_ was translated to $id"
+                $deviceId += $id
+            } else {
+                Write-Warning "Device $_ wasn't found"
+            }
+        }
+    }
+
+    $deviceId = $deviceId | select -Unique
+
+    foreach ($devId in $deviceId) {
+        Write-Verbose "Processing device $devId"
+        # get list of all compliance policies of this particular device
+        $deviceCompliancePolicy = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices('$devId')/deviceCompliancePolicyStates" -Method Get).value
+
+        if ($deviceCompliancePolicy) {
+            # get detailed information for each compliance policy (mainly errorDescription)
+            $deviceCompliancePolicy | % {
+                $deviceComplianceId = $_.id
+                $deviceComplianceStatus = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices('$devId')/deviceCompliancePolicyStates('$deviceComplianceId')/settingStates" -Method Get).value
+
+                if ($justProblematic) {
+                    $deviceComplianceStatus = $deviceComplianceStatus | ? { $_.state -ne "compliant" }
+                }
+
+                $name = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/manageddevices('$devId')?`$select=deviceName" -Method Get).deviceName
+
+                $deviceComplianceStatus | select @{n = 'deviceName'; e = { $name } }, state, errorDescription, userPrincipalName , setting, sources
+            }
+        } else {
+            Write-Warning "There are no compliance policies for $devId device"
+        }
+    }
+}
+
+function Get-IntuneEnrollmentStatus {
+    <#
+    .SYNOPSIS
+    Function for checking whether computer is managed by Intune (fulfill all requirements).
+
+    .DESCRIPTION
+    Function for checking whether computer is managed by Intune (fulfill all requirements).
+    What is checked:
+     - device is AAD joined
+     - device is joined to Intune
+     - device has valid Intune certificate
+     - device has Intune sched. tasks
+     - device has Intune registry keys
+     - Intune service exists
+
+    Returns true or false.
+
+    .PARAMETER computerName
+    (optional) name of the computer to check.
+
+    .PARAMETER checkIntuneToo
+    Switch for checking Intune part too (if device is listed there).
+
+    .PARAMETER wait
+    Number of seconds function should wait when checking Intune certificate existence.
+
+    Default is 0.
+
+    .EXAMPLE
+    Get-IntuneEnrollmentStatus
+
+    Check Intune status on local computer.
+
+    .EXAMPLE
+    Get-IntuneEnrollmentStatus -computerName ae-50-pc
+
+    Check Intune status on computer ae-50-pc.
+
+    .EXAMPLE
+    Get-IntuneEnrollmentStatus -computerName ae-50-pc -checkIntuneToo
+
+    Check Intune status on computer ae-50-pc, plus connects to Intune and check whether ae-50-pc exists there.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-IntuneJoinStatus")]
+    param (
+        [string] $computerName,
+
+        [switch] $checkIntuneToo,
+
+        [int] $wait = 0
+    )
+
+    if (!$computerName) { $computerName = $env:COMPUTERNAME }
+
+    #region get Intune data
+    if ($checkIntuneToo) {
+        $ErrActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Stop"
+
+        try {
+            if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
+                $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
+            } else {
+                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID"
+            }
+
+            Connect-MSGraph2
+
+            $intuneObj = @()
+
+            $intuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+
+            if ($ADObj.ObjectGUID) {
+                # because of bug? computer can be listed under guid_date name in cloud
+                $intuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+            }
+        } catch {
+            Write-Warning "Unable to get information from Intune. $_"
+
+            # to avoid errors that device is missing from Intune
+            $intuneObj = 1
+        }
+
+        $ErrorActionPreference = $ErrActionPreference
+    }
+    #endregion get Intune data
+
+    $scriptBlock = {
+        param ($checkIntuneToo, $intuneObj, $wait)
+
+        $intuneNotJoined = 0
+
+        #region Intune checks
+        if ($checkIntuneToo) {
+            if (!$intuneObj) {
+                ++$intuneNotJoined
+                Write-Warning "Device is missing from Intune!"
+            }
+
+            if ($intuneObj.count -gt 1) {
+                Write-Warning "Device is listed $($intuneObj.count) times in Intune"
+            }
+
+            $wrongIntuneName = $intuneObj.DeviceName | ? { $_ -ne $env:COMPUTERNAME }
+            if ($wrongIntuneName) {
+                Write-Warning "Device is named as $wrongIntuneName in Intune"
+            }
+
+            $correctIntuneName = $intuneObj.DeviceName | ? { $_ -eq $env:COMPUTERNAME }
+            if ($intuneObj -and !$correctIntuneName) {
+                ++$intuneNotJoined
+                Write-Warning "Device has no record in Intune with correct device name"
+            }
+        }
+        #endregion Intune checks
+
+        #region dsregcmd checks
+        $dsregcmd = dsregcmd.exe /status
+        $azureAdJoined = $dsregcmd | Select-String "AzureAdJoined : YES"
+        if (!$azureAdJoined) {
+            ++$intuneNotJoined
+            Write-Warning "Device is NOT AAD joined"
+        }
+
+        $tenantName = $dsregcmd | Select-String "TenantName : .+"
+        if (!$tenantName) {
+            Write-Verbose "TenantName is missing in 'dsregcmd.exe /status' output"
+        }
+        $MDMUrl = $dsregcmd | Select-String "MdmUrl : .+"
+        if (!$MDMUrl) {
+            ++$intuneNotJoined
+            Write-Warning "Device is NOT Intune joined"
+        }
+        #endregion dsregcmd checks
+
+        #region certificate checks
+        while (!($MDMCert = Get-ChildItem 'Cert:\LocalMachine\My\' | ? Issuer -EQ "CN=Microsoft Intune MDM Device CA") -and $wait -gt 0) {
+            Start-Sleep 1
+            --$wait
+            Write-Verbose $wait
+        }
+        if (!$MDMCert) {
+            ++$intuneNotJoined
+            Write-Warning "Intune certificate is missing"
+        } elseif ($MDMCert.NotAfter -lt (Get-Date) -or $MDMCert.NotBefore -gt (Get-Date)) {
+            ++$intuneNotJoined
+            Write-Warning "Intune certificate isn't valid"
+        }
+        #endregion certificate checks
+
+        #region sched. task checks
+        $MDMSchedTask = Get-ScheduledTask | ? { $_.TaskPath -like "*Microsoft*Windows*EnterpriseMgmt\*" -and $_.TaskName -eq "PushLaunch" }
+        $enrollmentGUID = $MDMSchedTask | Select-Object -ExpandProperty TaskPath -Unique | ? { $_ -like "*-*-*" } | Split-Path -Leaf
+        if (!$enrollmentGUID) {
+            ++$intuneNotJoined
+            Write-Warning "Synchronization sched. task is missing"
+        }
+        #endregion sched. task checks
+
+        #region registry checks
+        if ($enrollmentGUID) {
+            $missingRegKey = @()
+            $registryKeys = "HKLM:\SOFTWARE\Microsoft\Enrollments", "HKLM:\SOFTWARE\Microsoft\Enrollments\Status", "HKLM:\SOFTWARE\Microsoft\EnterpriseResourceManager\Tracked", "HKLM:\SOFTWARE\Microsoft\PolicyManager\AdmxInstalled", "HKLM:\SOFTWARE\Microsoft\PolicyManager\Providers", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Logger", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Sessions"
+            foreach ($key in $registryKeys) {
+                if (!(Get-ChildItem -Path $key -ea SilentlyContinue | Where-Object { $_.Name -match $enrollmentGUID })) {
+                    Write-Warning "Registry key $key is missing"
+                    ++$intuneNotJoined
+                }
+            }
+        }
+        #endregion registry checks
+
+        #region service checks
+        $MDMService = Get-Service -Name IntuneManagementExtension -ErrorAction SilentlyContinue
+        if (!$MDMService) {
+            ++$intuneNotJoined
+            Write-Warning "Intune service IntuneManagementExtension is missing"
+        }
+        if ($MDMService -and $MDMService.Status -ne "Running") {
+            Write-Warning "Intune service IntuneManagementExtension is not running"
+        }
+        #endregion service checks
+
+        if ($intuneNotJoined) {
+            return $false
+        } else {
+            return $true
+        }
+    }
+
+    $param = @{
+        scriptBlock  = $scriptBlock
+        argumentList = $checkIntuneToo, $intuneObj, $wait
+    }
+    if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        $param.computerName = $computerName
+    }
+
+    Invoke-Command @param
+}
+
+function Get-IntuneOverallComplianceStatus {
+    <#
+    .SYNOPSIS
+    Function for getting overall device compliance status from Intune.
+
+    .DESCRIPTION
+    Function for getting overall device compliance status from Intune.
+
+    .PARAMETER header
+    Authentication header.
+
+    Can be created via New-GraphAPIAuthHeader.
+
+    .PARAMETER justProblematic
+    Switch for outputting only non-compliant items.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -credential $cred
+    Get-IntuneOverallComplianceStatus -header $header
+
+    Will return compliance information for all devices in your Intune.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -credential $cred
+    Get-IntuneOverallComplianceStatus -header $header -justProblematic
+
+    Will return just information about non-compliant devices in your Intune.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable] $header
+        ,
+        [switch] $justProblematic
+    )
+
+    # helper hashtable for storing devices compliance data
+    # just for performance optimization
+    $deviceComplianceData = @{}
+
+    # get compliant devices
+    $URI = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?`$select=id&`$filter=complianceState eq 'compliant'"
+    $compliantDevice = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    # get overall compliance policies per-setting status
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/deviceCompliancePolicySettingStateSummaries'
+    $complianceSummary = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+    $complianceSummary = $complianceSummary | select @{n = 'Name'; e = { ($_.settingName -split "\.")[-1] } }, nonCompliantDeviceCount, errorDeviceCount, conflictDeviceCount, id
+
+    if ($justProblematic) {
+        # preserve just problematic ones
+        $complianceSummary = $complianceSummary | ? { $_.nonCompliantDeviceCount -or $_.errorDeviceCount -or $_.conflictDeviceCount }
+    }
+
+    if ($complianceSummary) {
+        $complianceSummary | % {
+            $complianceSettingId = $_.id
+
+            Write-Verbose $complianceSettingId
+            Write-Warning "Processing $($_.name)"
+
+            # add help text, to help understand, what this compliance setting validates
+            switch ($_.name) {
+                'RequireRemainContact' { Write-Warning "`t- devices that haven't contacted Intune for last 30 days" }
+                'RequireDeviceCompliancePolicyAssigned' { Write-Warning "`t- devices without any compliance policy assigned" }
+                'ConfigurationManagerComplianceRequired' { Write-Warning "`t- devices that are not compliant in SCCM" }
+            }
+
+            # get devices, where this particular compliance setting is not ok
+            $URI = "https://graph.microsoft.com/v1.0/deviceManagement/deviceCompliancePolicySettingStateSummaries/$complianceSettingId/deviceComplianceSettingStates?`$filter=NOT(state eq 'compliant')"
+            $complianceStatus = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+            if ($justProblematic) {
+                # preserve just problematic ones
+                # omit devices that have some non compliant items but overall device status is compliant (i.e. ignore typically old, per user non-compliant statuses)
+                $complianceStatus = $complianceStatus | ? { $_.state -ne "compliant" -and $_.DeviceId -notin $compliantDevice.Id }
+            }
+
+            # loop through all devices that are not compliant (get details) and output the result
+            $deviceDetails = $complianceStatus | % {
+                $deviceId = $_.deviceId
+                $deviceName = $_.deviceName
+                $userPrincipalName = $_.userPrincipalName
+
+                Write-Verbose "Processing $deviceName with id: $deviceId and UPN: $userPrincipalName"
+
+                #region get error details (if exists) for this particular device and compliance setting
+                if (!($deviceComplianceData.$deviceName)) {
+                    Write-Verbose "Getting compliance data for $deviceName"
+                    $deviceComplianceData.$deviceName = Get-IntuneDeviceComplianceStatus -deviceId $deviceId -justProblematic -header $header
+                }
+
+                if ($deviceComplianceData.$deviceName) {
+                    # get error details for this particular compliance setting
+                    $errorDescription = $deviceComplianceData.$deviceName | ? { $_.setting -eq $complianceSettingId -and $_.userPrincipalName -eq $userPrincipalName -and $_.errorDescription -ne "No error code" } | select -ExpandProperty errorDescription -Unique
+                }
+                #endregion get error details (if exists) for this particular device and compliance setting
+
+                # output result
+                $_ | select deviceName, userPrincipalName, state, @{n = 'errDetails'; e = { $errorDescription } } | sort state, deviceName
+            }
+
+            # output result for this compliance setting
+            [PSCustomObject]@{
+                Name                    = $_.name
+                NonCompliantDeviceCount = $_.nonCompliantDeviceCount
+                ErrorDeviceCount        = $_.errorDeviceCount
+                ConflictDeviceCount     = $_.conflictDeviceCount
+                DeviceDetails           = $deviceDetails
+            }
+        }
+    }
+}
+
+function Get-IntuneReport {
+    <#
+    .SYNOPSIS
+    Function for getting Intune Reports data. As zip file (csv) or PS object.
+
+    .DESCRIPTION
+    Function for getting Intune Reports data. As zip file (csv) or PS object.
+    It uses Graph API for connection.
+
+    In case selected report needs additional information, like what application you want report for, GUI with available options will be outputted for you to choose.
+
+    .PARAMETER reportName
+    Name of the report you want to get.
+
+    POSSIBLE VALUES:
+    https://docs.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-available-reports
+
+    reportName	                            Associated Report in Microsoft Endpoint Manager
+    DeviceCompliance	                    Device Compliance Org
+    DeviceNonCompliance	                    Non-compliant devices
+    Devices	                                All devices list
+    DetectedAppsAggregate	                Detected Apps report
+    FeatureUpdatePolicyFailuresAggregate	Under Devices > Monitor > Failure for feature updates
+    DeviceFailuresByFeatureUpdatePolicy	    Under Devices > Monitor > Failure for feature updates > click on error
+    FeatureUpdateDeviceState	            Under Reports > Window Updates > Reports > Windows Feature Update Report 
+    UnhealthyDefenderAgents	                Under Endpoint Security > Antivirus > Win10 Unhealthy Endpoints
+    DefenderAgents	                        Under Reports > MicrosoftDefender > Reports > Agent Status
+    ActiveMalware	                        Under Endpoint Security > Antivirus > Win10 detected malware
+    Malware	                                Under Reports > MicrosoftDefender > Reports > Detected malware
+    AllAppsList	                            Under Apps > All Apps
+    AppInstallStatusAggregate	            Under Apps > Monitor > App install status
+    DeviceInstallStatusByApp	            Under Apps > All Apps > Select an individual app
+    UserInstallStatusAggregateByApp	        Under Apps > All Apps > Select an individual app
+
+    .PARAMETER header
+    Authentication header.
+
+    Can be created via New-GraphAPIAuthHeader.
+
+    .PARAMETER filter
+    String that represents Graph request API filter.
+
+    For example: PolicyId eq 'a402829f-8ba2-4413-969b-077a97ba218c'
+
+    PS: Some reports (FeatureUpdateDeviceState, DeviceInstallStatusByApp, UserInstallStatusAggregateByApp) requires filter to target the update/application. In case you don't specify it, list of available values will be given to choose.
+
+    .PARAMETER exportPath
+    Path to folder, where report should be stored.
+
+    Default is working folder.
+
+    .PARAMETER asObject
+    Switch for getting results as PS object instead of zip file.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -ErrorAction Stop
+    $reportData = Get-IntuneReport -header $header -reportName Devices -asObject
+
+    Return object with 'All devices list' report data.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -ErrorAction Stop
+    Get-IntuneReport -header $header -reportName DeviceNonCompliance
+
+    Download zip archive to current working folder containing csv file with 'Non-compliant devices' report.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -ErrorAction Stop
+    Get-IntuneReport -header $header -reportName FeatureUpdateDeviceState -filter "PolicyId eq 'a402829f-8ba2-4413-969b-077a97ba218c'"
+
+    .NOTES
+    You need to have Azure App registration with appropriate API permissions for Graph API for unattended usage!
+
+    With these API permissions all reports work (but maybe not all are really needed!)
+    Application.Read.All
+    Device.Read.All
+    DeviceManagementApps.Read.All
+    DeviceManagementConfiguration.Read.All
+    DeviceManagementManagedDevices.Read.All
+    ProgramControl.Read.All
+    Reports.Read.All
+
+    .LINK
+    https://docs.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-apis
+    https://docs.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-available-reports
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('DeviceCompliance', 'DeviceNonCompliance', 'Devices', 'DetectedAppsAggregate', 'FeatureUpdatePolicyFailuresAggregate', 'DeviceFailuresByFeatureUpdatePolicy', 'FeatureUpdateDeviceState', 'UnhealthyDefenderAgents', 'DefenderAgents', 'ActiveMalware', 'Malware', 'AllAppsList', 'AppInstallStatusAggregate', 'DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp')]
+        [string] $reportName
+        ,
+        [hashtable] $header
+        ,
+        [string] $filter
+        ,
+        [ValidateScript( {
+                If (Test-Path $_ -PathType Container) {
+                    $true
+                } else {
+                    Throw "$_ has to be existing folder"
+                }
+            })]
+        [string] $exportPath = (Get-Location)
+        ,
+        [switch] $asObject
+    )
+
+    begin {
+        $ErrorActionPreference = "Stop"
+
+        if (!$header) {
+            # authenticate
+            Import-Module Variables
+            $header = New-GraphAPIAuthHeader -ErrorAction Stop
+        }
+
+        #region prepare filter for FeatureUpdateDeviceState report if not available
+        if ($reportName -eq 'FeatureUpdateDeviceState' -and (!$filter -or $filter -notmatch "^PolicyId eq ")) {
+            Write-Warning "Report FeatureUpdateDeviceState requires special filter in form: `"PolicyId eq '<somePolicyId>'`""
+            $body = @{
+                name = "FeatureUpdatePolicy"
+            }
+            $filterResponse = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/getReportFilters" -Body $body -Method Post
+            $column = $filterResponse.schema.column
+            $filterList = $filterResponse.values | % {
+                $filterItem = $_
+
+                $property = @{}
+                $o = 0
+                $column | % {
+                    $property.$_ = $filterItem[$o]
+                    ++$o
+                }
+                New-Object -TypeName PSObject -Property $property
+            }
+
+            $filter = $filterList | Out-GridView -Title "Select Update type you want the report for" -OutputMode Single | % { "PolicyId eq '$($_.PolicyId)'" }
+            Write-Verbose "Filter will be: $filter"
+        }
+        #endregion prepare filter for FeatureUpdateDeviceState report if not available
+
+        #region prepare filter for DeviceInstallStatusByApp/UserInstallStatusAggregateByApp report if not available
+        if ($reportName -in ('DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp') -and (!$filter -or $filter -notmatch "^PolicyId eq ")) {
+            Write-Warning "Report $reportName requires filter in form: `"ApplicationId eq '<someApplicationId>'`""
+            # get list of all available applications
+            $allApps = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=(microsoft.graph.managedApp/appAvailability%20eq%20null%20or%20microsoft.graph.managedApp/appAvailability%20eq%20%27lineOfBusiness%27%20or%20isAssigned%20eq%20true)&`$orderby=displayName&" -Method Get).Value | select displayName, isAssigned, productVersion, id
+
+            $filter = $allApps | Out-GridView -Title "Select Application you want the report for" -OutputMode Single | % { "ApplicationId eq '$($_.Id)'" }
+            Write-Verbose "Filter will be: $filter"
+        }
+        #endregion prepare filter for DeviceInstallStatusByApp/UserInstallStatusAggregateByApp report if not available
+    }
+
+    process {
+        #region request the report
+        $body = @{
+            reportName = $reportName
+            format     = "csv"
+            # select     = 'PolicyId', 'PolicyName', 'DeviceId'
+        }
+        if ($filter) { $body.filter = $filter }
+        Write-Warning "Requesting the report $reportName"
+        try {
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
+        } catch {
+            switch ($_) {
+                ($_ -like "*(400) Bad Request*") { throw "Faulty request. There has to be some mistake in this request" }
+                ($_ -like "*(401) Unauthorized*") { throw "Unauthorized request (try different credentials?)" }
+                ($_ -like "*Forbidden*") { throw "Forbidden access. Use account with correct API permissions for this request" }
+                default { throw $_ }
+            }
+        }
+        #endregion request the report
+
+        #region wait for generating of the report to finish
+        Write-Warning "Waiting for the report to finish generating"
+        do {
+            $export = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs('$($result.id)')" -Method Get
+
+            Start-Sleep 1
+        } while ($export.status -eq "inProgress")
+        #endregion wait for generating of the report to finish
+
+        #region download generated report
+        if ($export.status -eq "completed") {
+            $originalFileName = $export.id + ".csv"
+            $reportArchive = Join-Path $exportPath "$reportName`_$(Get-Date -Format dd-MM-HH-ss).zip"
+            Write-Warning "Downloading the report to $reportArchive"
+            $null = Invoke-WebRequest -Uri $export.url -Method Get -OutFile $reportArchive
+
+            if ($asObject) {
+                Write-Warning "Expanding $reportArchive to $env:TEMP"
+                Expand-Archive $reportArchive -DestinationPath $env:TEMP -Force
+
+                $reportCsv = Join-Path $env:TEMP $originalFileName
+                Write-Warning "Importing $reportCsv"
+                Import-Csv $reportCsv
+
+                # delete zip and also extracted csv files
+                Write-Warning "Removing zip and csv files"
+                Remove-Item $reportArchive, $reportCsv -Force
+            }
+        } else {
+            throw "Export of $reportName failed.`n`n$export"
+        }
+        #endregion download generated report
+    }
+}
+
+#Requires -Modules ActiveDirectory
+
+function Get-MDMClientData {
+    <#
+    .SYNOPSIS
+    Function for getting client management information from AD, Intune, AAD and SCCM and combine them together.
+
+    .DESCRIPTION
+    Function for getting client management information from AD, Intune, AAD and SCCM and combine them together.
+    Resultant object will have several properties with prefix AD, INTUNE, AAD or SCCM according to source of such data.
+
+    .PARAMETER computer
+    Computer(s) you want to get data about from AD, AAD, SCCM and Intune.
+    As object(s) with name, sid and ObjectGUID of AD computers OR just list of computer names (in case of duplicity records, additional data to uniquely identify the correct one will be gathered from AD).
+
+    .PARAMETER combineDataFrom
+    List of sources you want to gather data from.
+
+    Possible values are: Intune, SCCM, AAD, AD
+
+    By default all values are selected.
+
+    .PARAMETER graphCredential
+    AppID and AppSecret for Azure App registration that has permissions needed to read Azure and Intune clients data.
+
+    .PARAMETER sccmAdminServiceCredential
+    Credentials for SCCM Admin Service API authentication. Needed only if current user doesn't have correct permissions.
+
+    .EXAMPLE
+    # active AD Windows clients that belongs to some user
+    $activeADClients = Get-ADComputer -Filter "enabled -eq 'True' -and description -like '*'" -Properties description 
+
+    $problematic = Get-MDMClientData -computer $activeADClients -graphCredential $cred
+
+    .NOTES
+    Requires functions: New-GraphAPIAuthHeader, Invoke-CMAdminServiceQuery
+    #>
+
+    [CmdletBinding()]
+    param (
+        $computer = (Get-ADComputer -Filter "enabled -eq 'True' -and description -like '*'" -Properties 'Name', 'sid', 'LastLogonDate', 'Enabled', 'DistinguishedName', 'Description', 'PasswordLastSet', 'ObjectGUID' | ? { $_.LastLogonDate -ge [datetime]::Today.AddDays(-90) }),
+
+        [ValidateSet('Intune', 'SCCM', 'AAD', 'AD')]
+        [string[]] $combineDataFrom = ('Intune', 'SCCM', 'AAD', 'AD'),
+
+        [Alias("intuneCredential")]
+        [System.Management.Automation.PSCredential] $graphCredential,
+
+        [System.Management.Automation.PSCredential] $sccmAdminServiceCredential
+    )
+
+    #region checks
+    if (!$computer) { throw "Computer parameter is missing" }
+
+    if ($combineDataFrom -contains "Intune") {
+        try {
+            $null = Get-Command New-GraphAPIAuthHeader -ErrorAction Stop
+        } catch {
+            throw "New-GraphAPIAuthHeader command isn't available"
+        }
+    }
+
+    if ($combineDataFrom -contains "SCCM") {
+        try {
+            $null = Get-Command Invoke-CMAdminServiceQuery -ErrorAction Stop
+        } catch {
+            throw "Invoke-CMAdminServiceQuery command isn't available"
+        }
+    }
+
+    # it needs originally installed ActiveDirectory module, NOT copied/hacked one!
+    if (!(Get-Module ActiveDirectory -ListAvailable)) {
+        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+            throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools"
+        } else {
+            throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
+        }
+    }
+    #endregion checks
+
+    #region helper functions
+    function _ClientCheckPass {
+        # translates number code to message
+        param ($ClientCheckPass)
+
+        switch ($ClientCheckPass) {
+            1 { return "Passed" }
+            2 { return "Failed" }
+            3 { return "No results" }
+            default { return "Not evaluated" }
+        }
+    }
+
+    function _computerHasValidHybridJoinCertificate {
+        # extracted from Export-ADSyncToolsHybridAzureADjoinCertificateReport.ps1
+        # https://github.com/azureautomation/export-hybrid-azure-ad-join-computer-certificates-report--updated-
+
+        [CmdletBinding()]
+        param ([string]$computerName)
+
+        $searcher = [adsisearcher]"(&(objectCategory=computer)(name=$computerName))"
+        $searcher.PageSize = 500
+        $searcher.PropertiesToLoad.AddRange(('usercertificate', 'name'))
+        # $searcher.searchRoot = [adsi]"LDAP://OU=Computer_Accounts,DC=contoso,DC=com"
+        $obj = $searcher.FindOne()
+        $searcher.Dispose()
+        if (!$obj) { throw "Unable to get $computerName" }
+
+        $userCertificateList = @($obj.properties.usercertificate)
+        $validEntries = @()
+        $totalEntriesCount = $userCertificateList.Count
+        Write-Verbose "'$computerName' has $totalEntriesCount entries in UserCertificate property."
+        If ($totalEntriesCount -eq 0) {
+            Write-Warning "'$computerName' has no Certificates - Skipped."
+            return $false
+        }
+        # Check each UserCertificate entry and build array of valid certs
+        ForEach ($entry in $userCertificateList) {
+            Try {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2] $entry
+            } Catch {
+                Write-Verbose "'$computerName' has an invalid Certificate!"
+                Continue
+            }
+            Write-Verbose "'$computerName' has a Certificate with Subject: $($cert.Subject); Thumbprint:$($cert.Thumbprint)."
+            $validEntries += $cert
+
+        }
+
+        $validEntriesCount = $validEntries.Count
+        Write-Verbose "'$computerName' has a total of $validEntriesCount certificates (shown above)."
+
+        # Get non-expired Certs (Valid Certificates)
+        $validCerts = @($validEntries | Where-Object { $_.NotAfter -ge (Get-Date) })
+        $validCertsCount = $validCerts.Count
+        Write-Verbose "'$computerName' has $validCertsCount valid certificates (not-expired)."
+
+        # Check for AAD Hybrid Join Certificates
+        $hybridJoinCerts = @()
+        $hybridJoinCertsThumbprints = [string] "|"
+        ForEach ($cert in $validCerts) {
+            $certSubjectName = $cert.Subject
+            If ($certSubjectName.StartsWith($("CN=$objectGuid")) -or $certSubjectName.StartsWith($("CN={$objectGuid}"))) {
+                $hybridJoinCerts += $cert
+                $hybridJoinCertsThumbprints += [string] $($cert.Thumbprint) + '|'
+            }
+        }
+
+        $hybridJoinCertsCount = $hybridJoinCerts.Count
+        if ($hybridJoinCertsCount -gt 0) {
+            Write-Verbose "'$computerName' has $hybridJoinCertsCount AAD Hybrid Join Certificates with Thumbprints: $hybridJoinCertsThumbprints"
+            if ($hybridJoinCertsCount.count -lt 15) {
+                # more than 15 certificates would cause fail
+                return $true
+            } else {
+                return $false
+            }
+        } else {
+            Write-Verbose "'$computerName' has no AAD Hybrid Join Certificates"
+            return $false
+        }
+    }
+    #endregion helper functions
+
+    #region get data
+    if ($combineDataFrom -contains "Intune" -or $combineDataFrom -contains "AAD") {
+        $header = New-GraphAPIAuthHeader -credential $graphCredential -ErrorAction Stop
+    }
+
+    if ($combineDataFrom -contains "Intune") {
+        $intuneDevice = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices" -Method Get).Value | select deviceName, deviceEnrollmentType, lastSyncDateTime, aadRegistered, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
+
+        # interactive user auth example
+        # Connect-MSGraph
+        # Get-DeviceManagement_ManagedDevices | select deviceName, deviceEnrollmentType, lastSyncDateTime, @{n = 'aadRegistered'; e = { $_.azureADRegistered } }, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
+    }
+
+    if ($combineDataFrom -contains "SCCM") {
+        $properties = 'Name', 'Domain', 'IsClient', 'IsActive', 'ClientCheckPass', 'ClientActiveStatus', 'LastActiveTime', 'ADLastLogonTime', 'CoManaged', 'IsMDMActive', 'PrimaryUser', 'SerialNumber', 'MachineId', 'UserName'
+        $param = @{
+            source = "v1.0/Device"
+            select = $properties
+        }
+        if ($sccmAdminServiceCredential) {
+            $param.credential = $sccmAdminServiceCredential
+        }
+        $sccmDevice = Invoke-CMAdminServiceQuery @param | select $properties
+
+        # add more information
+        $properties = 'ResourceID', 'InstallDate'
+        $param = @{
+            source = "wmi/SMS_G_System_OPERATING_SYSTEM"
+            select = $properties
+        }
+        if ($sccmAdminServiceCredential) {
+            $param.credential = $sccmAdminServiceCredential
+        }
+        $additionalData = Invoke-CMAdminServiceQuery @param | select $properties
+
+        $sccmDevice = $sccmDevice | % {
+            $deviceAdtData = $additionalData | ?  ResourceID -EQ $_.MachineId
+            $_ | select *, @{n = 'InstallDate'; e = { if ($deviceAdtData.InstallDate) { Get-Date $deviceAdtData.InstallDate } } }, @{n = 'LastBootUpTime'; e = { if ($deviceAdtData.LastBootUpTime) { Get-Date $deviceAdtData.LastBootUpTime } } }
+        }
+    }
+
+    if ($combineDataFrom -contains "AAD") {
+        $aadDevice = Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/devices" -header $header | select displayName, accountEnabled, approximateLastSignInDateTime, deviceOwnership, enrollmentType, isCompliant, isManaged, managementType, onPremisesSyncEnabled, onPremisesLastSyncDateTime, profileType, deviceId
+    }
+    #endregion get data
+
+    # fill object properties
+    foreach ($cmp in $computer) {
+        if ($cmp.name) {
+            # it is object
+            $name = $cmp.name
+        } elseif ($cmp.gettype().Name -eq "String") {
+            # it is string
+            $name = $cmp
+        } else {
+            $cmp
+            throw "THIS OBJECT DOESN'T CONTAIN NAME PROPERTY"
+        }
+
+        Write-Verbose $name
+
+        $deviceGUID = $deviceSID = $null
+
+        $deviceProperty = [ordered]@{
+            Name                   = $name
+            hasValidHybridJoinCert = _computerHasValidHybridJoinCertificate $name
+        }
+
+        if ($combineDataFrom -contains "AD") {
+            $property = 'Enabled', 'LastLogonDate', 'DistinguishedName', 'Description', 'Sid', 'ObjectGUID', 'PasswordLastSet'
+            $missingProperty = @()
+
+            # try to get the value from input
+            $property | % {
+                $propertyName = "AD_$_"
+                if ($cmp.$_) {
+                    switch ($_) {
+                        "SID" {
+                            $deviceProperty.$propertyName = $cmp.$_.value
+                        }
+                        "ObjectGUID" {
+                            $deviceProperty.$propertyName = $cmp.$_.guid
+                        }
+                        default {
+                            $deviceProperty.$propertyName = $cmp.$_
+                        }
+                    }
+                } else {
+                    $missingProperty += $_
+                }
+            }
+
+            if ($missingProperty) {
+                Write-Verbose "Getting missing property: $($missingProperty -join ', ')"
+                $deviceADData = Get-ADComputer -Filter "name -eq '$name'" -Property $missingProperty
+                $missingProperty | % {
+                    $propertyName = "AD_$_"
+                    switch ($_) {
+                        "SID" {
+                            $deviceProperty.$propertyName = $deviceADData.$_.value
+                        }
+                        "ObjectGUID" {
+                            $deviceProperty.$propertyName = $deviceADData.$_.guid
+                        }
+                        default {
+                            $deviceProperty.$propertyName = $deviceADData.$_
+                        }
+                    }
+                }
+            }
+        }
+
+        # getting SCCM data has to be before Intune because of comparing co-managed status
+        if ($combineDataFrom -contains "SCCM") {
+
+            $deviceSCCMRecord = @($sccmDevice | ? Name -EQ $name)
+
+            if (!$deviceSCCMRecord) {
+                $deviceProperty.SCCM_InDatabase = $false
+            } else {
+                # device is in SCCM
+                $deviceProperty.SCCM_InDatabase = $true
+
+                if ($deviceSCCMRecord.count -gt 1) {
+                    # more records with the same name
+
+                    $deviceProperty.SCCM_MultipleRecords = $deviceSCCMRecord.count
+
+                    Write-Verbose "Device $name is $($deviceSCCMRecord.count)x in SCCM database!"
+
+                    # get the correct one by using SID
+                    $deviceSID = $cmp.sid.value
+                    if (!$deviceSID) {
+                        $deviceSID = $deviceProperty.AD_SID
+                    }
+                    if (!$deviceSID) {
+                        $deviceSID = (Get-ADComputer -Filter "name -eq '$name'" -Property SID).SID.Value
+                    }
+                    if ($deviceSID) {
+                        Write-Verbose "Search for the $name with $deviceSID SID in SCCM database"
+
+                        $param = @{
+                            source = "wmi/SMS_R_SYSTEM"
+                            select = 'ResourceId'
+                            filter = "SID eq '$deviceSID'"
+                        }
+                        if ($sccmAdminServiceCredential) {
+                            $param.credential = $sccmAdminServiceCredential
+                        }
+                        $resourceId = Invoke-CMAdminServiceQuery @param | select -ExpandProperty ResourceId
+                        Write-Verbose "$name has resourceId $resourceId"
+
+                        $deviceSCCMRecord = @($sccmDevice | ? MachineId -EQ $resourceId)
+                    }
+
+                    if ($deviceSCCMRecord.count -gt 1) {
+                        # unable to narrow down the results
+
+                        if (!$deviceSID) {
+                            $erMsg = "No SID property was provided to identify the correct one, nor was found in AD."
+                        } else {
+                            $erMsg = "Unable to identify the correct one."
+                        }
+                        Write-Warning "Device $name is $($deviceSCCMRecord.count)x in SCCM database.`n$erMsg Therefore setting property deviceSCCMRecord as `$null"
+                        $deviceSCCMRecord = $null
+                    }
+                } else {
+                    $deviceProperty.SCCM_MultipleRecords = $false
+                }
+
+                if ($deviceSCCMRecord.count -eq 1) {
+                    if (!$deviceSCCMRecord.IsClient) {
+                        $deviceProperty.SCCM_ClientInstalled = $false
+                    } else {
+                        # SCCM client is installed
+
+                        $deviceProperty.SCCM_ClientInstalled = $true
+                        if ($deviceSCCMRecord.LastActiveTime) {
+                            $deviceProperty.SCCM_LastActiveTime = (Get-Date $deviceSCCMRecord.LastActiveTime)
+                        } else {
+                            $deviceProperty.SCCM_LastActiveTime = $null
+                        }
+                        $deviceProperty.SCCM_IsActive = $deviceSCCMRecord.IsActive
+                        $deviceProperty.SCCM_clientCheckPass = _ClientCheckPass $deviceSCCMRecord.ClientCheckPass
+                        $deviceProperty.SCCM_clientActiveStatus = $deviceSCCMRecord.ClientActiveStatus
+                        if ($deviceSCCMRecord.CoManaged -ne 1) {
+                            $deviceProperty.SCCM_CoManaged = $false
+                        } else {
+                            $deviceProperty.SCCM_CoManaged = $true
+                        }
+                        $deviceProperty.SCCM_User = $deviceSCCMRecord.UserName
+                        $deviceProperty.SCCM_SerialNumber = $deviceSCCMRecord.SerialNumber
+                        $deviceProperty.SCCM_MachineId = $deviceSCCMRecord.MachineId
+                        $deviceProperty.SCCM_OSInstallDate = $deviceSCCMRecord.InstallDate
+                    }
+                }
+            }
+        }
+
+        if ($combineDataFrom -contains "Intune") {
+
+            $deviceIntuneRecord = @($intuneDevice | ? DeviceName -EQ $name)
+
+            if (!$deviceIntuneRecord) {
+                Write-Verbose "$name wasn't found in Intune database, trying to get its GUID"
+
+                # try to search for it using its GUID
+                if (!$deviceGUID) {
+                    $deviceGUID = $cmp.ObjectGUID.Guid
+                }
+                if (!$deviceGUID) {
+                    $deviceGUID = $deviceProperty.AD_ObjectGUID
+                }
+                if (!$deviceGUID) {
+                    $deviceGUID = (Get-ADComputer -Filter "name -eq '$name'" -Property ObjectGUID).ObjectGUID.Guid
+                }
+                if ($deviceGUID) {
+                    Write-Verbose "Search for the $name using its $deviceGUID GUID in Intune database"
+                    # search for Intune device with GUID instead of name
+                    $deviceIntuneRecord = @($intuneDevice | ? { $_.AzureADDeviceId -eq $deviceGUID })
+                }
+            }
+
+            if (!$deviceIntuneRecord) {
+                $deviceProperty.INTUNE_InDatabase = $false
+            } else {
+                # device is in Intune
+                $deviceProperty.INTUNE_InDatabase = $true
+
+                if ($deviceIntuneRecord.count -gt 1) {
+                    # more records with the same name
+
+                    $deviceProperty.INTUNE_MultipleRecords = $deviceIntuneRecord.count
+
+                    Write-Verbose "Device $name is $($deviceIntuneRecord.count)x in Intune database!"
+
+                    # get the correct one by using GUID
+                    if (!$deviceGUID) {
+                        $deviceGUID = $cmp.ObjectGUID.Guid
+                    }
+                    if (!$deviceGUID) {
+                        $deviceGUID = $deviceProperty.AD_ObjectGUID
+                    }
+                    if (!$deviceGUID) {
+                        $deviceGUID = (Get-ADComputer -Filter "name -eq '$name'" -Property ObjectGUID).ObjectGUID.Guid
+                    }
+                    if ($deviceGUID) {
+                        Write-Verbose "Search for the $name with $deviceGUID GUID in Intune database"
+                        $deviceIntuneRecord = @($intuneDevice | ? azureADDeviceId -EQ $deviceGUID)
+                    }
+
+                    if ($deviceIntuneRecord.count -gt 1) {
+                        # unable to narrow down the results
+
+                        if (!$deviceGUID) {
+                            $erMsg = "No GUID property was provided to identify the correct one, nor was found in AD."
+                        } else {
+                            $erMsg = "Unable to identify the correct one."
+                        }
+                        Write-Warning "Device $name is $($deviceIntuneRecord.count)x in Intune database.`n$erMsg Therefore setting property deviceIntuneRecord as `$null"
+                        $deviceIntuneRecord = $null
+                    }
+                } else {
+                    $deviceProperty.INTUNE_MultipleRecords = $false
+                }
+
+                if ($deviceIntuneRecord.count -eq 1) {
+                    $deviceProperty.INTUNE_Name = $deviceIntuneRecord.deviceName
+                    $deviceProperty.INTUNE_DeviceId = $deviceIntuneRecord.azureADDeviceId
+                    $deviceProperty.INTUNE_LastSyncDateTime = $deviceIntuneRecord.lastSyncDateTime
+                    $deviceProperty.INTUNE_DeviceRegistrationState = $deviceIntuneRecord.deviceRegistrationState
+
+                    if ($deviceIntuneRecord.deviceEnrollmentType -ne "windowsCoManagement") {
+                        $deviceProperty.INTUNE_CoManaged = $false
+                    } else {
+                        $deviceProperty.INTUNE_CoManaged = $true
+                        if (!$deviceProperty.SCCM_CoManaged -and $deviceProperty.SCCM_InDatabase -and $deviceProperty.SCCM_ClientInstalled) {
+                            Write-Verbose "According to Intune, $name is co-managed even though SCCM says otherwise"
+                        }
+                    }
+
+                    if (!$deviceIntuneRecord.aadRegistered -or !$deviceIntuneRecord.azureADRegistered) {
+                        $deviceProperty.INTUNE_Registered = $false
+                    } else {
+                        $deviceProperty.INTUNE_Registered = $true
+                    }
+
+                    $deviceProperty.INTUNE_User = $deviceIntuneRecord.emailAddress
+                }
+            }
+        }
+
+        if ($combineDataFrom -contains "AAD") {
+
+            $deviceAADRecord = @($aadDevice | ? DisplayName -EQ $name)
+
+            if (!$deviceAADRecord) {
+                Write-Verbose "$name wasn't found in Intune database, trying to get its GUID"
+
+                # try to search for it using its GUID
+                if (!$deviceGUID) {
+                    $deviceGUID = $cmp.ObjectGUID.Guid
+                }
+                if (!$deviceGUID) {
+                    $deviceGUID = $deviceProperty.AD_ObjectGUID
+                }
+                if (!$deviceGUID) {
+                    $deviceGUID = (Get-ADComputer -Filter "name -eq '$name'" -Property ObjectGUID).ObjectGUID.Guid
+                }
+                if ($deviceGUID) {
+                    Write-Verbose "Search for the $name using its $deviceGUID GUID in AAD database"
+                    # search for AAD device with GUID instead of name
+                    $deviceAADRecord = @($aadDevice | ? { $_.deviceId -eq $deviceGUID })
+                }
+            }
+
+            if (!$deviceAADRecord) {
+                $deviceProperty.AAD_InDatabase = $false
+            } else {
+                # device is in AAD
+                $deviceProperty.AAD_InDatabase = $true
+
+                if ($deviceAADRecord.count -gt 1) {
+                    # more records with the same name
+
+                    $deviceProperty.AAD_MultipleRecords = $deviceAADRecord.count
+
+                    Write-Verbose "Device $name is $($deviceAADRecord.count)x in AAD database!"
+
+                    # get the correct one using GUID
+                    if (!$deviceGUID) {
+                        $deviceGUID = $cmp.ObjectGUID.Guid
+                    }
+                    if (!$deviceGUID) {
+                        $deviceGUID = $deviceProperty.AD_ObjectGUID
+                    }
+                    if (!$deviceGUID) {
+                        $deviceGUID = (Get-ADComputer -Filter "name -eq '$name'" -Property ObjectGUID).ObjectGUID.Guid
+                    }
+                    if ($deviceGUID) {
+                        Write-Verbose "Search for the $name with $deviceGUID GUID in AAD database"
+                        $deviceAADRecord = @($aadDevice | ? deviceID -EQ $deviceGUID)
+                    }
+
+                    if ($deviceAADRecord.count -gt 1) {
+                        # unable to narrow down the results
+
+                        if (!$deviceGUID) {
+                            $erMsg = "No GUID property was provided to identify the correct one, nor was found in AD."
+                        } else {
+                            $erMsg = "Unable to identify the correct one."
+                        }
+                        Write-Warning "Device $name is $($deviceAADRecord.count)x in AAD database.`n$erMsg Therefore setting property deviceAADRecord as `$null"
+                        $deviceAADRecord = $null
+                    }
+                } else {
+                    $deviceProperty.AAD_MultipleRecords = $false
+                }
+
+                if ($deviceAADRecord.count -eq 1) {
+                    $deviceProperty.AAD_Name = $deviceAADRecord.displayName
+                    $deviceProperty.AAD_LastActiveTime = $deviceAADRecord.approximateLastSignInDateTime
+                    $deviceProperty.AAD_Owner = $deviceAADRecord.deviceOwnership
+                    $deviceProperty.AAD_IsCompliant = $deviceAADRecord.isCompliant
+                    $deviceProperty.AAD_DeviceId = $deviceAADRecord.deviceId
+                    $deviceProperty.AAD_EnrollmentType = $deviceAADRecord.enrollmentType
+                    $deviceProperty.AAD_IsManaged = $deviceAADRecord.isManaged
+                    $deviceProperty.AAD_ManagementType = $deviceAADRecord.managementType
+                    $deviceProperty.AAD_OnPremisesSyncEnabled = $deviceAADRecord.onPremisesSyncEnabled
+                    $deviceProperty.AAD_ProfileType = $deviceAADRecord.profileType
+                }
+            }
+        }
+
+        New-Object -TypeName PSObject -Property $deviceProperty
+    } # end of foreach
+}
+
 function Invoke-IntuneScriptRedeploy {
     <#
     .SYNOPSIS
@@ -2290,6 +3799,548 @@ function Invoke-IntuneWin32AppRedeploy {
     }
 }
 
-Export-ModuleMember -function ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-ClientIntunePolicyResult, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy
+function Invoke-MDMReenrollment {
+    <#
+    .SYNOPSIS
+    Function for resetting device Intune management connection.
 
-Export-ModuleMember -alias Get-IntunePolicyResult, ipresult
+    .DESCRIPTION
+	Force re-enrollment of Intune managed devices.
+
+    It will:
+     - remove Intune certificates
+     - remove Intune scheduled tasks & registry keys
+     - force re-enrollment via DeviceEnroller.exe
+
+    .PARAMETER computerName
+    (optional) Name of the remote computer, which you want to re-enroll.
+
+    .PARAMETER asSystem
+    Switch for invoking re-enroll as a SYSTEM instead of logged user.
+
+    .EXAMPLE
+    Invoke-MDMReenrollment
+
+    Invoking re-enroll to Intune on local computer under logged user.
+
+    .EXAMPLE
+    Invoke-MDMReenrollment -computerName PC-01 -asSystem
+
+    Invoking re-enroll to Intune on computer PC-01 under SYSTEM account.
+
+	.NOTES
+    https://www.maximerastello.com/manually-re-enroll-a-co-managed-or-hybrid-azure-ad-join-windows-10-pc-to-microsoft-intune-without-loosing-current-configuration/
+
+	Based on work of MauriceDaly.
+    #>
+
+    [Alias("Invoke-IntuneReenrollment")]
+    [CmdletBinding()]
+    param (
+        [string] $computerName,
+
+        [switch] $asSystem
+    )
+
+    if ($computerName -and $computerName -in "localhost", $env:COMPUTERNAME) {
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "You don't have administrator rights"
+        }
+    }
+
+    $allFunctionDefs = "function Invoke-AsSystem { ${function:Invoke-AsSystem} }"
+
+    $scriptBlock = {
+        param ($allFunctionDefs, $asSystem)
+
+        try {
+            foreach ($functionDef in $allFunctionDefs) {
+                . ([ScriptBlock]::Create($functionDef))
+            }
+
+            Write-Host "Checking for MDM certificate in computer certificate store"
+
+            # Check&Delete MDM device certificate
+            Get-ChildItem 'Cert:\LocalMachine\My\' | ? Issuer -EQ "CN=Microsoft Intune MDM Device CA" | % {
+                Write-Host " - Removing Intune certificate $($_.DnsNameList.Unicode)"
+                Remove-Item $_.PSPath
+            }
+
+            # Obtain current management GUID from Task Scheduler
+            $EnrollmentGUID = Get-ScheduledTask | Where-Object { $_.TaskPath -like "*Microsoft*Windows*EnterpriseMgmt\*" } | Select-Object -ExpandProperty TaskPath -Unique | Where-Object { $_ -like "*-*-*" } | Split-Path -Leaf
+
+            # Start cleanup process
+            if ($EnrollmentGUID) {
+                $EnrollmentGUID | % {
+                    $GUID = $_
+
+                    Write-Host "Current enrollment GUID detected as $GUID"
+
+                    # Stop Intune Management Exention Agent and CCM Agent services
+                    Write-Host "Stopping MDM services"
+                    if (Get-Service -Name IntuneManagementExtension -ErrorAction SilentlyContinue) {
+                        Write-Host " - Stopping IntuneManagementExtension service..."
+                        Stop-Service -Name IntuneManagementExtension
+                    }
+                    if (Get-Service -Name CCMExec -ErrorAction SilentlyContinue) {
+                        Write-Host " - Stopping CCMExec service..."
+                        Stop-Service -Name CCMExec
+                    }
+
+                    # Remove task scheduler entries
+                    Write-Host "Removing task scheduler Enterprise Management entries for GUID - $GUID"
+                    Get-ScheduledTask | Where-Object { $_.Taskpath -match $GUID } | Unregister-ScheduledTask -Confirm:$false
+                    # delete also parent folder
+                    Remove-Item -Path "$env:WINDIR\System32\Tasks\Microsoft\Windows\EnterpriseMgmt\$GUID" -Force
+
+                    $RegistryKeys = "HKLM:\SOFTWARE\Microsoft\Enrollments", "HKLM:\SOFTWARE\Microsoft\Enrollments\Status", "HKLM:\SOFTWARE\Microsoft\EnterpriseResourceManager\Tracked", "HKLM:\SOFTWARE\Microsoft\PolicyManager\AdmxInstalled", "HKLM:\SOFTWARE\Microsoft\PolicyManager\Providers", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Accounts", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Logger", "HKLM:\SOFTWARE\Microsoft\Provisioning\OMADM\Sessions"
+                    foreach ($Key in $RegistryKeys) {
+                        Write-Host "Processing registry key $Key"
+                        # Remove registry entries
+                        if (Test-Path -Path $Key) {
+                            # Search for and remove keys with matching GUID
+                            Write-Host " - GUID entry found in $Key. Removing..."
+                            Get-ChildItem -Path $Key | Where-Object { $_.Name -match $GUID } | Remove-Item -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+
+                # Start Intune Management Extension Agent service
+                Write-Host "Starting MDM services"
+                if (Get-Service -Name IntuneManagementExtension -ErrorAction SilentlyContinue) {
+                    Write-Host " - Starting IntuneManagementExtension service..."
+                    Start-Service -Name IntuneManagementExtension
+                }
+                if (Get-Service -Name CCMExec -ErrorAction SilentlyContinue) {
+                    Write-Host " - Starting CCMExec service..."
+                    Start-Service -Name CCMExec
+                }
+
+                # Sleep
+                Write-Host "Waiting for 30 seconds prior to running DeviceEnroller"
+                Start-Sleep -Seconds 30
+
+                # Start re-enrollment process
+                Write-Host "Calling: DeviceEnroller.exe /C /AutoenrollMDM"
+                if ($asSystem) {
+                    Invoke-AsSystem -runAs SYSTEM -scriptBlock { Start-Process -FilePath "$env:WINDIR\System32\DeviceEnroller.exe" -ArgumentList "/C /AutoenrollMDM" -NoNewWindow -Wait -PassThru }
+                } else {
+                    Start-Process -FilePath "$env:WINDIR\System32\DeviceEnroller.exe" -ArgumentList "/C /AutoenrollMDM" -NoNewWindow -Wait -PassThru
+                }
+            } else {
+                throw "Unable to obtain enrollment GUID value from task scheduler. Aborting"
+            }
+        } catch [System.Exception] {
+            throw "Error message: $($_.Exception.Message)"
+        }
+    }
+
+    $param = @{
+        scriptBlock  = $scriptBlock
+        argumentList = $allFunctionDefs, $asSystem
+    }
+
+    if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        $param.computerName = $computerName
+    }
+
+    Invoke-Command @param
+}
+
+function Invoke-ReRegisterDeviceToIntune {
+    <#
+    .SYNOPSIS
+    Function for repairing Intune join connection. Useful if you delete device from AAD etc.
+
+    .DESCRIPTION
+    Function for repairing Intune join connection. Useful if you delete device from AAD etc.
+
+    .PARAMETER joinType
+    Possible values are: 'hybridAADJoined', 'AADJoined', 'AADRegistered'
+
+    .EXAMPLE
+    Invoke-ReRegisterDeviceToIntune -joinType 'hybridAADJoined'
+
+    .NOTES
+    # https://docs.microsoft.com/en-us/azure/active-directory/devices/faq
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('hybridAADJoined', 'AADJoined', 'AADRegistered')]
+        [string] $joinType
+    )
+
+    if ($joinType -eq 'hybridAADJoined') {
+        dsregcmd.exe /debug /leave
+
+        Write-Warning "Now manually synchronize device to Azure by running: Sync-ADtoAzure"
+        $choice = ""
+        while ($choice -notmatch "^[Y|N]$") {
+            $choice = Read-Host "Continue? (Y|N)"
+        }
+        if ($choice -eq "N") {
+            break
+        }
+
+        $result = dsregcmd.exe /debug /join
+        if ($result -match "Join error subcode: error_missing_device") {
+            throw "Join wasn't successful because device is not synchronized in AAD. Run Sync-ADtoAzure command, wait 10 minutes and than on client run: dsregcmd.exe /debug /join"
+        } else {
+            $result
+        }
+    } elseif ($joinType -eq 'AADJoined') {
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "You don't have administrator rights"
+        }
+
+        dsregcmd.exe /forcerecovery
+
+        "Sign out and sign in back to the device to complete the recovery"
+    } else {
+        "Go to Settings > Accounts > Access Work or School.`nSelect the account and select Disconnect.`nClick on '+ Connect' and register the device again by going through the sign in process."
+    }
+}
+
+function New-GraphAPIAuthHeader {
+    <#
+    .SYNOPSIS
+    Function for generating header that can be used for authentication of Graph API requests.
+
+    .DESCRIPTION
+    Function for generating header that can be used for authentication of Graph API requests.
+    Credentials can be given or existing AzureAD session can be reused to obtain auth. header.
+
+    .PARAMETER credential
+    Credentials for Graph API authentication (AppID + AppSecret) that will be used to obtain auth. header.
+
+    .PARAMETER reuseExistingAzureADSession
+    Switch for using existing AzureAD session (created via Connect-AzureAD) to obtain auth. header.
+
+    .PARAMETER TenantDomainName
+    Name of your Azure tenant.
+
+    .PARAMETER showDialogType
+    Modify behavior of auth. dialog window.
+
+    Possible values are: auto, always, never.
+
+    Default is 'never'.
+
+    .EXAMPLE
+    $header = New-GraphAPIAuthHeader -credential $cred
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .EXAMPLE
+    (there is existing AzureAD session already (made via Connect-AzureAD))
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .NOTES
+    https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
+    https://thesleepyadmins.com/2020/10/24/connecting-to-microsoft-graphapi-using-powershell/
+    https://github.com/microsoftgraph/powershell-intune-samples
+    https://tech.nicolonsky.ch/explaining-microsoft-graph-access-token-acquisition/
+    https://gist.github.com/psignoret/9d73b00b377002456b24fcb808265c23
+    #>
+
+    [CmdletBinding()]
+    [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader")]
+    param (
+        [Parameter(ParameterSetName = "authenticate")]
+        [System.Management.Automation.PSCredential] $credential,
+
+        [Parameter(ParameterSetName = "reuseSession")]
+        [switch] $reuseExistingAzureADSession,
+
+        [ValidateNotNullOrEmpty()]
+        $tenantDomainName = $_tenantDomain,
+
+        [ValidateSet('auto', 'always', 'never')]
+        [string] $showDialogType = 'never'
+    )
+
+    if (!$credential -and !$reuseExistingAzureADSession) {
+        $credential = (Get-Credential -Message "Enter AppID as UserName and AppSecret as Password")
+    }
+    if (!$credential -and !$reuseExistingAzureADSession) { throw "Credentials for creating Graph API authentication header is missing" }
+
+    if (!$tenantDomainName -and !$reuseExistingAzureADSession) { throw "TenantDomainName is missing" }
+
+    Write-Verbose "Getting token"
+
+    if ($reuseExistingAzureADSession) {
+        # get auth. token using the existing session created by the AzureAD PowerShell module
+        try {
+            # test if connection already exists
+            $c = Get-AzureADCurrentSessionInfo -ea Stop
+        } catch {
+            throw "There is no active session to AzureAD. Omit reuseExistingAzureADSession parameter or call this function after Connect-AzureAD."
+        }
+
+        try {
+            $ErrorActionPreference = "Stop"
+
+            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
+            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
+            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
+            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+
+            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+
+            return @{ Authorization = $token }
+        } catch {
+            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
+        }
+    } else {
+        # authenticate to obtain the token
+        $body = @{
+            Grant_Type    = "client_credentials"
+            Scope         = "https://graph.microsoft.com/.default"
+            Client_Id     = $credential.username
+            Client_Secret = $credential.GetNetworkCredential().password
+        }
+
+        $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
+
+        $token = $connectGraph.access_token
+
+        if ($token) {
+            return @{ Authorization = "Bearer $($token)" }
+        } else {
+            throw "Unable to obtain token"
+        }
+    }
+}
+
+function Reset-HybridADJoin {
+    <#
+    .SYNOPSIS
+    Function for resetting Hybrid AzureAD join connection.
+
+    .DESCRIPTION
+    Function for resetting Hybrid AzureAD join connection.
+    It will:
+     - un-join computer from AzureAD (using dsregcmd.exe)
+     - remove leftover certificates
+     - invoke rejoin (using sched. task 'Automatic-Device-Join')
+     - inform user about the result
+
+    .PARAMETER computerName
+    (optional) name of the computer you want to rejoin.
+
+    .EXAMPLE
+    Reset-HybridADJoin
+
+    Un-join and re-join this computer to AzureAD
+
+    .NOTES
+    https://www.maximerastello.com/manually-re-register-a-windows-10-or-windows-server-machine-in-hybrid-azure-ad-join/
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $computerName
+    )
+
+    Write-Warning "For join AzureAD process to work. Computer account has to exists in AzureAD already (should be synchronized via 'AzureAD Connect')!"
+
+    $allFunctionDefs = "function Invoke-AsSystem { ${function:Invoke-AsSystem} }; function Get-HybridADJoinStatus { ${function:Get-HybridADJoinStatus} }"
+
+    $param = @{
+        scriptblock  = {
+            param ($allFunctionDefs)
+
+            $ErrorActionPreference = "Stop"
+
+            foreach ($functionDef in $allFunctionDefs) {
+                . ([ScriptBlock]::Create($functionDef))
+            }
+
+            $dsreg = dsregcmd.exe /status
+            if (($dsreg | Select-String "DomainJoined :") -match "NO") {
+                throw "Computer is NOT domain joined"
+            }
+
+            #region unjoin computer from AzureAD & remove leftover certificates
+            "Un-joining $env:COMPUTERNAME from Azure"
+            Write-Verbose "by running: Invoke-AsSystem { dsregcmd.exe /leave /debug } -returnTranscript"
+            Invoke-AsSystem { dsregcmd.exe /leave /debug } #-returnTranscript
+
+            Start-Sleep 5
+            Get-ChildItem 'Cert:\LocalMachine\My\' | ? { $_.Issuer -match "MS-Organization-Access|MS-Organization-P2P-Access \[\d+\]" } | % {
+                Write-Host "Removing leftover Hybrid-Join certificate $($_.DnsNameList.Unicode)" -ForegroundColor Cyan
+                Remove-Item $_.PSPath
+            }
+            #endregion unjoin computer from AzureAD & remove leftover certificates
+
+            $dsreg = dsregcmd.exe /status
+            if (!(($dsreg | Select-String "AzureAdJoined :") -match "NO")) {
+                throw "$env:COMPUTERNAME is still joined to Azure. Run again"
+            }
+
+            #region join computer to Azure again
+            "Joining $env:COMPUTERNAME to Azure"
+            Write-Verbose "by running: Get-ScheduledTask -TaskName Automatic-Device-Join | Start-ScheduledTask"
+            Get-ScheduledTask -TaskName "Automatic-Device-Join" | Start-ScheduledTask
+            while ((Get-ScheduledTask "Automatic-Device-Join" -ErrorAction silentlyContinue).state -ne "Ready") {
+                Start-Sleep 3
+                "Waiting for sched. task 'Automatic-Device-Join' to complete"
+            }
+            if ((Get-ScheduledTask -TaskName "Automatic-Device-Join" | Get-ScheduledTaskInfo | select -exp LastTaskResult) -ne 0) {
+                throw "Sched. task Automatic-Device-Join failed. Is $env:COMPUTERNAME synchronized to AzureAD?"
+            }
+            #endregion join computer to Azure again
+
+            #region check join status
+            $hybridADJoinStatus = Get-HybridADJoinStatus -wait 30
+
+            if ($hybridADJoinStatus) {
+                "$env:COMPUTERNAME was successfully joined to AAD again. Now you should restart it and run Start-AzureADSync"
+            } else {
+                Write-Error "Join wasn't successful"
+                Write-Warning "Check if device $env:COMPUTERNAME exists in AAD"
+                Write-Warning "Run:`ngpupdate /force /target:computer`nSync-ADtoAzure"
+                Write-Warning "You can get failure reason via manual join by running: Invoke-AsSystem -scriptBlock {dsregcmd /join /debug} -returnTranscript"
+                throw 1
+            }
+            #endregion check join status
+        }
+
+        argumentList = $allFunctionDefs
+    }
+
+    if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        $param.computerName = $computerName
+    } else {
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "You don't have administrator rights"
+        }
+    }
+
+    Invoke-Command @param
+}
+
+function Reset-IntuneEnrollment {
+    <#
+    .SYNOPSIS
+    Function for resetting device Intune management enrollment.
+
+    .DESCRIPTION
+    Function for resetting device Intune management enrollment.
+
+    It will:
+     - check actual Intune status on device
+     - reset Hybrid AzureAD join
+     - remove device records from Intune
+     - remove Intune enrollment data and invoke re-enrollment
+
+    .PARAMETER computerName
+    (optional) Name of the computer.
+
+    .EXAMPLE
+    Reset-IntuneEnrollment
+
+    .EXAMPLE
+    Reset-IntuneEnrollment -computerName PC-01
+
+    .NOTES
+    # How MDM (Intune) enrollment works https://techcommunity.microsoft.com/t5/intune-customer-success/support-tip-understanding-auto-enrollment-in-a-co-managed/ba-p/834780
+    #>
+
+    [CmdletBinding()]
+    [Alias("Repair-IntuneEnrollment", "Reset-IntuneJoin", "Invoke-IntuneEnrollmentReset", "Invoke-IntuneEnrollmentRepair")]
+    param (
+        [string] $computerName = $env:COMPUTERNAME
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    if (!(Get-Module "Microsoft.Graph.Intune" -ListAvailable)) {
+        throw "Module Microsoft.Graph.Intune is missing (use Install-Module Microsoft.Graph.Intune to get it)"
+    }
+
+    #region check Intune enrollment result
+    Write-Host "Checking actual Intune enrollment status" -ForegroundColor Cyan
+    if (Get-IntuneEnrollmentStatus -computerName $computerName) {
+        $choice = ""
+        while ($choice -notmatch "^[Y|N]$") {
+            $choice = Read-Host "It seems computer $computerName is correctly enrolled to Intune. Continue? (Y|N)"
+        }
+        if ($choice -eq "N") {
+            break
+        }
+    }
+    #endregion check Intune enrollment result
+
+    #region reset Hybrid AzureAD if necessary
+    if (!(Get-HybridADJoinStatus -computerName $computerName)) {
+        Write-Host "Resetting Hybrid AzureAD connection, because there is some problem" -ForegroundColor Cyan
+        Reset-HybridADJoin -computerName $computerName
+
+        Write-Host "Waiting" -ForegroundColor Cyan
+        Start-Sleep 10
+    } else {
+        Write-Verbose "Hybrid Join status of the $computerName is OK"
+    }
+    #endregion reset Hybrid AzureAD if necessary
+
+    #region remove computer record from Intune
+    Write-Host "Removing $computerName records from Intune" -ForegroundColor Cyan
+    # to discover cases when device is in Intune named as GUID_date
+    if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
+        $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
+    } else {
+        Write-Verbose "AD module is missing, unable to obtain computer GUID"
+    }
+
+    #region get Intune data
+    Connect-MSGraph2
+
+    $IntuneObj = @()
+
+    # search device by name
+    $IntuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+
+    # search device by GUID
+    if ($ADObj.ObjectGUID) {
+        # because of bug? computer can be listed under guid_date name in cloud
+        $IntuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+    }
+    #endregion get Intune data
+
+    if ($IntuneObj) {
+        $IntuneObj | ? { $_ } | % {
+            Write-Host "Removing $($_.DeviceName) ($($_.id)) from Intune" -ForegroundColor Cyan
+            Remove-IntuneManagedDevice -managedDeviceId $_.id
+        }
+    } else {
+        Write-Host "$computerName nor its guid exists in Intune. Skipping removal." -ForegroundColor DarkCyan
+    }
+    #endregion remove computer record from Intune
+
+    Write-Host "Invoking re-enrollment of Intune connection" -ForegroundColor Cyan
+    Invoke-MDMReenrollment -computerName $computerName -asSystem
+
+    #region check Intune enrollment result
+    Write-Host "Waiting 15 seconds before checking the result" -ForegroundColor Cyan
+    Start-Sleep 15
+
+    $intuneEnrollmentStatus = Get-IntuneEnrollmentStatus -computerName $computerName -wait 30
+
+    if ($intuneEnrollmentStatus) {
+        Write-Host "DONE :)" -ForegroundColor Green
+    } else {
+        "Opening Intune logs on $computerName"
+        Get-IntuneLog -computerName $computerName
+    }
+    #endregion check Intune enrollment result
+}
+
+Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneOverallComplianceStatus, Get-IntuneReport, Get-MDMClientData, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment
+
+Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAuthHeader, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, ipresult, New-IntuneAuthHeader, Repair-IntuneEnrollment, Reset-IntuneJoin

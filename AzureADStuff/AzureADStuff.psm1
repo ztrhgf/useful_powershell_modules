@@ -948,7 +948,7 @@ function Get-AzureADAccountOccurrence {
             }
 
             'SharepointSiteOwner' {
-                $allowedObjType = 'user', 'group', 'servicePrincipal', 'device'
+                $allowedObjType = 'user'
             }
 
             'Users&GroupsRoleAssignment' {
@@ -1186,8 +1186,7 @@ function Get-AzureADAccountOccurrence {
         if ('SharepointSiteOwner' -in $data -and (_getAllowedSearchType 'SharepointSiteOwner')) {
             Write-Verbose "Getting Sharepoint sites ownership"
             Write-Progress -Activity $progressActivity -Status "Getting Sharepoint sites ownership" -PercentComplete (($i++ / $data.Count) * 100)
-
-            $sharepointSiteOwner | ? Owner -Contains $UPN | % {
+            $sharepointSiteOwner | ? { $_.Owner -contains $userPrincipalName } | % {
                 $result.SharepointSiteOwner += $_
             }
         }

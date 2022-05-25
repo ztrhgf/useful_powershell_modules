@@ -1,4 +1,5 @@
-﻿function Get-IntuneEnrollmentStatus {
+﻿#requires -modules Microsoft.Graph.Intune
+function Get-IntuneEnrollmentStatus {
     <#
     .SYNOPSIS
     Function for checking whether computer is managed by Intune (fulfill all requirements).

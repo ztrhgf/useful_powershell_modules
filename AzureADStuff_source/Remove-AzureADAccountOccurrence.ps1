@@ -208,9 +208,15 @@
             #region group membership
             if ($_.MemberOfGroup) {
                 $_.MemberOfGroup | % {
-                    "Removing from group '$($_.displayName)' ($($_.id))"
-                    if (!$whatIf) {
-                        Remove-AzureADGroupMember -ObjectId $_.id -MemberId $accountId
+                    if ($_.onPremisesSyncEnabled) {
+                        Write-Warning "Skipping removal from group '$($_.displayName)' ($($_.id)), because it is synced from on-premises AD"
+                    } elseif ($_.membershipRule) {
+                        Write-Warning "Skipping removal from group '$($_.displayName)' ($($_.id)), because it has rule-based membership"
+                    } else {
+                        "Removing from group '$($_.displayName)' ($($_.id))"
+                        if (!$whatIf) {
+                            Remove-AzureADGroupMember -ObjectId $_.id -MemberId $accountId
+                        }
                     }
                 }
             }
@@ -306,7 +312,9 @@
                                         Add-AzureADApplicationOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' application ($ownerObjectId)")
+                                            $appId = Get-AzureADApplication -ObjectId $ownerObjectId | select -ExpandProperty AppId
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/Overview/appId/$appId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' application ($url)")
                                         }
                                     }
                                 } else {
@@ -330,7 +338,9 @@
                                         Add-AzureADServicePrincipalOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' service principal ($ownerObjectId)")
+                                            $appId = Get-AzureADApplication -ObjectId $ownerObjectId | select -ExpandProperty AppId
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/ManagedAppMenuBlade/Overview/objectId/$ownerObjectId/appId/$appId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' service principal ($url)")
                                         }
                                     }
                                 } else {
@@ -349,7 +359,8 @@
                                         Add-AzureADGroupOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' group ($ownerObjectId)")
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/GroupDetailsMenuBlade/Overview/groupId/$ownerObjectId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' group ($url)")
                                         }
                                     }
                                 } else {
@@ -412,7 +423,8 @@
                                     Add-PnPMicrosoft365GroupOwner -Identity $_.GroupId -Users $replacementAADAccountObj.UserPrincipalName
 
                                     if ($informNewManOwn) {
-                                        $newManOwnObj.message += @("new owner of the '$($_.Title)' group ($($_.GroupId))")
+                                        $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/GroupDetailsMenuBlade/Overview/groupId/$($_.GroupId)"
+                                        $newManOwnObj.message += @("new owner of the '$($_.Title)' group ($url)")
                                     }
                                 }
                             } else {

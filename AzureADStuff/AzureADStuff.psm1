@@ -893,7 +893,7 @@ function Get-AzureADAccountOccurrence {
 
     # connect Graph API
     Write-Verbose "Creating Graph API auth header"
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ea Stop
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
 
     # connect sharepoint online
     if ($data -contains 'SharepointSiteOwner') {
@@ -1115,10 +1115,14 @@ function Get-AzureADAccountOccurrence {
 
         #region Group membership
         if ('GroupMembership' -in $data -and (_getAllowedSearchType 'GroupMembership')) {
-            Write-Verbose "Getting Group memberships (just Cloud based groups are evaluated!)"
+            Write-Verbose "Getting Group memberships"
             Write-Progress -Activity $progressActivity -Status "Getting Group memberships" -PercentComplete (($i++ / $data.Count) * 100)
 
-            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/users/$id/transitiveMemberOf" -header $header -ErrorAction SilentlyContinue | ? onPremisesSyncEnabled -NE $true | % {
+            # reauthenticate just in case previous steps took too much time and the token has expired in the meantime
+            Write-Verbose "Creating new auth token, just in case it expired"
+            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
+
+            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/users/$id/transitiveMemberOf" -header $header | ? { $_ } | % {
                 if ($_.'@odata.type' -eq '#microsoft.graph.directoryRole') {
                     # directory roles are added in different IF, moreover this query doesn't return custom roles
                 } elseif ($_.'@odata.context') {
@@ -1186,7 +1190,7 @@ function Get-AzureADAccountOccurrence {
         if ('SharepointSiteOwner' -in $data -and (_getAllowedSearchType 'SharepointSiteOwner')) {
             Write-Verbose "Getting Sharepoint sites ownership"
             Write-Progress -Activity $progressActivity -Status "Getting Sharepoint sites ownership" -PercentComplete (($i++ / $data.Count) * 100)
-            $sharepointSiteOwner | ? { $_.Owner -contains $userPrincipalName } | % {
+            $sharepointSiteOwner | ? { $_.Owner -contains $userPrincipalName -or $_.Owner -contains $AADAccountObj.DisplayName } | % {
                 $result.SharepointSiteOwner += $_
             }
         }
@@ -3667,9 +3671,15 @@ function Remove-AzureADAccountOccurrence {
             #region group membership
             if ($_.MemberOfGroup) {
                 $_.MemberOfGroup | % {
-                    "Removing from group '$($_.displayName)' ($($_.id))"
-                    if (!$whatIf) {
-                        Remove-AzureADGroupMember -ObjectId $_.id -MemberId $accountId
+                    if ($_.onPremisesSyncEnabled) {
+                        Write-Warning "Skipping removal from group '$($_.displayName)' ($($_.id)), because it is synced from on-premises AD"
+                    } elseif ($_.membershipRule) {
+                        Write-Warning "Skipping removal from group '$($_.displayName)' ($($_.id)), because it has rule-based membership"
+                    } else {
+                        "Removing from group '$($_.displayName)' ($($_.id))"
+                        if (!$whatIf) {
+                            Remove-AzureADGroupMember -ObjectId $_.id -MemberId $accountId
+                        }
                     }
                 }
             }
@@ -3765,7 +3775,9 @@ function Remove-AzureADAccountOccurrence {
                                         Add-AzureADApplicationOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' application ($ownerObjectId)")
+                                            $appId = Get-AzureADApplication -ObjectId $ownerObjectId | select -ExpandProperty AppId
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/Overview/appId/$appId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' application ($url)")
                                         }
                                     }
                                 } else {
@@ -3789,7 +3801,9 @@ function Remove-AzureADAccountOccurrence {
                                         Add-AzureADServicePrincipalOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' service principal ($ownerObjectId)")
+                                            $appId = Get-AzureADApplication -ObjectId $ownerObjectId | select -ExpandProperty AppId
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/ManagedAppMenuBlade/Overview/objectId/$ownerObjectId/appId/$appId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' service principal ($url)")
                                         }
                                     }
                                 } else {
@@ -3808,7 +3822,8 @@ function Remove-AzureADAccountOccurrence {
                                         Add-AzureADGroupOwner -ObjectId $ownerObjectId -RefObjectId $replacementAADAccountObj.ObjectId
 
                                         if ($informNewManOwn) {
-                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' group ($ownerObjectId)")
+                                            $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/GroupDetailsMenuBlade/Overview/groupId/$ownerObjectId"
+                                            $newManOwnObj.message += @("new owner of the '$ownerDisplayName' group ($url)")
                                         }
                                     }
                                 } else {
@@ -3871,7 +3886,8 @@ function Remove-AzureADAccountOccurrence {
                                     Add-PnPMicrosoft365GroupOwner -Identity $_.GroupId -Users $replacementAADAccountObj.UserPrincipalName
 
                                     if ($informNewManOwn) {
-                                        $newManOwnObj.message += @("new owner of the '$($_.Title)' group ($($_.GroupId))")
+                                        $url = "https://portal.azure.com/#blade/Microsoft_AAD_IAM/GroupDetailsMenuBlade/Overview/groupId/$($_.GroupId)"
+                                        $newManOwnObj.message += @("new owner of the '$($_.Title)' group ($url)")
                                     }
                                 }
                             } else {

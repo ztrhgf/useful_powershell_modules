@@ -218,6 +218,8 @@ function ConvertFrom-MDMDiagReport {
     New-Object -TypeName PSObject -Property $result
 }
 
+#Requires -Modules CommonStuff
+
 function ConvertFrom-MDMDiagReportXML {
     <#
     .SYNOPSIS
@@ -299,6 +301,12 @@ function ConvertFrom-MDMDiagReportXML {
 
         [switch] $showConnectionData
     )
+
+    if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
+        throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
+    }
+
+    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
 
     if ($asHTML) {
         # array of results that will be in the end transformed into HTML report
@@ -1161,8 +1169,6 @@ function Get-BitlockerEscrowStatusForAzureADDevices {
     $csvEntries
 }
 
-#Requires -Modules CommonStuff
-
 function Get-ClientIntunePolicyResult {
     <#
         .SYNOPSIS
@@ -1276,12 +1282,6 @@ function Get-ClientIntunePolicyResult {
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
     }
-
-    if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
-        throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
-    }
-
-    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
 
     if ($asHTML) {
         if (!(Get-Module 'PSWriteHtml') -and (!(Get-Module 'PSWriteHtml' -ListAvailable))) {

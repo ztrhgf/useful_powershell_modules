@@ -1,4 +1,5 @@
-﻿function Set-CMDeviceDJoinBlobVariable {
+﻿#requires -modules ActiveDirectory
+function Set-CMDeviceDJoinBlobVariable {
     <#
     .SYNOPSIS
     Function for enabling Offline Domain Join in OSD process of given computer.
@@ -58,6 +59,16 @@
 
         [string] $domainName = $domainName
     )
+
+    begin {
+        if (!(Get-Module ActiveDirectory -ListAvailable)) {
+            if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+                throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools" 
+            } else {
+                throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
+            }
+        }
+    }
 
     process {
         $adComputer = Get-ADComputer -Filter "name -eq '$computerName'" -Properties Name, Enabled, DistinguishedName -ErrorAction Stop

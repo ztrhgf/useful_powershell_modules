@@ -1,4 +1,5 @@
-﻿function Get-ClientIntunePolicyResult {
+﻿#requires -modules CommonStuff
+function Get-ClientIntunePolicyResult {
     <#
         .SYNOPSIS
         Function for getting gpresult/rsop like report but for local client Intune policies.
@@ -111,6 +112,12 @@
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
     }
+
+    if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
+        throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
+    }
+
+    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
 
     if ($asHTML) {
         if (!(Get-Module 'PSWriteHtml') -and (!(Get-Module 'PSWriteHtml' -ListAvailable))) {

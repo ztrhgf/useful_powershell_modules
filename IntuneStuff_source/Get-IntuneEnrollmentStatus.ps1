@@ -64,7 +64,7 @@ function Get-IntuneEnrollmentStatus {
             if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
                 $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
             } else {
-                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID"
+                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID. Install RSAT to fix this."
             }
 
             Connect-MSGraph2

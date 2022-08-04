@@ -1161,6 +1161,8 @@ function Get-BitlockerEscrowStatusForAzureADDevices {
     $csvEntries
 }
 
+#Requires -Modules CommonStuff
+
 function Get-ClientIntunePolicyResult {
     <#
         .SYNOPSIS
@@ -1274,6 +1276,12 @@ function Get-ClientIntunePolicyResult {
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
     }
+
+    if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
+        throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
+    }
+
+    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
 
     if ($asHTML) {
         if (!(Get-Module 'PSWriteHtml') -and (!(Get-Module 'PSWriteHtml' -ListAvailable))) {
@@ -2117,7 +2125,7 @@ function Get-IntuneEnrollmentStatus {
             if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
                 $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
             } else {
-                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID"
+                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID. Install RSAT to fix this."
             }
 
             Connect-MSGraph2
@@ -4537,7 +4545,12 @@ function Reset-IntuneEnrollment {
     if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
         $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
     } else {
-        Write-Verbose "AD module is missing, unable to obtain computer GUID"
+        Write-Verbose "ActiveDirectory module is missing, unable to obtain computer GUID"
+        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+            Write-Verbose "To install it, use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools"
+        } else {
+            Write-Verbose "To install it, use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
+        }
     }
 
     #region get Intune data

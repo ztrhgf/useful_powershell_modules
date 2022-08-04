@@ -49,6 +49,22 @@ function Remove-O365OrphanedMailbox {
         [string] $notSyncedOUDN
     )
 
+    if (!(Get-Module ActiveDirectory -ListAvailable)) {
+        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+            throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools" 
+        } else {
+            throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
+        }
+    }
+
+    if (!(Get-Module ExchangeOnlineManagement -ListAvailable)) {
+        throw "Module ExchangeOnlineManagement is missing. To get it, use: Install-Module ExchangeOnlineManagement" 
+    }
+
+    if (!(Get-Module MSOnline -ListAvailable)) {
+        throw "Module MSOnline is missing. To get it, use: Install-Module MSOnline" 
+    }
+
     $userADObj = Get-ADUser $samAccountName -ErrorAction Stop
 
     $originalOU = ($userADObj.DistinguishedName -split ",")[1..1000] -join ','

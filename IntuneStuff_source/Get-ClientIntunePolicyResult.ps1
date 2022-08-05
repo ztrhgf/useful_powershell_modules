@@ -294,7 +294,7 @@
             $userAzureObjectID = Split-Path $_.Name -Leaf
 
             $userWin32AppRoot = $_.PSPath
-            $win32AppIDList = Get-ChildItem $userWin32AppRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique
+            $win32AppIDList = Get-ChildItem $userWin32AppRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique | ? { $_ -ne 'GRS' }
 
             $win32AppIDList | % {
                 $win32AppID = $_

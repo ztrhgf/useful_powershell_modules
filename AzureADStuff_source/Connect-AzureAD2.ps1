@@ -84,6 +84,10 @@
         $token = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AccessTokens
         Write-Verbose "Connected to tenant: $($token.AccessToken.TenantId) with user: $($token.AccessToken.UserId)"
     } else {
+        # set TLS 1.2 to avoid error: Connect-AzureAD : You are using TLS version 1.0, 1.1 and/or 3DES cipher which are deprecated to improve the security posture of Azure AD.
+        Write-Verbose "Setting TLS 1.2"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
         if ($applicationId) {
             # app auth
             if (!$tenantId) { throw "tenantId parameter is undefined" }
@@ -131,6 +135,12 @@
                     Write-Error "Unable to obtain your UPN. Run again without 'asYourself' switch"
                     return
                 }
+            }
+
+            if ($returnConnection) {
+                Connect-AzureAD @param
+            } else {
+                $null = Connect-AzureAD @param
             }
 
             if ($returnConnection) {

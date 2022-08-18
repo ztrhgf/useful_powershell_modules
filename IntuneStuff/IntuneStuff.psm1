@@ -3713,10 +3713,10 @@ function Invoke-IntuneWin32AppRedeploy {
     function _getTargetName {
         param ([string] $id)
 
-        Write-Verbose "Translating $id"
+        Write-Verbose "Translating account $id to its name (SID)"
 
         if (!$id) {
-            Write-Verbose "id was null"
+            Write-Verbose "Id was null"
             return
         } elseif ($id -eq 'device') {
             # xml nodes contains 'device' instead of 'Device'
@@ -3727,15 +3727,20 @@ function Invoke-IntuneWin32AppRedeploy {
         $ErrorActionPreference = "Stop"
         try {
             if ($id -eq '00000000-0000-0000-0000-000000000000' -or $id -eq 'S-0-0-00-0000000000-0000000000-000000000-000') {
+                Write-Verbose "`t- Id belongs to device"
                 return 'Device'
-            } elseif ($id -match "^S-1-5-21") {
+            } elseif ($id -match "^S-\d+-\d+-\d+") {
                 # it is local account
+                Write-Verbose "`t- Id is SID, trying to translate to local account name"
                 return ((New-Object System.Security.Principal.SecurityIdentifier($id)).Translate([System.Security.Principal.NTAccount])).Value
             } else {
                 # it is AzureAD account
+                Write-Verbose "`t- Id belongs to AAD account"
                 if ($getDataFromIntune) {
+                    Write-Verbose "`t- Translating ID using Intune data"
                     return ($intuneUser | ? id -EQ $id).userPrincipalName
                 } else {
+                    Write-Verbose "`t- Getting SID that belongs to AAD ID, by searching Intune logs"
                     $userSID = Get-IntuneUserSID $id
                     if ($userSID) {
                         _getTargetName $userSID
@@ -3767,8 +3772,8 @@ function Invoke-IntuneWin32AppRedeploy {
 
         foreach ($intuneLog in $intuneLogList) {
             # how content of the log can looks like
-            # [Win32App] ..................... Processing user session 1, userId: e5834928-0f19-212d-8a69-3fbc98fd84eb, userSID: S-1-5-21-2475586523-545188003-3344463813-8050 .....................
-            # [Win32App] EspPreparation starts for userId: e5834928-0f19-442d-8a69-3fbc98fd84eb userSID: S-1-5-21-2475586523-545182003-3344463813-8050
+            # [Win32App] ..................... Processing user session 1, userId: e5834928-0f19-492d-8a69-3fbc98fd84eb, userSID: S-1-5-21-2475586523-545188003-3344463812-8050 .....................
+            # [Win32App] EspPreparation starts for userId: e5834928-0f19-442d-8a69-3fbc98fd84eb userSID: S-1-5-21-2475586523-545182003-3344463812-8050
 
             $userMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] \.* Processing user session \d+, userId: $userId, userSID: (S-[0-9-]+) )|(?:\[Win32App\] EspPreparation starts for userId: $userId userSID: (S-[0-9-]+))" -List
             if ($userMatch) {
@@ -3777,7 +3782,7 @@ function Invoke-IntuneWin32AppRedeploy {
             }
         }
 
-        Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate its ID to SID."
+        Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
     }
 
     # function translates app Azure ID to name, by getting such info from Intune log files

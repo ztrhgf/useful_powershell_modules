@@ -183,8 +183,6 @@
         Write-Error "Unable to find App '$appId' GRS hash in any of the Intune log files. Redeploy will probably not work as expected"
     }
 
-    $appMatch = Select-String -Path "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension-20220726-164408.log" -Pattern "\[Win32App\] ExecManager: processing targeted app \(name='(\w+)', id='$appId'\)" -List
-
     # create helper functions text definition for usage in remote sessions
     $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} }; function Get-IntuneWin32AppName { ${function:Get-IntuneWin32AppName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }"
     #endregion helper function

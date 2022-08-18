@@ -1,6 +1,4 @@
-﻿#Requires -Modules Microsoft.Graph.Intune,WindowsAutoPilotIntune
-
-function Connect-MSGraph2 {
+﻿function Connect-MSGraph2 {
     <#
     .SYNOPSIS
     Function for connecting to Microsoft Graph.
@@ -217,8 +215,6 @@ function ConvertFrom-MDMDiagReport {
 
     New-Object -TypeName PSObject -Property $result
 }
-
-#Requires -Modules CommonStuff
 
 function ConvertFrom-MDMDiagReportXML {
     <#
@@ -1046,8 +1042,6 @@ function ConvertFrom-MDMDiagReportXML {
         Remove-PSSession $session
     }
 }
-
-#Requires -Modules AzureRM.Profile
 
 function Get-BitlockerEscrowStatusForAzureADDevices {
     <#
@@ -2058,8 +2052,6 @@ function Get-IntuneDeviceComplianceStatus {
     }
 }
 
-#Requires -Modules Microsoft.Graph.Intune
-
 function Get-IntuneEnrollmentStatus {
     <#
     .SYNOPSIS
@@ -2724,8 +2716,6 @@ function Get-IntuneReport {
         #endregion download generated report
     }
 }
-
-#Requires -Modules ActiveDirectory
 
 function Get-MDMClientData {
     <#
@@ -4596,8 +4586,6 @@ function Reset-IntuneEnrollment {
     #endregion check Intune enrollment result
 }
 
-#Requires -Modules WindowsAutoPilotIntune
-
 function Upload-IntuneAutopilotHash {
     <#
     .SYNOPSIS
@@ -4606,11 +4594,10 @@ function Upload-IntuneAutopilotHash {
     .DESCRIPTION
     Function for uploading Autopilot hash into Intune.
     Autopilot hash can be gathered from local computer or passed in PS object.
-    Hostname and device owner can be set too.
 
     Beware that when the device already exists in the Autopilot, it won't be recreated (hash doesn't change)!
 
-    .PARAMETER inputObject
+    .PARAMETER psObject
     PS object with properties that will be used for upload.
     - (mandatory) SerialNumber
         Device serial number.
@@ -4622,7 +4609,7 @@ function Upload-IntuneAutopilotHash {
         Device owner UPN
 
     .PARAMETER thisDevice
-    Switch that instead of using PS object (inputObject) for getting the data, hash of this computer will be uploaded.
+    Switch that instead of using PS object (psObject) for getting the data, hash of this computer will be uploaded.
     Requires admin rights!
 
     .PARAMETER ownerUPN
@@ -4644,7 +4631,7 @@ function Upload-IntuneAutopilotHash {
         HardwareHash = "T0FmBAEAHAAAAAoAHgZhSgAACgCSBmFKYGIyKgg...." # can be obtained via: (Get-CimInstance -Namespace "root/cimv2/mdm/dmmap" -Class "MDM_DevDetail_Ext01" -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" -Verbose:$false).DeviceHardwareData
     }
 
-    Upload-IntuneAutopilotHash -inputObject $data -Verbose
+    Upload-IntuneAutopilotHash -psObject $data -Verbose
 
     Uploads device with specified serial number and hash into Intune Autopilot. Owner and hostname will be empty.
 
@@ -4653,7 +4640,7 @@ function Upload-IntuneAutopilotHash {
     $data = Get-CMAutopilotHash -computername ni-20-ntb
     $data = $data | select *, @{n='OwnerUPN';e={$_.Owner + "@" + $domain}}
 
-    Upload-IntuneAutopilotHash -inputObject $data -Verbose
+    Upload-IntuneAutopilotHash -psObject $data -Verbose
 
     Uploads device with specified serial number and hash (retrieved from SCCM database) into Intune Autopilot. Owner will be empty but hostname will be filled with value from SCCM database (ni-20-ntb).
 

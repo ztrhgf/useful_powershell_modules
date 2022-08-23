@@ -652,7 +652,7 @@ function ConvertFrom-MDMDiagReportXML {
         # get admx policies metadata
         # there are duplicities, so pick just last one
         Write-Verbose "Getting Policies ADMX metadata (MDMEnterpriseDiagnosticsReport.PolicyManager.IngestedAdmxPolicyMetadata)"
-        $admxPolicyAreaNameMetadata = $xml.MDMEnterpriseDiagnosticsReport.PolicyManager.IngestedAdmxPolicyMetadata | % { ConvertFrom-XML $_ }
+        $admxPolicyAreaNameMetadata = $xml.MDMEnterpriseDiagnosticsReport.PolicyManager.IngestedAdmxPolicyMetadata | ? { $_ } | % { ConvertFrom-XML $_ }
 
         Write-Verbose "Getting Policies winning provider (MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues)"
         $winningProviderPolicyAreaNameMetadata = $xml.MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues | % {
@@ -681,9 +681,11 @@ function ConvertFrom-MDMDiagReportXML {
                     $policyAreaName = $_.PolicyAreaName
                     Write-Verbose "`nEnrollment '$enrollmentId' applied to '$scope' configures area '$policyAreaName'"
                     $policyAreaSetting = $_ | Select-Object -Property * -ExcludeProperty 'PolicyAreaName', "*_LastWrite"
-                    $policyAreaSettingName = $policyAreaSetting | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty name
+                    if ($policyAreaSetting) {
+                        $policyAreaSettingName = $policyAreaSetting | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty name
+                    }
                     if ($policyAreaSettingName.count -eq 1 -and $policyAreaSettingName -eq "*") {
-                        # bug? when there is just PolicyAreaName and none other object than probably because of exclude $policyAreaSettingName instead of be null returns one empty object '*'
+                        # bug? when there is just PolicyAreaName and none other object then probably because of exclude $policyAreaSettingName instead of be null returns one empty object '*'
                         $policyAreaSettingName = $null
                         $policyAreaSetting = $null
                     }

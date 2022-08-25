@@ -12,7 +12,7 @@
 RootModule = 'CommonStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.5'
+ModuleVersion = '1.0.6'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -39,6 +39,7 @@ Description = 'Various helper functions for modules IntuneStuff, AzureADStuff et
     - Invoke-AsSystem - invoke given command under SYSTEM account. Support returning of the command transcript.
     - Invoke-AsLoggedUser - invoke given command under all currently logged users (impersonate given user). Support returning of the command transcript.
     - Invoke-SQL - invoke SQL command (uses Security=SSPI authentication)
+    - Uninstall-ApplicationViaUninstallString - uninstalls application using information retrieved from system registry
     - ...
     '
 

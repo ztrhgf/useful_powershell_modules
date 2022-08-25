@@ -534,8 +534,8 @@ function Get-InstalledSoftware {
     Name of the remote computer where you want to run this function.
 
     .PARAMETER AppName
-    (optional) Name of the application to look for.
-    Like operator with surrounding wildcards will be used, i.e. it doesn't have to be exact name.
+    (optional) Name of the application(s) to look for.
+    It can be just part of the app name.
 
     .PARAMETER DontIgnoreUpdates
     Switch for getting Windows Updates too.
@@ -573,7 +573,7 @@ function Get-InstalledSoftware {
 
     [CmdletBinding()]
     param(
-        [string] $appName,
+        [string[]] $appName,
 
         [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
         [string[]] $computerName,
@@ -628,7 +628,11 @@ function Get-InstalledSoftware {
                     $appObj = New-Object -TypeName PSCustomObject -Property $ObjectProperty
 
                     if ($appName) {
-                        $appObj = $appObj | ? { $_.DisplayName -like "*$appName*" }
+                        $appNameRegex = $appName | % {
+                            [regex]::Escape($_)
+                        }
+                        $appNameRegex = $appNameRegex -join "|"
+                        $appObj = $appObj | ? { $_.DisplayName -match $appNameRegex }
                     }
 
                     if (!$DontIgnoreUpdates) {

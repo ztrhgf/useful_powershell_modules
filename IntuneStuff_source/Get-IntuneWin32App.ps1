@@ -3,12 +3,12 @@
     .SYNOPSIS
     Function for showing Win32 apps deployed from Intune to local/remote computer.
 
-    Data are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log)
+    Apps details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log)
 
     .DESCRIPTION
     Function for showing Win32 apps deployed from Intune to local/remote computer.
 
-    Data are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log)
+    App details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log)
 
     .PARAMETER computerName
     Name of remote computer where you want to get Win32 apps from.
@@ -37,6 +37,25 @@
     Get-IntuneWin32App -computerName PC-01 -getDataFromIntune credential (Get-Credentials)
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names.
+
+    .EXAMPLE
+    $win32AppData = Get-IntuneWin32App
+
+    $myApp = ($win32AppData | ? DisplayName -eq 'MyApp')
+
+    "Output complete object"
+    $myApp
+
+    "Detection script content for application 'MyApp'"
+    $myApp.additionalData.DetectionRule.DetectionText.ScriptBody
+
+    "Requirement script content for application 'MyApp'"
+    $myApp.additionalData.ExtendedRequirementRules.RequirementText.ScriptBody
+
+    "Installation script content for application 'MyApp'"
+    $myApp.additionalData.InstallCommandLine
+
+    Show various interesting information for MyApp application deployment.
     #>
 
     [CmdletBinding()]
@@ -235,7 +254,7 @@
     }
 
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneWin32AppName { ${function:Get-IntuneWin32AppName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }"
+    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneWin32AppName { ${function:Get-IntuneWin32AppName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
     #endregion helper function
 
     #region prepare
@@ -284,6 +303,10 @@
 
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
+
+        # get additional data from Intune logs
+        Write-Verbose "Getting additional Win32App data from client Intune logs"
+        $logData = Get-IntuneLogWin32AppData
 
         foreach ($app in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue)) {
             $userAzureObjectID = Split-Path $app.Name -Leaf
@@ -413,6 +436,14 @@
                         "DeploymentType"     = $deploymentType
                         "ScopeId"            = $userAzureObjectID
                     }
+                }
+
+                $appLogData = $logData | ? Id -EQ $win32AppID
+                if ($appLogData) {
+                    Write-Verbose "Enrich app object data with information found in Intune log files"
+                    $property.additionalData = $appLogData
+                } else {
+                    Write-Verbose "For app $win32AppID there are no extra information in Intune log files"
                 }
 
                 New-Object -TypeName PSObject -Property $property

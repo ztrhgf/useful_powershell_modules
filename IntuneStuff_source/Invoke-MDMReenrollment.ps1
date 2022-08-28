@@ -1,4 +1,5 @@
-﻿function Invoke-MDMReenrollment {
+﻿#requires -module CommonStuff
+function Invoke-MDMReenrollment {
     <#
     .SYNOPSIS
     Function for resetting device Intune management connection.
@@ -45,6 +46,10 @@
         if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
             throw "You don't have administrator rights"
         }
+    }
+
+    if (!(Get-Command Invoke-AsSystem)) {
+        throw "Important function Invoke-AsSystem is missing. It is part of CommonStuff module."
     }
 
     $allFunctionDefs = "function Invoke-AsSystem { ${function:Invoke-AsSystem} }"

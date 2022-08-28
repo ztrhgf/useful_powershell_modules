@@ -153,6 +153,7 @@ function Export-ScriptsToModule {
     if (!(Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue) -and !$dontCheckSyntax) {
         Write-Warning "Syntax won't be checked, because function Invoke-ScriptAnalyzer is not available (part of module PSScriptAnalyzer)"
     }
+
     function _generatePSModule {
         [CmdletBinding()]
         param (
@@ -175,6 +176,8 @@ function Export-ScriptsToModule {
         $modulePath = Join-Path $moduleFolder "$moduleName.psm1"
         $function2Export = @()
         $alias2Export = @()
+        # modules that are required by some of the exported functions
+        $requiredModulesList = @()
         # contains function that will be exported to the module
         # the key is name of the function and value is its text definition
         $lastCommitFileContent = @{ }
@@ -322,12 +325,20 @@ function Export-ScriptsToModule {
                 #TODO pouzivat pro jmeno funkce jeji skutecne jmeno misto nazvu souboru?.
                 # $fName = $functionDefinition.name
 
-                # use function definition obtained by AST to generating module
-                # this way no possible dangerous content will be added
+                # define empty function body
                 $content = ""
+
+                # use function definition obtained by AST to generate module
+                # this way no possible dangerous content will be added
+
+                $requiredModules = $ast.scriptRequirements.requiredModules.name
+                if ($requiredModules) {
+                    $requiredModulesList += $requiredModules
+                    Write-Verbose ("Function $fName has defined following module requirements: $($requiredModules -join ', ')")
+                }
+
                 if (!$dontIncludeRequires) {
                     # adding module requires
-                    $requiredModules = $ast.scriptRequirements.requiredModules.name
                     if ($requiredModules) {
                         $content += "#Requires -Modules $($requiredModules -join ',')`n`n"
                     }
@@ -474,6 +485,14 @@ function Export-ScriptsToModule {
                     if ($manifestDataHash.keys -contains "RequiredModules" -and !$manifestDataHash.RequiredModules) {
                         Write-Verbose "Removing manifest key RequiredModules because it is empty"
                         $manifestDataHash.Remove('RequiredModules')
+                    }
+
+                    # warn about missing required modules in manifest file
+                    if ($requiredModulesList -and $manifestDataHash.RequiredModules) {
+                        $reqModulesMissingInManifest = $requiredModulesList | ? { $_ -notin $manifestDataHash.RequiredModules }
+                        if ($reqModulesMissingInManifest) {
+                            Write-Warning "Following modules are required by some of the module function(s), but are missing from manifest file '$manifestFile' key 'RequiredModules': $($reqModulesMissingInManifest -join ', ')"
+                        }
                     }
 
                     # create final manifest file

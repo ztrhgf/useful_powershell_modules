@@ -19,11 +19,17 @@
     Uninstall-ApplicationViaUninstallString -name "7-Zip 22.01 (x64)"
 
     Uninstall 7zip application.
+
+    .EXAMPLE
+    Get-InstalledSoftware -appName Dell | Uninstall-ApplicationViaUninstallString
+
+    Uninstall every application that has 'Dell' in its name.
     #>
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias("displayName")]
         [string[]] $name,
 
         [string] $addArgument

@@ -592,6 +592,11 @@ function Get-InstalledSoftware {
 
     [CmdletBinding()]
     param(
+        [ArgumentCompleter( {
+                param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
+
+                Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' | % { try { Get-ItemPropertyValue -Path $_.pspath -Name DisplayName -ErrorAction Stop } catch { $null } } | ? { $_ -like "*$WordToComplete*" } | % { "'$_'" }
+            })]
         [string[]] $appName,
 
         [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
@@ -1821,77 +1826,102 @@ function Uninstall-ApplicationViaUninstallString {
     param (
         [Parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
         [Alias("displayName")]
+        [ArgumentCompleter( {
+                param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
+
+                Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' | % { try { Get-ItemPropertyValue -Path $_.pspath -Name DisplayName -ErrorAction Stop } catch { $null } } | ? { $_ -like "*$WordToComplete*" } | % { "'$_'" }
+            })]
         [string[]] $name,
 
         [string] $addArgument
     )
 
-    # without admin rights msiexec uninstall fails without any error
-    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        throw "Run with administrator rights"
+    begin {
+        # without admin rights msiexec uninstall fails without any error
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Run with administrator rights"
+        }
+
+        if (!(Get-Command Get-InstalledSoftware)) {
+            throw "Function Get-InstalledSoftware is missing"
+        }
     }
 
-    if (!(Get-Command Get-InstalledSoftware)) {
-        throw "Function Get-InstalledSoftware is missing"
-    }
+    process {
+        $appList = Get-InstalledSoftware -property DisplayName, UninstallString, QuietUninstallString | ? DisplayName -In $name
 
-    $appList = Get-InstalledSoftware -property DisplayName, UninstallString, QuietUninstallString | ? DisplayName -In $name
-
-    if ($appList) {
-        foreach ($app in $appList) {
-            if ($app.QuietUninstallString) {
-                $uninstallCommand = $app.QuietUninstallString
-            } else {
-                $uninstallCommand = $app.UninstallString
-            }
-            $name = $app.DisplayName
-
-            if (!$uninstallCommand) {
-                Write-Warning "Uninstall command is not defined for app '$name'"
-                continue
-            }
-
-            if ($uninstallCommand -like "msiexec.exe*") {
-                # it is MSI
-                $uninstallMSIArgument = $uninstallCommand -replace "MsiExec.exe"
-                # sometimes there is /I (install) instead of /X (uninstall) parameter
-                $uninstallMSIArgument = $uninstallMSIArgument -replace "/I", "/X"
-                # add silent and norestart switches
-                $uninstallMSIArgument = "$uninstallMSIArgument /QN"
-                if ($addArgument) {
-                    $uninstallMSIArgument = $uninstallMSIArgument + " " + $addArgument
+        if ($appList) {
+            foreach ($app in $appList) {
+                if ($app.QuietUninstallString) {
+                    $uninstallCommand = $app.QuietUninstallString
+                } else {
+                    $uninstallCommand = $app.UninstallString
                 }
-                Write-Warning "Uninstalling app '$name'"
-                Write-Verbose "Uninstall command is: msiexec.exe $uninstallMSIArgument"
-                Start-Process "msiexec.exe" -ArgumentList $uninstallMSIArgument -Wait
-            } else {
-                # it is EXE
-                # add silent and norestart switches
-                $match = ([regex]'("[^"]+")(.*)').Matches($uninstallCommand)
-                $uninstallExe = $match.captures.groups[1].value
-                if (!$uninstallExe) {
-                    Write-Error "Unable to extract EXE path from '$uninstallCommand'"
+                $name = $app.DisplayName
+
+                if (!$uninstallCommand) {
+                    Write-Warning "Uninstall command is not defined for app '$name'"
                     continue
                 }
-                $uninstallExeArgument = $match.captures.groups[2].value
-                if ($addArgument) {
-                    $uninstallExeArgument = $uninstallExeArgument + " " + $addArgument
-                }
-                Write-Warning "Uninstalling app '$name'"
-                Write-Verbose "Uninstall command is: $uninstallCommand"
 
-                $param = @{
-                    FilePath = $uninstallExe
-                    Wait     = $true
+                if ($uninstallCommand -like "msiexec.exe*") {
+                    # it is MSI
+                    $uninstallMSIArgument = $uninstallCommand -replace "MsiExec.exe"
+                    # sometimes there is /I (install) instead of /X (uninstall) parameter
+                    $uninstallMSIArgument = $uninstallMSIArgument -replace "/I", "/X"
+                    # add silent and norestart switches
+                    $uninstallMSIArgument = "$uninstallMSIArgument /QN"
+                    if ($addArgument) {
+                        $uninstallMSIArgument = $uninstallMSIArgument + " " + $addArgument
+                    }
+                    Write-Warning "Uninstalling app '$name' via: msiexec.exe $uninstallMSIArgument"
+                    Start-Process "msiexec.exe" -ArgumentList $uninstallMSIArgument -Wait
+                } else {
+                    # it is EXE
+                    #region extract path to the EXE uninstaller
+                    # path to EXE is typically surrounded by double quotes
+                    $match = ([regex]'("[^"]+")(.*)').Matches($uninstallCommand)
+                    if (!$match.count) {
+                        # string doesn't contain ", try search for ' instead
+                        $match = ([regex]"('[^']+')(.*)").Matches($uninstallCommand)
+                    }
+                    if ($match.count) {
+                        $uninstallExe = $match.captures.groups[1].value
+                    } else {
+                        # string doesn't contain even '
+                        # before blindly use the whole string as path to an EXE, check whether it doesn't contain common argument prefixes '/', '-' ('-' can be part of the EXE path, but it is more safe to make false positive then fail later because of faulty command)
+                        if ($uninstallCommand -notmatch "/|-") {
+                            $uninstallExe = $uninstallCommand
+                        }
+                    }
+                    if (!$uninstallExe) {
+                        Write-Error "Unable to extract EXE path from '$uninstallCommand'"
+                        continue
+                    }
+                    #endregion extract path to the EXE uninstaller
+                    if ($match.count) {
+                        $uninstallExeArgument = $match.captures.groups[2].value
+                    } else {
+                        Write-Verbose "I've used whole uninstall string as EXE path"
+                    }
+                    if ($addArgument) {
+                        $uninstallExeArgument = $uninstallExeArgument + " " + $addArgument
+                    }
+                    # Start-Process param block
+                    $param = @{
+                        FilePath = $uninstallExe
+                        Wait     = $true
+                    }
+                    if ($uninstallExeArgument) {
+                        $param.ArgumentList = $uninstallExeArgument
+                    }
+                    Write-Warning "Uninstalling app '$name' via: $uninstallExe $uninstallExeArgument"
+                    Start-Process @param
                 }
-                if ($uninstallExeArgument) {
-                    $param.ArgumentList = $uninstallExeArgument
-                }
-                Start-Process @param
             }
+        } else {
+            Write-Warning "No software with name $($name -join ', ') was found. Get the correct name by running 'Get-InstalledSoftware' function."
         }
-    } else {
-        Write-Warning "No software with name $($name -join ', ') was found. Get the correct name by running 'Get-InstalledSoftware' function."
     }
 }
 

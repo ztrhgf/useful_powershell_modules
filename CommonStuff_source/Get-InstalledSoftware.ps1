@@ -50,6 +50,11 @@ function Get-InstalledSoftware {
 
     [CmdletBinding()]
     param(
+        [ArgumentCompleter( {
+                param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
+
+                Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' | % { try { Get-ItemPropertyValue -Path $_.pspath -Name DisplayName -ErrorAction Stop } catch { $null } } | ? { $_ -like "*$WordToComplete*" } | % { "'$_'" }
+            })]
         [string[]] $appName,
 
         [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]

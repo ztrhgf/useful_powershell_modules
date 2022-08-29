@@ -327,9 +327,19 @@
                 #region get Win32App data
                 $newestWin32AppRecord = Get-ChildItem $userWin32AppRoot | ? PSChildName -Match ([regex]::escape($win32AppID)) | Sort-Object -Descending -Property PSChildName | select -First 1
 
-                $lastUpdatedTimeUtc = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name LastUpdatedTimeUtc -ErrorAction SilentlyContinue
+                try {
+                    $lastUpdatedTimeUtc = $null
+                    $lastUpdatedTimeUtc = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name LastUpdatedTimeUtc -ErrorAction Stop
+                } catch {
+                    Write-Verbose "`tUnable to get LastUpdatedTimeUtc data"
+                }
 
-                $deploymentType = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name Intent -ErrorAction SilentlyContinue
+                try {
+                    $deploymentType = $null
+                    $deploymentType = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name Intent -ErrorAction Stop
+                } catch {
+                    Write-Verbose "`tUnable to get Intent data"
+                }
                 if ($deploymentType) {
                     switch ($deploymentType) {
                         1 { $deploymentType = "Available" }
@@ -340,6 +350,7 @@
                 }
 
                 try {
+                    $complianceStateMessage = $null
                     $complianceStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\ComplianceStateMessage" -Name ComplianceStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
                 } catch {
                     Write-Verbose "`tUnable to get Compliance State Message data"
@@ -370,6 +381,7 @@
                 }
 
                 try {
+                    $enforcementStateMessage = $null
                     $enforcementStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\EnforcementStateMessage" -Name EnforcementStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
                 } catch {
                     Write-Verbose "`tUnable to get Enforcement State Message data"

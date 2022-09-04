@@ -2401,9 +2401,13 @@ function Get-IntuneLogWin32AppData {
     .DESCRIPTION
     Function for getting Intune Win32Apps information from clients log files ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension*.log).
 
-    Finds data about last processing of Win32Apps and outputs them into console as an PowerShell object.
+    Finds data about processing of Win32Apps and outputs them into console as an PowerShell object.
 
-    Returns various information like app detection and requirement scripts etc.
+    Returns various information like app requirements, install/uninstall command, detection and requirement scripts etc.
+
+    .PARAMETER allOccurrences
+    Switch for getting all Win32App processings.
+    By default just newest processing is returned from the newest Intune log.
 
     .EXAMPLE
     $win32AppData = Get-IntuneLogWin32AppData
@@ -2429,7 +2433,9 @@ function Get-IntuneLogWin32AppData {
     #>
 
     [CmdletBinding()]
-    param ()
+    param (
+        [switch] $allOccurrences
+    )
 
     #region helper functions
     function ConvertFrom-Base64 {
@@ -2440,12 +2446,127 @@ function Get-IntuneLogWin32AppData {
     function _enhanceObject {
         param ($object)
 
-        $object | select *,
-        @{n = 'DetectionRule'; e = { $_.DetectionRule | ConvertFrom-Json | select @{n = 'DetectionType'; e = { $_.DetectionType } }, @{n = 'DetectionText'; e = { $r = $_.DetectionText | ConvertFrom-Json; $r | select *, @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } } -ExcludeProperty 'ScriptBody' } } } },
-        @{n = 'RequirementRules'; e = { $_.RequirementRules | ConvertFrom-Json } },
-        @{n = 'ExtendedRequirementRules'; e = { $r = $_.ExtendedRequirementRules | ConvertFrom-Json; $r | select *, @{n = 'RequirementText'; e = { $r = $_.RequirementText | ConvertFrom-Json; $r | select *, @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'ScriptBody' } } -ExcludeProperty 'RequirementText' } },
-        @{n = 'InstallEx'; e = { $_.InstallEx | ConvertFrom-Json } },
-        @{n = 'ReturnCodes'; e = { $_.ReturnCodes | ConvertFrom-Json } }`
+        #region helper functions
+        function _detectionRule {
+            param ($detectionRule)
+
+            function _detectionType {
+                param ($detectionType)
+
+                switch ($detectionType) {
+                    0 { "Registry" }
+                    1 { "MSI" }
+                    2 { "File" }
+                    3 { "Script" }
+                    default { $detectionType }
+                }
+            }
+
+            $detectionRule | ConvertFrom-Json | select `
+            @{n = 'DetectionType'; e = { _detectionType $_.DetectionType } },
+            @{n = 'DetectionText'; e = {
+                    $r = $_.DetectionText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } }`
+                        -ExcludeProperty 'ScriptBody'
+                }
+            }
+        }
+
+        function _extendedRequirementRules {
+            param ($extendedRequirementRules)
+
+            function _type {
+                param ($type)
+
+                switch ($type) {
+                    0 { "File" }
+                    2 { "Registry" }
+                    3 { "Script" }
+                    default { $type }
+                }
+            }
+
+            #TODO RequirementText: Type a Operator
+
+            $r = $extendedRequirementRules | ConvertFrom-Json
+
+            $r | select -Property `
+            @{n = 'Type'; e = { _type $_.Type } },
+            @{n = 'RequirementText'; e = {
+                    $r = $_.RequirementText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'ScriptBody'
+                }
+            }`
+                -ExcludeProperty 'Type', 'RequirementText'
+        }
+
+        function _returnCodes {
+            param ($returnCodes)
+
+            function _type {
+                param ($type)
+
+                switch ($type) {
+                    0 { "Failed" }
+                    1 { "Success" }
+                    2 { "SoftReboot" }
+                    3 { "HardReboot" }
+                    4 { "Retry" }
+                    default { $type }
+                }
+            }
+
+            $r = $returnCodes | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select 'ReturnCode', @{n = 'Type'; e = { _type $_.Type } }
+
+        }
+
+        function _installEx {
+            param ($installEx)
+
+            function _deviceRestartBehavior {
+                param ($deviceRestartBehavior)
+
+                switch ($deviceRestartBehavior) {
+                    # 'App install may force a device restart'
+                    # 'Intune will force a mandatory device restart'
+                    0 { 'Determine behavior based on return codes' }
+                    1 {}
+                    2 { 'No specific action' }
+                    3 {}
+                    default { $deviceRestartBehavior }
+                }
+            }
+
+            $r = $installEx | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select -Property `
+            @{n = 'RunAs'; e = { if ($_.RunAs -eq 1) { 'System' } else { 'User' } } },
+            '*',
+            @{n = 'DeviceRestartBehavior'; e = { _deviceRestartBehavior $_.DeviceRestartBehavior } }`
+                -ExcludeProperty RunAs, DeviceRestartBehavior
+        }
+
+        function _requirementRules {
+            param ($requirementRules)
+
+            $r = $requirementRules | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select -Property `
+            @{n = 'RequiredOSArchitecture'; e = { if ($_.RequiredOSArchitecture -eq 1) { 'x86' } else { 'x64' } } },
+            '*'`
+                -ExcludeProperty RequiredOSArchitecture
+        }
+        #endregion helper functions
+
+        $object | select -Property '*',
+        @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
+        @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
+        @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
+        @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
+        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
             -ExcludeProperty DetectionRule, RequirementRules, ExtendedRequirementRules, InstallEx, ReturnCodes
     }
     #endregion helper functions
@@ -2458,50 +2579,65 @@ function Get-IntuneLogWin32AppData {
         return
     }
 
-    foreach ($intuneLog in $intuneLogList) {
+    :outerForeach foreach ($intuneLog in $intuneLogList) {
         # how content of the log can looks like
         # <![LOG[Get policies = [{"Id":"56695a77-925a-4....
 
-        Write-Verbose "Searching for Win32Apps in '$intuneLog'"
+        Write-Verbose "Searching for Win32Apps processing in '$intuneLog'"
 
         # get line text where win32apps processing is mentioned
-        $match = Select-String -Path $intuneLog -Pattern ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":')) -List | select -ExpandProperty Line
-
-        if ($match) {
-            # get rid of non-JSON prefix/suffix
-            $jsonList = $match -replace [regex]::Escape("<![LOG[Get policies = [") -replace ([regex]::Escape("]]LOG]!>") + ".*")
-            # ugly but working solution :D
-            $i = 0
-            $jsonListSplitted = $jsonList -split '},{"Id":'
-            if ($jsonListSplitted.count -gt 1) {
-                # there are multiple JSONs divided by comma, I have to process them one by one
-                $jsonListSplitted | % {
-                    # split replaces text that was used to split, I have to recreate it
-                    $json = ""
-                    if ($i -eq 0) {
-                        # first item
-                        $json = $_ + '}'
-                    } elseif ($i -ne ($jsonListSplitted.count - 1)) {
-                        $json = '{"Id":' + $_ + '}'
-                    } else {
-                        # last item
-                        $json = '{"Id":' + $_
-                    }
-
-                    ++$i
-
-                    # customize converted object (convert base64 to text and JSON to object)
-                    _enhanceObject ($json | ConvertFrom-Json)
-                }
-            } else {
-                # there is just one JSON, I can directly convert it to an object
-                # customize converted object (convert base64 to text and JSON to object)
-                _enhanceObject ($jsonList | ConvertFrom-Json)
-            }
-
-            break # don't continue the search when you already have match
+        $param = @{
+            Path    = $intuneLog
+            Pattern = ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":'))
+        }
+        if ($allOccurrences) {
+            $param.AllMatches = $true
         } else {
-            Write-Verbose "There is no data related to Win32App. Trying next log."
+            $param.List = $true
+        }
+
+        $matchList = Select-String @param | select -ExpandProperty Line
+
+        if ($matchList) {
+            foreach ($match in $matchList) {
+                # get rid of non-JSON prefix/suffix
+                $jsonList = $match -replace [regex]::Escape("<![LOG[Get policies = [") -replace ([regex]::Escape("]]LOG]!>") + ".*")
+                # ugly but working solution :D
+                $i = 0
+                $jsonListSplitted = $jsonList -split '},{"Id":'
+                if ($jsonListSplitted.count -gt 1) {
+                    # there are multiple JSONs divided by comma, I have to process them one by one
+                    $jsonListSplitted | % {
+                        # split replaces text that was used to split, I have to recreate it
+                        $json = ""
+                        if ($i -eq 0) {
+                            # first item
+                            $json = $_ + '}'
+                        } elseif ($i -ne ($jsonListSplitted.count - 1)) {
+                            $json = '{"Id":' + $_ + '}'
+                        } else {
+                            # last item
+                            $json = '{"Id":' + $_
+                        }
+
+                        ++$i
+
+                        # customize converted object (convert base64 to text and JSON to object)
+                        _enhanceObject ($json | ConvertFrom-Json)
+                    }
+                } else {
+                    # there is just one JSON, I can directly convert it to an object
+                    # customize converted object (convert base64 to text and JSON to object)
+                    _enhanceObject ($jsonList | ConvertFrom-Json)
+                }
+
+                if (!$allOccurrences) {
+                    # don't continue the search when you already have match
+                    break outerForeach
+                }
+            }
+        } else {
+            Write-Verbose "There is no data related processing of Win32App. Trying next log."
         }
     }
 }
@@ -2886,10 +3022,10 @@ function Get-IntuneWin32App {
     "Requirement script content for application 'MyApp'"
     $myApp.additionalData.ExtendedRequirementRules.RequirementText.ScriptBody
 
-    "Installation script content for application 'MyApp'"
+    "Install command for application 'MyApp'"
     $myApp.additionalData.InstallCommandLine
 
-    Show various interesting information for MyApp application deployment.
+    Show various interesting information for 'MyApp' application deployment.
     #>
 
     [CmdletBinding()]
@@ -2960,6 +3096,10 @@ function Get-IntuneWin32App {
             [string] $userId
         )
 
+        if ($userIdList.keys -contains $userId) {
+            return $userIdList.$userId
+        }
+
         $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
 
         if (!$intuneLogList) {
@@ -2974,42 +3114,20 @@ function Get-IntuneWin32App {
 
             $userMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] \.* Processing user session \d+, userId: $userId, userSID: (S-[0-9-]+) )|(?:\[Win32App\] EspPreparation starts for userId: $userId userSID: (S-[0-9-]+))" -List
             if ($userMatch) {
+                # cache the results
+                if ($userIdList) {
+                    $userIdList.$userId = $userMatch.matches.groups[1].value
+                }
                 # return user SID
                 return $userMatch.matches.groups[1].value
             }
         }
 
         Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
-    }
-
-    # function translates app Azure ID to name, by getting such info from Intune log files
-    function Get-IntuneWin32AppName {
-        param (
-            [Parameter(Mandatory = $true)]
-            [string] $appId
-        )
-
-        $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
-
-        if (!$intuneLogList) {
-            Write-Error "Unable to find any Intune log files. Redeploy will probably not work as expected."
-            return
+        # cache the results
+        if ($userIdList) {
+            $userIdList.$userId = $null
         }
-
-        foreach ($intuneLog in $intuneLogList) {
-            # how content of the log can looks like
-            # [Win32App] app result (id = e524e208-0758-4b38-a15a-60688778421c, name = BuiltinAdminPSProfile.ps1, version = 2) is different from cached one, save to cache.
-            # [Win32App] Processing app (id=e524e208-0758-4b38-a15a-60688778421c, name = BuiltinAdminPSProfile.ps1) with mode = DetectInstall	IntuneManagementExtension	26.07.2022 15:44:56	80 (0x0050)
-
-            $appMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] ExecManager: processing targeted app \(name='([^,]+)', id='$appId'\))|(?:\[Win32App\] app result \(id = $appId, name = ([^,]+),)" -List
-            if ($appMatch) {
-                # return app name
-                return $appMatch.matches.groups[1].value
-            }
-        }
-
-        Write-Warning "Unable to find App '$appId' in any of the Intune log files. Unable to translate its ID to Name."
-        return "*unable to obtain from local logs*"
     }
 
     # function for translating error codes to error messages
@@ -3088,7 +3206,7 @@ function Get-IntuneWin32App {
     }
 
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneWin32AppName { ${function:Get-IntuneWin32AppName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
+    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
     #endregion helper function
 
     #region prepare
@@ -3134,6 +3252,9 @@ function Get-IntuneWin32App {
 
         # inherit verbose settings from host session
         $VerbosePreference = $verbosePref
+
+        # caching of user ID > SID translations
+        $userIdList = @{}
 
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
@@ -3249,6 +3370,8 @@ function Get-IntuneWin32App {
                 if (!$lastError) { $lastError = 0 } # because of HTML conditional formatting ($null means that cell will have red background)
                 #endregion get Win32App data
 
+                $appLogData = $logData | ? Id -EQ $win32AppID
+
                 #region output the results
                 if ($getDataFromIntune) {
                     $property = [ordered]@{
@@ -3269,7 +3392,7 @@ function Get-IntuneWin32App {
                 } else {
                     $property = [ordered]@{
                         "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = Get-IntuneWin32AppName $win32AppID
+                        "DisplayName"        = $appLogData.Name
                         "Id"                 = $win32AppID
                         "ComplianceState"    = $complianceState
                         "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
@@ -3284,10 +3407,9 @@ function Get-IntuneWin32App {
                     }
                 }
 
-                $appLogData = $logData | ? Id -EQ $win32AppID
                 if ($appLogData) {
                     Write-Verbose "Enrich app object data with information found in Intune log files"
-                    $property.additionalData = $appLogData
+                    $property.additionalData = $appLogData | select * -ExcludeProperty Id, Name
                 } else {
                     Write-Verbose "For app $win32AppID there are no extra information in Intune log files"
                 }
@@ -3930,6 +4052,10 @@ function Invoke-IntuneScriptRedeploy {
         [string] $tenantId
     )
 
+    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+        throw "Run as admin"
+    }
+
     #region helper function
     function _getIntuneScript {
         param ([string] $scriptID)
@@ -4313,6 +4439,10 @@ function Invoke-IntuneWin32AppRedeploy {
 
     if (!(Get-Command Get-IntuneWin32App)) {
         throw "Command Get-IntuneWin32App is missing"
+    }
+
+    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+        throw "Run as admin"
     }
 
     #region helper function

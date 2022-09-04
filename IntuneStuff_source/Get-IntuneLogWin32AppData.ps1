@@ -6,9 +6,13 @@
     .DESCRIPTION
     Function for getting Intune Win32Apps information from clients log files ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension*.log).
 
-    Finds data about last processing of Win32Apps and outputs them into console as an PowerShell object.
+    Finds data about processing of Win32Apps and outputs them into console as an PowerShell object.
 
-    Returns various information like app detection and requirement scripts etc.
+    Returns various information like app requirements, install/uninstall command, detection and requirement scripts etc.
+
+    .PARAMETER allOccurrences
+    Switch for getting all Win32App processings.
+    By default just newest processing is returned from the newest Intune log.
 
     .EXAMPLE
     $win32AppData = Get-IntuneLogWin32AppData
@@ -34,7 +38,9 @@
     #>
 
     [CmdletBinding()]
-    param ()
+    param (
+        [switch] $allOccurrences
+    )
 
     #region helper functions
     function ConvertFrom-Base64 {
@@ -45,12 +51,127 @@
     function _enhanceObject {
         param ($object)
 
-        $object | select *,
-        @{n = 'DetectionRule'; e = { $_.DetectionRule | ConvertFrom-Json | select @{n = 'DetectionType'; e = { $_.DetectionType } }, @{n = 'DetectionText'; e = { $r = $_.DetectionText | ConvertFrom-Json; $r | select *, @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } } -ExcludeProperty 'ScriptBody' } } } },
-        @{n = 'RequirementRules'; e = { $_.RequirementRules | ConvertFrom-Json } },
-        @{n = 'ExtendedRequirementRules'; e = { $r = $_.ExtendedRequirementRules | ConvertFrom-Json; $r | select *, @{n = 'RequirementText'; e = { $r = $_.RequirementText | ConvertFrom-Json; $r | select *, @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'ScriptBody' } } -ExcludeProperty 'RequirementText' } },
-        @{n = 'InstallEx'; e = { $_.InstallEx | ConvertFrom-Json } },
-        @{n = 'ReturnCodes'; e = { $_.ReturnCodes | ConvertFrom-Json } }`
+        #region helper functions
+        function _detectionRule {
+            param ($detectionRule)
+
+            function _detectionType {
+                param ($detectionType)
+
+                switch ($detectionType) {
+                    0 { "Registry" }
+                    1 { "MSI" }
+                    2 { "File" }
+                    3 { "Script" }
+                    default { $detectionType }
+                }
+            }
+
+            $detectionRule | ConvertFrom-Json | select `
+            @{n = 'DetectionType'; e = { _detectionType $_.DetectionType } },
+            @{n = 'DetectionText'; e = {
+                    $r = $_.DetectionText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } }`
+                        -ExcludeProperty 'ScriptBody'
+                }
+            }
+        }
+
+        function _extendedRequirementRules {
+            param ($extendedRequirementRules)
+
+            function _type {
+                param ($type)
+
+                switch ($type) {
+                    0 { "File" }
+                    2 { "Registry" }
+                    3 { "Script" }
+                    default { $type }
+                }
+            }
+
+            #TODO RequirementText: Type a Operator
+
+            $r = $extendedRequirementRules | ConvertFrom-Json
+
+            $r | select -Property `
+            @{n = 'Type'; e = { _type $_.Type } },
+            @{n = 'RequirementText'; e = {
+                    $r = $_.RequirementText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'ScriptBody'
+                }
+            }`
+                -ExcludeProperty 'Type', 'RequirementText'
+        }
+
+        function _returnCodes {
+            param ($returnCodes)
+
+            function _type {
+                param ($type)
+
+                switch ($type) {
+                    0 { "Failed" }
+                    1 { "Success" }
+                    2 { "SoftReboot" }
+                    3 { "HardReboot" }
+                    4 { "Retry" }
+                    default { $type }
+                }
+            }
+
+            $r = $returnCodes | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select 'ReturnCode', @{n = 'Type'; e = { _type $_.Type } }
+
+        }
+
+        function _installEx {
+            param ($installEx)
+
+            function _deviceRestartBehavior {
+                param ($deviceRestartBehavior)
+
+                switch ($deviceRestartBehavior) {
+                    # 'App install may force a device restart'
+                    # 'Intune will force a mandatory device restart'
+                    0 { 'Determine behavior based on return codes' }
+                    1 {}
+                    2 { 'No specific action' }
+                    3 {}
+                    default { $deviceRestartBehavior }
+                }
+            }
+
+            $r = $installEx | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select -Property `
+            @{n = 'RunAs'; e = { if ($_.RunAs -eq 1) { 'System' } else { 'User' } } },
+            '*',
+            @{n = 'DeviceRestartBehavior'; e = { _deviceRestartBehavior $_.DeviceRestartBehavior } }`
+                -ExcludeProperty RunAs, DeviceRestartBehavior
+        }
+
+        function _requirementRules {
+            param ($requirementRules)
+
+            $r = $requirementRules | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+
+            $r | select -Property `
+            @{n = 'RequiredOSArchitecture'; e = { if ($_.RequiredOSArchitecture -eq 1) { 'x86' } else { 'x64' } } },
+            '*'`
+                -ExcludeProperty RequiredOSArchitecture
+        }
+        #endregion helper functions
+
+        $object | select -Property '*',
+        @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
+        @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
+        @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
+        @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
+        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
             -ExcludeProperty DetectionRule, RequirementRules, ExtendedRequirementRules, InstallEx, ReturnCodes
     }
     #endregion helper functions
@@ -63,50 +184,65 @@
         return
     }
 
-    foreach ($intuneLog in $intuneLogList) {
+    :outerForeach foreach ($intuneLog in $intuneLogList) {
         # how content of the log can looks like
         # <![LOG[Get policies = [{"Id":"56695a77-925a-4....
 
-        Write-Verbose "Searching for Win32Apps in '$intuneLog'"
+        Write-Verbose "Searching for Win32Apps processing in '$intuneLog'"
 
         # get line text where win32apps processing is mentioned
-        $match = Select-String -Path $intuneLog -Pattern ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":')) -List | select -ExpandProperty Line
-
-        if ($match) {
-            # get rid of non-JSON prefix/suffix
-            $jsonList = $match -replace [regex]::Escape("<![LOG[Get policies = [") -replace ([regex]::Escape("]]LOG]!>") + ".*")
-            # ugly but working solution :D
-            $i = 0
-            $jsonListSplitted = $jsonList -split '},{"Id":'
-            if ($jsonListSplitted.count -gt 1) {
-                # there are multiple JSONs divided by comma, I have to process them one by one
-                $jsonListSplitted | % {
-                    # split replaces text that was used to split, I have to recreate it
-                    $json = ""
-                    if ($i -eq 0) {
-                        # first item
-                        $json = $_ + '}'
-                    } elseif ($i -ne ($jsonListSplitted.count - 1)) {
-                        $json = '{"Id":' + $_ + '}'
-                    } else {
-                        # last item
-                        $json = '{"Id":' + $_
-                    }
-
-                    ++$i
-
-                    # customize converted object (convert base64 to text and JSON to object)
-                    _enhanceObject ($json | ConvertFrom-Json)
-                }
-            } else {
-                # there is just one JSON, I can directly convert it to an object
-                # customize converted object (convert base64 to text and JSON to object)
-                _enhanceObject ($jsonList | ConvertFrom-Json)
-            }
-
-            break # don't continue the search when you already have match
+        $param = @{
+            Path    = $intuneLog
+            Pattern = ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":'))
+        }
+        if ($allOccurrences) {
+            $param.AllMatches = $true
         } else {
-            Write-Verbose "There is no data related to Win32App. Trying next log."
+            $param.List = $true
+        }
+
+        $matchList = Select-String @param | select -ExpandProperty Line
+
+        if ($matchList) {
+            foreach ($match in $matchList) {
+                # get rid of non-JSON prefix/suffix
+                $jsonList = $match -replace [regex]::Escape("<![LOG[Get policies = [") -replace ([regex]::Escape("]]LOG]!>") + ".*")
+                # ugly but working solution :D
+                $i = 0
+                $jsonListSplitted = $jsonList -split '},{"Id":'
+                if ($jsonListSplitted.count -gt 1) {
+                    # there are multiple JSONs divided by comma, I have to process them one by one
+                    $jsonListSplitted | % {
+                        # split replaces text that was used to split, I have to recreate it
+                        $json = ""
+                        if ($i -eq 0) {
+                            # first item
+                            $json = $_ + '}'
+                        } elseif ($i -ne ($jsonListSplitted.count - 1)) {
+                            $json = '{"Id":' + $_ + '}'
+                        } else {
+                            # last item
+                            $json = '{"Id":' + $_
+                        }
+
+                        ++$i
+
+                        # customize converted object (convert base64 to text and JSON to object)
+                        _enhanceObject ($json | ConvertFrom-Json)
+                    }
+                } else {
+                    # there is just one JSON, I can directly convert it to an object
+                    # customize converted object (convert base64 to text and JSON to object)
+                    _enhanceObject ($jsonList | ConvertFrom-Json)
+                }
+
+                if (!$allOccurrences) {
+                    # don't continue the search when you already have match
+                    break outerForeach
+                }
+            }
+        } else {
+            Write-Verbose "There is no data related processing of Win32App. Trying next log."
         }
     }
 }

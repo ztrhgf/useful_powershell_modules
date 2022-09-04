@@ -1,4 +1,5 @@
-﻿function Invoke-IntuneWin32AppRedeploy {
+﻿#Requires -RunAsAdministrator
+function Invoke-IntuneWin32AppRedeploy {
     <#
     .SYNOPSIS
     Function for forcing redeploy of selected Win32App deployed from Intune.
@@ -52,6 +53,10 @@
 
     if (!(Get-Command Get-IntuneWin32App)) {
         throw "Command Get-IntuneWin32App is missing"
+    }
+
+    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+        throw "Run as admin"
     }
 
     #region helper function

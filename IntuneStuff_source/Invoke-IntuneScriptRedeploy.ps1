@@ -1,4 +1,5 @@
-﻿function Invoke-IntuneScriptRedeploy {
+﻿#Requires -RunAsAdministrator
+function Invoke-IntuneScriptRedeploy {
     <#
     .SYNOPSIS
     Function for forcing redeploy of selected Script(s) deployed from Intune.
@@ -65,6 +66,10 @@
 
         [string] $tenantId
     )
+
+    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+        throw "Run as admin"
+    }
 
     #region helper function
     function _getIntuneScript {

@@ -52,10 +52,10 @@
     "Requirement script content for application 'MyApp'"
     $myApp.additionalData.ExtendedRequirementRules.RequirementText.ScriptBody
 
-    "Installation script content for application 'MyApp'"
+    "Install command for application 'MyApp'"
     $myApp.additionalData.InstallCommandLine
 
-    Show various interesting information for MyApp application deployment.
+    Show various interesting information for 'MyApp' application deployment.
     #>
 
     [CmdletBinding()]
@@ -126,6 +126,10 @@
             [string] $userId
         )
 
+        if ($userIdList.keys -contains $userId) {
+            return $userIdList.$userId
+        }
+
         $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
 
         if (!$intuneLogList) {
@@ -140,42 +144,20 @@
 
             $userMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] \.* Processing user session \d+, userId: $userId, userSID: (S-[0-9-]+) )|(?:\[Win32App\] EspPreparation starts for userId: $userId userSID: (S-[0-9-]+))" -List
             if ($userMatch) {
+                # cache the results
+                if ($userIdList) {
+                    $userIdList.$userId = $userMatch.matches.groups[1].value
+                }
                 # return user SID
                 return $userMatch.matches.groups[1].value
             }
         }
 
         Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
-    }
-
-    # function translates app Azure ID to name, by getting such info from Intune log files
-    function Get-IntuneWin32AppName {
-        param (
-            [Parameter(Mandatory = $true)]
-            [string] $appId
-        )
-
-        $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
-
-        if (!$intuneLogList) {
-            Write-Error "Unable to find any Intune log files. Redeploy will probably not work as expected."
-            return
+        # cache the results
+        if ($userIdList) {
+            $userIdList.$userId = $null
         }
-
-        foreach ($intuneLog in $intuneLogList) {
-            # how content of the log can looks like
-            # [Win32App] app result (id = e524e208-0758-4b38-a15a-60688778421c, name = BuiltinAdminPSProfile.ps1, version = 2) is different from cached one, save to cache.
-            # [Win32App] Processing app (id=e524e208-0758-4b38-a15a-60688778421c, name = BuiltinAdminPSProfile.ps1) with mode = DetectInstall	IntuneManagementExtension	26.07.2022 15:44:56	80 (0x0050)
-
-            $appMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] ExecManager: processing targeted app \(name='([^,]+)', id='$appId'\))|(?:\[Win32App\] app result \(id = $appId, name = ([^,]+),)" -List
-            if ($appMatch) {
-                # return app name
-                return $appMatch.matches.groups[1].value
-            }
-        }
-
-        Write-Warning "Unable to find App '$appId' in any of the Intune log files. Unable to translate its ID to Name."
-        return "*unable to obtain from local logs*"
     }
 
     # function for translating error codes to error messages
@@ -254,7 +236,7 @@
     }
 
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneWin32AppName { ${function:Get-IntuneWin32AppName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
+    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
     #endregion helper function
 
     #region prepare
@@ -300,6 +282,9 @@
 
         # inherit verbose settings from host session
         $VerbosePreference = $verbosePref
+
+        # caching of user ID > SID translations
+        $userIdList = @{}
 
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
@@ -415,6 +400,8 @@
                 if (!$lastError) { $lastError = 0 } # because of HTML conditional formatting ($null means that cell will have red background)
                 #endregion get Win32App data
 
+                $appLogData = $logData | ? Id -EQ $win32AppID
+
                 #region output the results
                 if ($getDataFromIntune) {
                     $property = [ordered]@{
@@ -435,7 +422,7 @@
                 } else {
                     $property = [ordered]@{
                         "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = Get-IntuneWin32AppName $win32AppID
+                        "DisplayName"        = $appLogData.Name
                         "Id"                 = $win32AppID
                         "ComplianceState"    = $complianceState
                         "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
@@ -450,10 +437,9 @@
                     }
                 }
 
-                $appLogData = $logData | ? Id -EQ $win32AppID
                 if ($appLogData) {
                     Write-Verbose "Enrich app object data with information found in Intune log files"
-                    $property.additionalData = $appLogData
+                    $property.additionalData = $appLogData | select * -ExcludeProperty Id, Name
                 } else {
                     Write-Verbose "For app $win32AppID there are no extra information in Intune log files"
                 }

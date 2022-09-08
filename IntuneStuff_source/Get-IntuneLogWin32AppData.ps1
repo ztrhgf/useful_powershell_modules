@@ -14,6 +14,13 @@
     Switch for getting all Win32App processings.
     By default just newest processing is returned from the newest Intune log.
 
+    .PARAMETER excludeProperty
+    List of properties to exclude.
+
+    By default: 'Intent', 'TargetType', 'ToastState', 'Targeted', 'MetadataVersion', 'RelationVersion', 'DOPriority', 'SupportState', 'InstallContext', 'InstallerData'
+
+    Reason for exclude is readability and the fact that I didn't find any documentation that would help me interpret their values.
+
     .EXAMPLE
     $win32AppData = Get-IntuneLogWin32AppData
 
@@ -39,7 +46,9 @@
 
     [CmdletBinding()]
     param (
-        [switch] $allOccurrences
+        [switch] $allOccurrences,
+
+        [string[]] $excludeProperty = ('Intent', 'TargetType', 'ToastState', 'Targeted', 'MetadataVersion', 'RelationVersion', 'DOPriority', 'SupportState', 'InstallContext', 'InstallerData')
     )
 
     #region helper functions
@@ -49,7 +58,7 @@
     }
 
     function _enhanceObject {
-        param ($object)
+        param ($object, $excludeProperty)
 
         #region helper functions
         function _detectionRule {
@@ -166,13 +175,16 @@
         }
         #endregion helper functions
 
+        # add properties that gets customized/replaced
+        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes'
+
         $object | select -Property '*',
         @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
         @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
         @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
         @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
         @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
-            -ExcludeProperty DetectionRule, RequirementRules, ExtendedRequirementRules, InstallEx, ReturnCodes
+            -ExcludeProperty $excludeProperty
     }
     #endregion helper functions
 
@@ -228,12 +240,12 @@
                         ++$i
 
                         # customize converted object (convert base64 to text and JSON to object)
-                        _enhanceObject ($json | ConvertFrom-Json)
+                        _enhanceObject -object ($json | ConvertFrom-Json) -excludeProperty $excludeProperty
                     }
                 } else {
                     # there is just one JSON, I can directly convert it to an object
                     # customize converted object (convert base64 to text and JSON to object)
-                    _enhanceObject ($jsonList | ConvertFrom-Json)
+                    _enhanceObject -object ($jsonList | ConvertFrom-Json) -excludeProperty $excludeProperty
                 }
 
                 if (!$allOccurrences) {

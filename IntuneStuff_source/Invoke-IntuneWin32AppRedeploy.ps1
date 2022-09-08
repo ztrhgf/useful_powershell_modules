@@ -86,7 +86,7 @@ function Invoke-IntuneWin32AppRedeploy {
             }
         }
 
-        Write-Error "Unable to find App '$appId' GRS hash in any of the Intune log files. Redeploy will probably not work as expected"
+        Write-Verbose "Unable to find App '$appId' GRS hash in any of the Intune log files. Redeploy will probably not work as expected"
     }
     # create helper functions text definition for usage in remote sessions
     $allFunctionDefs = "function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} };"
@@ -104,8 +104,7 @@ function Invoke-IntuneWin32AppRedeploy {
     #endregion get deployed Win32Apps
 
     if ($win32App) {
-        $hasDisplayNameProp = $win32App | Get-Member -Name DisplayName
-        $appToRedeploy = $win32App | ? { if ($hasDisplayNameProp) { if ($_.DisplayName) { $true } } else { $true } } | Out-GridView -PassThru -Title "Pick app(s) for redeploy"
+        $appToRedeploy = $win32App | Out-GridView -PassThru -Title "Pick app(s) for redeploy"
 
         #region redeploy selected Win32Apps
         if ($appToRedeploy) {
@@ -122,11 +121,15 @@ function Invoke-IntuneWin32AppRedeploy {
 
                 $appToRedeploy | % {
                     $appId = $_.id
+                    $appName = $_.name
                     $scopeId = $_.scopeId
+                    $scope = $_.scope
                     if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
                     if (!$appId) { throw "ID property is missing. Problem is probably in function Get-IntuneWin32App." }
                     if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32App." }
-                    Write-Warning "Preparing redeploy for app $appId (scope $scopeId)"
+                    $txt = $appName
+                    if (!$txt) { $txt = $appId }
+                    Write-Verbose "Redeploying app $txt (scope $scope)"
 
                     $win32AppKeyToDelete = $win32AppKeys | ? { $_.PSChildName -Match "^$appId`_\d+" -and $_.PSParentPath -Match "\\$scopeId$" }
 

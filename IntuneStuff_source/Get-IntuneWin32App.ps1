@@ -236,7 +236,7 @@
     }
 
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }"
+    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }; function Get-IntuneLogWin32AppReportingResultData { ${function:Get-IntuneLogWin32AppReportingResultData} }"
     #endregion helper function
 
     #region prepare
@@ -292,6 +292,7 @@
         # get additional data from Intune logs
         Write-Verbose "Getting additional Win32App data from client Intune logs"
         $logData = Get-IntuneLogWin32AppData
+        $logReportingData = Get-IntuneLogWin32AppReportingResultData # to be able to translate IDs of apps which don't meet requirements
 
         foreach ($app in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue)) {
             $userAzureObjectID = Split-Path $app.Name -Leaf
@@ -401,45 +402,44 @@
                 #endregion get Win32App data
 
                 $appLogData = $logData | ? Id -EQ $win32AppID
+                $appLogReportingData = $logReportingData | ? Id -EQ $win32AppID
 
                 #region output the results
+                # prepare final object properties
+                $property = [ordered]@{
+                    "Name"               = ''
+                    "Id"                 = $win32AppID
+                    "Scope"              = _getTargetName $userAzureObjectID
+                    "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
+                    "ComplianceState"    = $complianceState
+                    "EnforcementState"   = $enforcementState
+                    "EnforcementError"   = Get-Win32AppErrMsg $enforcementStateMessage.ErrorCode
+                    "LastError"          = $lastError
+                    "ProductVersion"     = $complianceStateMessage.ProductVersion
+                    "DesiredState"       = $desiredState
+                    # "EnforcementErrorCode" = $enforcementStateMessage.ErrorCode
+                    "DeploymentType"     = $deploymentType
+                    "ScopeId"            = $userAzureObjectID
+                }
                 if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = ($intuneApp | ? id -EQ $win32AppID).DisplayName
-                        "Id"                 = $win32AppID
-                        "ComplianceState"    = $complianceState
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                        "DesiredState"       = $desiredState
-                        "EnforcementState"   = $enforcementState
-                        # "EnforcementErrorCode" = $enforcementStateMessage.ErrorCode
-                        "EnforcementError"   = Get-Win32AppErrMsg $enforcementStateMessage.ErrorCode
-                        "DeploymentType"     = $deploymentType
-                        "ScopeId"            = $userAzureObjectID
-                    }
+                    $property.Name = ($intuneApp | ? id -EQ $win32AppID).DisplayName
                 } else {
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = $appLogData.Name
-                        "Id"                 = $win32AppID
-                        "ComplianceState"    = $complianceState
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                        "DesiredState"       = $desiredState
-                        "EnforcementState"   = $enforcementState
-                        # "EnforcementErrorCode" = $enforcementStateMessage.ErrorCode
-                        "EnforcementError"   = Get-Win32AppErrMsg $enforcementStateMessage.ErrorCode
-                        "DeploymentType"     = $deploymentType
-                        "ScopeId"            = $userAzureObjectID
-                    }
+                    $property.Name = if ($appLogData.Name) { $appLogData.Name } else { $appLogReportingData.Name }
                 }
 
+                # add additional properties when possible
                 if ($appLogData) {
                     Write-Verbose "Enrich app object data with information found in Intune log files"
-                    $property.additionalData = $appLogData | select * -ExcludeProperty Id, Name
+
+                    $appLogData = $appLogData | select * -ExcludeProperty Id, Name
+
+                    $newProperty = Get-Member -InputObject $appLogData -MemberType NoteProperty
+                    $newProperty | % {
+                        $propertyName = $_.Name
+                        $propertyValue = $appLogData.$propertyName
+
+                        $property.$propertyName = $propertyValue
+                    }
                 } else {
                     Write-Verbose "For app $win32AppID there are no extra information in Intune log files"
                 }

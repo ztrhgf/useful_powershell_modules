@@ -76,13 +76,55 @@
                 }
             }
 
-            $detectionRule | ConvertFrom-Json | select `
+            function _subType {
+                param ($type)
+
+                switch ($type) {
+                    # TODO
+                    # 1 { "File or folder exist" }
+                    # 2 { "Date Modified" }
+                    # 3 { "Date Created" }
+                    # 5 { "Size in MB" }
+                    # 6 { "File or folder does not exist" }
+                    default { $type }
+                }
+            }
+
+            function _operator {
+                param ($operator)
+
+                switch ($operator) {
+                    # TODO
+                    # 0 { "Does not exist" }
+                    # 1 { "Equals" }
+                    # 2 { "Not equal to" }
+                    # 5 { "Greater than or equal" }
+                    # 8 { "Less than" }
+                    # 9 { "Less than or equal" }
+                    default { $operator }
+                }
+            }
+
+            $r = $detectionRule | ConvertFrom-Json
+
+            $r | select `
             @{n = 'DetectionType'; e = { _detectionType $_.DetectionType } },
             @{n = 'DetectionText'; e = {
                     $r = $_.DetectionText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
-
-                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } }`
-                        -ExcludeProperty 'ScriptBody'
+                    $r | % {
+                        $rule = $_
+                        if ($rule.ScriptBody) {
+                            # it is a script detection check
+                            $rule | select -Property @{n = 'DetectionType'; e = { _subType  $_.detectionType } }, @{n = 'Operator'; e = { _operator $_.operator } }, '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } }`
+                                -ExcludeProperty 'DetectionType', 'Operator', 'ScriptBody'
+                        } elseif ($rule.ProductCode) {
+                            # it is a MSI detection check
+                            $rule | select -Property '*'
+                        } else {
+                            # it is a file or registry detection check
+                            $rule | select -Property @{n = 'DetectionType'; e = { _subType  $_.detectionType } }, @{n = 'Operator'; e = { _operator $_.operator } }, '*' -ExcludeProperty 'DetectionType', 'Operator'
+                        }
+                    }
                 }
             }
         }
@@ -94,14 +136,39 @@
                 param ($type)
 
                 switch ($type) {
-                    0 { "File" }
-                    2 { "Registry" }
+                    0 { "Registry" }
+                    2 { "File" }
                     3 { "Script" }
                     default { $type }
                 }
             }
 
-            #TODO RequirementText: Type a Operator
+            function _subType {
+                param ($type)
+
+                switch ($type) {
+                    1 { "File or folder exist" }
+                    2 { "Date Modified" }
+                    3 { "Date Created" }
+                    5 { "Size in MB" }
+                    6 { "File or folder does not exist" }
+                    default { $type }
+                }
+            }
+
+            function _operator {
+                param ($operator)
+
+                switch ($operator) {
+                    0 { "Does not exist" }
+                    1 { "Equals" }
+                    2 { "Not equal to" }
+                    5 { "Greater than or equal" }
+                    8 { "Less than" }
+                    9 { "Less than or equal" }
+                    default { $operator }
+                }
+            }
 
             $r = $extendedRequirementRules | ConvertFrom-Json
 
@@ -109,7 +176,16 @@
             @{n = 'Type'; e = { _type $_.Type } },
             @{n = 'RequirementText'; e = {
                     $r = $_.RequirementText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
-                    $r | select -Property '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'ScriptBody'
+                    $r | % {
+                        $rule = $_
+                        if ($rule.ScriptBody) {
+                            # it is a script requirement check
+                            $rule | select -Property @{n = 'Type'; e = { _subType  $_.type } }, @{n = 'Operator'; e = { _operator  $_.operator } }, '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'Type', 'Operator', 'ScriptBody'
+                        } else {
+                            # it is a file or registry requirement check
+                            $rule | select -Property @{n = 'Type'; e = { _subType  $_.type } }, @{n = 'Operator'; e = { _operator  $_.operator } }, '*' -ExcludeProperty 'Type', 'Operator'
+                        }
+                    }
                 }
             }`
                 -ExcludeProperty 'Type', 'RequirementText'
@@ -147,9 +223,9 @@
                     # 'App install may force a device restart'
                     # 'Intune will force a mandatory device restart'
                     0 { 'Determine behavior based on return codes' }
-                    1 {}
+                    1 { "App install may force a device restart" }
                     2 { 'No specific action' }
-                    3 {}
+                    3 { 'Intune will force a mandatory device restart' }
                     default { $deviceRestartBehavior }
                 }
             }
@@ -204,16 +280,17 @@
 
         # get line text where win32apps processing is mentioned
         $param = @{
-            Path    = $intuneLog
-            Pattern = ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":'))
-        }
-        if ($allOccurrences) {
-            $param.AllMatches = $true
-        } else {
-            $param.List = $true
+            Path       = $intuneLog
+            Pattern    = ("^" + [regex]::escape('<![LOG[Get policies = [{"Id":'))
+            AllMatches = $true
         }
 
         $matchList = Select-String @param | select -ExpandProperty Line
+
+        if ($matchList.count -gt 1) {
+            # get the newest events first
+            [array]::Reverse($matchList)
+        }
 
         if ($matchList) {
             foreach ($match in $matchList) {
@@ -239,12 +316,17 @@
 
                         ++$i
 
+                        Write-Verbose "Processing:`n$json"
+
                         # customize converted object (convert base64 to text and JSON to object)
                         _enhanceObject -object ($json | ConvertFrom-Json) -excludeProperty $excludeProperty
                     }
                 } else {
                     # there is just one JSON, I can directly convert it to an object
                     # customize converted object (convert base64 to text and JSON to object)
+
+                    Write-Verbose "Processing:`n$jsonList"
+
                     _enhanceObject -object ($jsonList | ConvertFrom-Json) -excludeProperty $excludeProperty
                 }
 

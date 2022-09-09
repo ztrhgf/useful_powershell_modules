@@ -126,16 +126,17 @@
 
         # get line text where win32apps results send is mentioned
         $param = @{
-            Path    = $intuneLog
-            Pattern = ("^" + [regex]::escape('<![LOG[[Win32App] Sending results to service. session RequestPayload:'))
-        }
-        if ($allOccurrences) {
-            $param.AllMatches = $true
-        } else {
-            $param.List = $true
+            Path       = $intuneLog
+            Pattern    = ("^" + [regex]::escape('<![LOG[[Win32App] Sending results to service. session RequestPayload:'))
+            AllMatches = $true
+
         }
 
         $matchList = Select-String @param | select -ExpandProperty Line
+        if ($matchList.count -gt 1) {
+            # get the newest events first
+            [array]::Reverse($matchList)
+        }
 
         if ($matchList) {
             foreach ($match in $matchList) {
@@ -161,12 +162,17 @@
 
                         ++$i
 
+                        Write-Verbose "Processing:`n$json"
+
                         # customize converted object (convert base64 to text and JSON to object)
                         _enhanceObject -object ($json | ConvertFrom-Json) -excludeProperty $excludeProperty
                     }
                 } else {
                     # there is just one JSON, I can directly convert it to an object
                     # customize converted object (convert base64 to text and JSON to object)
+
+                    Write-Verbose "Processing:`n$jsonList"
+
                     _enhanceObject -object ($jsonList | ConvertFrom-Json) -excludeProperty $excludeProperty
                 }
 

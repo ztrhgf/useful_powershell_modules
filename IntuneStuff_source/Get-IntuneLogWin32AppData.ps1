@@ -57,12 +57,74 @@
         [System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String($encodedString))
     }
 
+    # transforms default JSON object into more readable one
     function _enhanceObject {
         param ($object, $excludeProperty)
 
         #region helper functions
+        function _ruleSubType {
+            param ($type, $subType, $value)
+
+            switch ($type) {
+                'File' {
+                    switch ($subType) {
+                        1 { "File or folder exist" }
+                        2 { "Date Modified" }
+                        3 { "Date Created" }
+                        4 { "File version" }
+                        5 { "Size in MB" }
+                        6 { "File or folder does not exist" }
+                        default { $subType }
+                    }
+                }
+
+                'Registry' {
+                    switch ($subType) {
+                        1 { if ($value) { "Value exists" } else { "Key exists" } }
+                        2 { if ($value) { "Value does not exist" } else { "Key does not exist" } }
+                        3 { "String comparison" }
+                        4 { "Integer comparison" }
+                        5 { "Version comparison" }
+                        default { $subType }
+                    }
+                }
+
+                'Script' {
+                    switch ($subType) {
+                        1 { "String" }
+                        2 { "Date and Time" }
+                        3 { "Integer" }
+                        4 { "Floating Point" }
+                        5 { "Version" }
+                        6 { "Boolean" }
+                        default { $subType }
+                    }
+                }
+
+                default {
+                    Write-Warning "Undefined operator type $type"
+                    $subType
+                }
+            }
+        }
+
+        function _operator {
+            param ($operator)
+
+            switch ($operator) {
+                0 { "Does not exist" }
+                1 { "Equals" }
+                2 { "Not equal to" }
+                4 { "Greater than" }
+                5 { "Greater than or equal" }
+                8 { "Less than" }
+                9 { "Less than or equal" }
+                default { $operator }
+            }
+        }
+
         function _detectionRule {
-            param ($detectionRule)
+            param ($detectionRules)
 
             function _detectionType {
                 param ($detectionType)
@@ -76,63 +138,67 @@
                 }
             }
 
-            function _subType {
-                param ($type)
+            $detectionRules = $detectionRules | ConvertFrom-Json
 
-                switch ($type) {
-                    # TODO
-                    # 1 { "File or folder exist" }
-                    # 2 { "Date Modified" }
-                    # 3 { "Date Created" }
-                    # 5 { "Size in MB" }
-                    # 6 { "File or folder does not exist" }
-                    default { $type }
+            # enhance the object properties
+            $detectionRules | % {
+                $detectionRule = $_
+
+                $type = _detectionType $detectionRule.DetectionType
+
+                $property = [ordered]@{
+                    Type = $type
                 }
-            }
 
-            function _operator {
-                param ($operator)
+                $detectionText = $_.DetectionText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+                if ($detectionText.ScriptBody) {
+                    # it is a script detection check
+                    $detectionText = $detectionText | select -Property `
+                    @{n = 'EnforceSignatureCheck'; e = { if ($_.EnforceSignatureCheck -ne 0) { $true } else { $false } } },
+                    @{n = 'RunAs32Bit'; e = { if ($_.RunAs32Bit -ne 0) { $true } else { $false } } },
+                    @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } } `
+                        -ExcludeProperty 'ScriptBody', 'RunAs32Bit', 'EnforceSignatureCheck'
+                } elseif ($detectionText.ProductCode) {
+                    # it is a MSI detection check
+                    $detectionText = $detectionText | select -Property @{n = 'ProductVersionOperator'; e = { _operator $_.ProductVersionOperator } }, '*' -ExcludeProperty 'ProductVersionOperator'
+                } else {
+                    # it is a file or registry detection check
+                    $detectionText = $detectionText | select -Property `
+                    @{n = 'DetectionType'; e = { _ruleSubType -type $type -subtype $_.detectionType -value $_.KeyName } },
+                    @{n = 'Operator'; e = { _operator -operator $_.operator -type $type } },
+                    '*',
+                    @{n = 'Check32BitOn64System'; e = { if ($_.Check32BitOn64System -ne 0) { $true } else { $false } } }`
+                        -ExcludeProperty 'DetectionType', 'Operator', 'Check32BitOn64System'
 
-                switch ($operator) {
-                    # TODO
-                    # 0 { "Does not exist" }
-                    # 1 { "Equals" }
-                    # 2 { "Not equal to" }
-                    # 5 { "Greater than or equal" }
-                    # 8 { "Less than" }
-                    # 9 { "Less than or equal" }
-                    default { $operator }
-                }
-            }
+                    if ($detectionText.DetectionType -in "File or folder exist", "File or folder does not exist", "Value exists", "Value does not exist") {
+                        # Operator and DetectionValue properties are not used for these types, remove them
+                        $detectionText = $detectionText | select -Property * -ExcludeProperty Operator, DetectionValue
+                    }
 
-            $r = $detectionRule | ConvertFrom-Json
-
-            $r | select `
-            @{n = 'DetectionType'; e = { _detectionType $_.DetectionType } },
-            @{n = 'DetectionText'; e = {
-                    $r = $_.DetectionText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
-                    $r | % {
-                        $rule = $_
-                        if ($rule.ScriptBody) {
-                            # it is a script detection check
-                            $rule | select -Property @{n = 'DetectionType'; e = { _subType  $_.detectionType } }, @{n = 'Operator'; e = { _operator $_.operator } }, '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 ($_.ScriptBody -replace "^77u/") } }`
-                                -ExcludeProperty 'DetectionType', 'Operator', 'ScriptBody'
-                        } elseif ($rule.ProductCode) {
-                            # it is a MSI detection check
-                            $rule | select -Property '*'
-                        } else {
-                            # it is a file or registry detection check
-                            $rule | select -Property @{n = 'DetectionType'; e = { _subType  $_.detectionType } }, @{n = 'Operator'; e = { _operator $_.operator } }, '*' -ExcludeProperty 'DetectionType', 'Operator'
-                        }
+                    if ($detectionText.DetectionType -in "Key exists", "Key does not exist") {
+                        # Operator, DetectionValue and KeyName properties are not used for these types, remove them
+                        $detectionText = $detectionText | select -Property * -ExcludeProperty Operator, DetectionValue, KeyName
                     }
                 }
+
+                # add object ($detectionText) properties to the parent object ($detectionRule) a.k.a flatten object structure
+                $newProperty = $detectionText.psobject.properties | select name
+
+                $newProperty | % {
+                    $propertyName = $_.Name
+                    $propertyValue = $detectionText.$propertyName
+
+                    $property.$propertyName = $propertyValue
+                }
+
+                New-Object -TypeName PSObject -Property $property
             }
         }
 
         function _extendedRequirementRules {
             param ($extendedRequirementRules)
 
-            function _type {
+            function _requirementType {
                 param ($type)
 
                 switch ($type) {
@@ -143,52 +209,62 @@
                 }
             }
 
-            function _subType {
-                param ($type)
+            $extendedRequirementRules = $extendedRequirementRules | ConvertFrom-Json
 
-                switch ($type) {
-                    1 { "File or folder exist" }
-                    2 { "Date Modified" }
-                    3 { "Date Created" }
-                    5 { "Size in MB" }
-                    6 { "File or folder does not exist" }
-                    default { $type }
+            # enhance the object properties
+            $extendedRequirementRules | % {
+                $extendedRequirementRule = $_
+
+                $type = _requirementType $extendedRequirementRule.Type
+
+                $property = [ordered]@{
+                    Type = $type
                 }
-            }
 
-            function _operator {
-                param ($operator)
+                $requirementText = $extendedRequirementRule.RequirementText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
 
-                switch ($operator) {
-                    0 { "Does not exist" }
-                    1 { "Equals" }
-                    2 { "Not equal to" }
-                    5 { "Greater than or equal" }
-                    8 { "Less than" }
-                    9 { "Less than or equal" }
-                    default { $operator }
-                }
-            }
+                if ($requirementText.ScriptBody) {
+                    # it is a script requirement check
+                    $requirementText = $requirementText | select -Property `
+                    @{n = 'ReqType'; e = { _ruleSubType -type $type -subtype $_.type -value $_.value } },
+                    @{n = 'Operator'; e = { _operator $_.operator } },
+                    '*',
+                    @{n = 'RunAsLoggedUser'; e = { if ($_.RunAsAccount -ne 0) { $true } else { $false } } },
+                    @{n = 'RunAs32Bit'; e = { if ($_.RunAs32Bit -ne 0) { $true } else { $false } } },
+                    @{n = 'EnforceSignatureCheck'; e = { if ($_.EnforceSignatureCheck -ne 0) { $true } else { $false } } },
+                    @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } `
+                        -ExcludeProperty 'Type', 'Operator', 'ScriptBody', 'RunAs32Bit', 'EnforceSignatureCheck', 'RunAsAccount'
+                } else {
+                    # it is a file or registry requirement check
+                    $requirementText = $requirementText | select -Property `
+                    @{n = 'ReqType'; e = { _ruleSubType -type $type -subtype $_.type -value $(if ($_.value) { $_.value } else { $_.keyname }) } },
+                    @{n = 'Operator'; e = { _operator $_.operator } },
+                    '*',
+                    @{n = 'Check32BitOn64System'; e = { if ($_.Check32BitOn64System -ne 0) { $true } else { $false } } }`
+                        -ExcludeProperty 'Type', 'Operator', 'Check32BitOn64System'
 
-            $r = $extendedRequirementRules | ConvertFrom-Json
+                    if ($requirementText.ReqType -in "File or folder exist", "File or folder does not exist", "Value exists", "Value does not exist") {
+                        # operator and value properties are not used for these types, remove them
+                        $requirementText = $requirementText | select -Property * -ExcludeProperty Operator, Value
+                    }
 
-            $r | select -Property `
-            @{n = 'Type'; e = { _type $_.Type } },
-            @{n = 'RequirementText'; e = {
-                    $r = $_.RequirementText | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
-                    $r | % {
-                        $rule = $_
-                        if ($rule.ScriptBody) {
-                            # it is a script requirement check
-                            $rule | select -Property @{n = 'Type'; e = { _subType  $_.type } }, @{n = 'Operator'; e = { _operator  $_.operator } }, '*', @{n = 'ScriptBody'; e = { ConvertFrom-Base64 $_.ScriptBody } } -ExcludeProperty 'Type', 'Operator', 'ScriptBody'
-                        } else {
-                            # it is a file or registry requirement check
-                            $rule | select -Property @{n = 'Type'; e = { _subType  $_.type } }, @{n = 'Operator'; e = { _operator  $_.operator } }, '*' -ExcludeProperty 'Type', 'Operator'
-                        }
+                    if ($requirementText.ReqType -in "Key exists", "Key does not exist") {
+                        # operator, value and keyname properties are not used for these types, remove them
+                        $requirementText = $requirementText | select -Property * -ExcludeProperty Operator, Value, KeyName
                     }
                 }
-            }`
-                -ExcludeProperty 'Type', 'RequirementText'
+
+                # add object ($requirementText) properties to the parent object ($extendedRequirementRule) a.k.a flatten object structure
+                $newProperty = $requirementText.psobject.properties | select name
+                $newProperty | % {
+                    $propertyName = $_.Name
+                    $propertyValue = $requirementText.$propertyName
+
+                    $property.$propertyName = $propertyValue
+                }
+
+                New-Object -TypeName PSObject -Property $property
+            }
         }
 
         function _returnCodes {
@@ -207,10 +283,9 @@
                 }
             }
 
-            $r = $returnCodes | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+            $returnCodes = $returnCodes | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
 
-            $r | select 'ReturnCode', @{n = 'Type'; e = { _type $_.Type } }
-
+            $returnCodes | select 'ReturnCode', @{n = 'Type'; e = { _type $_.Type } }
         }
 
         function _installEx {
@@ -220,8 +295,6 @@
                 param ($deviceRestartBehavior)
 
                 switch ($deviceRestartBehavior) {
-                    # 'App install may force a device restart'
-                    # 'Intune will force a mandatory device restart'
                     0 { 'Determine behavior based on return codes' }
                     1 { "App install may force a device restart" }
                     2 { 'No specific action' }
@@ -230,9 +303,9 @@
                 }
             }
 
-            $r = $installEx | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+            $installEx = $installEx | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
 
-            $r | select -Property `
+            $installEx | select -Property `
             @{n = 'RunAs'; e = { if ($_.RunAs -eq 1) { 'System' } else { 'User' } } },
             '*',
             @{n = 'DeviceRestartBehavior'; e = { _deviceRestartBehavior $_.DeviceRestartBehavior } }`
@@ -242,23 +315,30 @@
         function _requirementRules {
             param ($requirementRules)
 
-            $r = $requirementRules | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
+            $requirementRules = $requirementRules | ConvertFrom-Json # convert from JSON and select-object in two lines otherwise it behaves strangely
 
-            $r | select -Property `
+            $requirementRules | select -Property `
             @{n = 'RequiredOSArchitecture'; e = { if ($_.RequiredOSArchitecture -eq 1) { 'x86' } else { 'x64' } } },
             '*'`
                 -ExcludeProperty RequiredOSArchitecture
         }
+
+        function _flatDependencies {
+            param ($flatDependencies)
+
+            $flatDependencies | select @{n = 'AutoInstall'; e = { if ($_.Action -eq 10) { $true } else { $false } } }, @{n = 'AppId'; e = { $_.ChildId } }
+        }
         #endregion helper functions
 
         # add properties that gets customized/replaced
-        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes'
+        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes', 'FlatDependencies'
 
         $object | select -Property '*',
         @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
         @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
         @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
         @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
+        @{n = 'FlatDependencies'; e = { _flatDependencies $_.FlatDependencies } },
         @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
             -ExcludeProperty $excludeProperty
     }

@@ -67,7 +67,7 @@
                 }
             }
 
-            $complianceStateMessage | select Applicability, @{n = 'ComplianceState'; e = { _complianceState $_.ComplianceState } }, @{n = 'DesiredState'; e = { _desiredState $_.DesiredState } }, ErrorCode, TargetingMethod, InstallContext, TargetType, ProductVersion, AssignmentFilterIds
+            $complianceStateMessage | select Applicability, @{n = 'ComplianceState'; e = { _complianceState $_.ComplianceState } }, @{n = 'DesiredState'; e = { _desiredState $_.DesiredState } }, @{n = 'ErrorCode'; e = { _translateErrorCode  $_.ErrorCode } }, TargetingMethod, InstallContext, TargetType, ProductVersion, AssignmentFilterIds
         }
 
         function _enforcementStateMessage {
@@ -98,7 +98,20 @@
                 }
             }
 
-            $enforcementStateMessage | select @{n = 'EnforcementState'; e = { _enforcementState $_.EnforcementState } }, ErrorCode, TargetingMethod
+            $enforcementStateMessage | select @{n = 'EnforcementState'; e = { _enforcementState $_.EnforcementState } }, @{n = 'ErrorCode'; e = { _translateErrorCode  $_.ErrorCode } }, TargetingMethod
+        }
+
+        function _translateErrorCode {
+            param ($errorCode)
+
+            if (!$errorCode) { return }
+
+            $errMsg = [ComponentModel.Win32Exception]$errorCode
+            if ($errMsg -match "^Unknown error") {
+                $errorCode
+            } else {
+                $errMsg.Message + " ($errorCode)"
+            }
         }
         #endregion helper functions
 

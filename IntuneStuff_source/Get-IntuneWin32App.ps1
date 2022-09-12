@@ -294,21 +294,25 @@
         $logData = Get-IntuneLogWin32AppData
         $logReportingData = Get-IntuneLogWin32AppReportingResultData # to be able to translate IDs of apps which don't meet requirements
 
-        foreach ($app in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue)) {
-            $userAzureObjectID = Split-Path $app.Name -Leaf
+        $processedWin32AppId = @()
+
+        foreach ($scope in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue)) {
+            $userAzureObjectID = Split-Path $scope.Name -Leaf
 
             if ($excludeSystemApp -and $userAzureObjectID -eq "00000000-0000-0000-0000-000000000000") {
                 Write-Verbose "Skipping system deployments"
                 continue
             }
 
-            $userWin32AppRoot = $app.PSPath
+            $userWin32AppRoot = $scope.PSPath
             $win32AppIDList = Get-ChildItem $userWin32AppRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique | ? { $_ -ne 'GRS' }
 
             $win32AppIDList | % {
                 $win32AppID = $_
 
                 Write-Verbose "Processing App ID $win32AppID"
+
+                $processedWin32AppId += $win32AppID
 
                 #region get Win32App data
                 $newestWin32AppRecord = Get-ChildItem $userWin32AppRoot | ? PSChildName -Match ([regex]::escape($win32AppID)) | Sort-Object -Descending -Property PSChildName | select -First 1
@@ -448,6 +452,15 @@
                 #endregion output the results
             }
         }
+
+        #region warn about deployed but skip-installation apps
+        if ($logReportingData) {
+            $notProcessedApp = $logReportingData | ? { $_.Id -notin $processedWin32AppId }
+            if ($notProcessedApp) {
+                Write-Warning "Following apps didn't start installation: $($notProcessedApp.Name -join ', ')`n`nReason can be recent forced redeploy of such app or that deployment requirements are not met. For more information run 'Get-IntuneLogWin32AppReportingResultData'"
+            }
+        }
+        #endregion warn about deployed but skip-installation apps
     }
 
     $param = @{

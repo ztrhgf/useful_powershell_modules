@@ -33,7 +33,7 @@
     $myApp.DetectionRule.DetectionText.ScriptBody
 
     "Requirement script content for application 'MyApp'"
-    $myApp.ExtendedRequirementRules.RequirementText.ScriptBody
+    $myApp.RequirementRulesExtended.RequirementText.ScriptBody
 
     "Installation script content for application 'MyApp'"
     $myApp.InstallCommandLine
@@ -331,15 +331,17 @@
         #endregion helper functions
 
         # add properties that gets customized/replaced
-        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes', 'FlatDependencies'
+        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes', 'FlatDependencies', 'RebootEx', 'StartDeadlineEx'
 
         $object | select -Property '*',
         @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
         @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
-        @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
-        @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
+        @{n = 'RequirementRulesExtended'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
+        @{n = 'InstallExtended'; e = { _installEx $_.InstallEx } },
         @{n = 'FlatDependencies'; e = { _flatDependencies $_.FlatDependencies } },
-        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
+        @{n = 'RebootExtended'; e = { $_.RebootEx } },
+        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } },
+        @{n = 'StartDeadlineExtended'; e = { $_.StartDeadlineEx } }`
             -ExcludeProperty $excludeProperty
     }
     #endregion helper functions

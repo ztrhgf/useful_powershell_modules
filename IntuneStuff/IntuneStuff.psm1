@@ -1388,7 +1388,7 @@ function Get-ClientIntunePolicyResult {
 
     # create helper functions text definition for usage in remote sessions
     if ($computerName) {
-        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }"
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32App { ${function:Get-IntuneWin32App} }"
     }
     #endregion helper functions
 
@@ -1444,8 +1444,6 @@ function Get-ClientIntunePolicyResult {
     #endregion enrich SoftwareInstallation section
 
     #region Win32App
-    # https://oliverkieselbach.com/2018/10/02/part-3-deep-dive-microsoft-intune-management-extension-win32-apps/
-    # HKLM\SOFTWARE\Microsoft\IntuneManagementExtension\Apps\ doesn't exists?
     Write-Verbose "Processing 'Win32App' section"
     #region get data
     $scriptBlock = {
@@ -1457,62 +1455,14 @@ function Get-ClientIntunePolicyResult {
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
 
-        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue | % {
-            $userAzureObjectID = Split-Path $_.Name -Leaf
+        $win32App = Get-IntuneWin32App
 
-            $userWin32AppRoot = $_.PSPath
-            $win32AppIDList = Get-ChildItem $userWin32AppRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique | ? { $_ -ne 'GRS' }
-
-            $win32AppIDList | % {
-                $win32AppID = $_
-
-                Write-Verbose "`tID $win32AppID"
-
-                $newestWin32AppRecord = Get-ChildItem $userWin32AppRoot | ? PSChildName -Match ([regex]::escape($win32AppID)) | Sort-Object -Descending -Property PSChildName | select -First 1
-
-                $lastUpdatedTimeUtc = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name LastUpdatedTimeUtc
-                try {
-                    $complianceStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\ComplianceStateMessage" -Name ComplianceStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                } catch {
-                    Write-Verbose "`tUnable to get Compliance State Message data"
-                }
-                try {
-                    $enforcementStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\EnforcementStateMessage" -Name EnforcementStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                } catch {
-                    Write-Verbose "`tUnable to get Enforcement State Message data"
-                }
-
-                $lastError = $complianceStateMessage.ErrorCode
-                if (!$lastError) { $lastError = 0 } # because of HTML conditional formatting ($null means that cell will have red background)
-
-                if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = (_getIntuneApp $win32AppID).DisplayName
-                        "Id"                 = $win32AppID
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        # "Status"            = $complianceStateMessage.ComplianceState
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                    }
-                } else {
-                    # no 'DisplayName' property
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "Id"                 = $win32AppID
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        # "Status"            = $complianceStateMessage.ComplianceState
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                    }
-                }
-
-                if ($showURLs) {
-                    $property.IntuneWin32AppURL = "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$win32AppID"
-                }
-
-                New-Object -TypeName PSObject -Property $property
+        if ($showURLs) {
+            $win32App | % {
+                $_ | Add-Member -MemberType NoteProperty -Name "IntuneWin32AppURL" -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$($_.id)"
             }
+        } else {
+            $win32App
         }
     }
 
@@ -2428,7 +2378,7 @@ function Get-IntuneLogWin32AppData {
     $myApp.DetectionRule.DetectionText.ScriptBody
 
     "Requirement script content for application 'MyApp'"
-    $myApp.ExtendedRequirementRules.RequirementText.ScriptBody
+    $myApp.RequirementRulesExtended.RequirementText.ScriptBody
 
     "Installation script content for application 'MyApp'"
     $myApp.InstallCommandLine
@@ -2726,15 +2676,17 @@ function Get-IntuneLogWin32AppData {
         #endregion helper functions
 
         # add properties that gets customized/replaced
-        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes', 'FlatDependencies'
+        $excludeProperty += 'DetectionRule', 'RequirementRules', 'ExtendedRequirementRules', 'InstallEx', 'ReturnCodes', 'FlatDependencies', 'RebootEx', 'StartDeadlineEx'
 
         $object | select -Property '*',
         @{n = 'DetectionRule'; e = { _detectionRule $_.DetectionRule } },
         @{n = 'RequirementRules'; e = { _requirementRules $_.RequirementRules } },
-        @{n = 'ExtendedRequirementRules'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
-        @{n = 'InstallEx'; e = { _installEx $_.InstallEx } },
+        @{n = 'RequirementRulesExtended'; e = { _extendedRequirementRules $_.ExtendedRequirementRules } },
+        @{n = 'InstallExtended'; e = { _installEx $_.InstallEx } },
         @{n = 'FlatDependencies'; e = { _flatDependencies $_.FlatDependencies } },
-        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } }`
+        @{n = 'RebootExtended'; e = { $_.RebootEx } },
+        @{n = 'ReturnCodes'; e = { _returnCodes $_.ReturnCodes } },
+        @{n = 'StartDeadlineExtended'; e = { $_.StartDeadlineEx } }`
             -ExcludeProperty $excludeProperty
     }
     #endregion helper functions

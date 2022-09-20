@@ -221,7 +221,7 @@
 
     # create helper functions text definition for usage in remote sessions
     if ($computerName) {
-        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }"
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32App { ${function:Get-IntuneWin32App} }"
     }
     #endregion helper functions
 
@@ -277,8 +277,6 @@
     #endregion enrich SoftwareInstallation section
 
     #region Win32App
-    # https://oliverkieselbach.com/2018/10/02/part-3-deep-dive-microsoft-intune-management-extension-win32-apps/
-    # HKLM\SOFTWARE\Microsoft\IntuneManagementExtension\Apps\ doesn't exists?
     Write-Verbose "Processing 'Win32App' section"
     #region get data
     $scriptBlock = {
@@ -290,62 +288,14 @@
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
 
-        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue | % {
-            $userAzureObjectID = Split-Path $_.Name -Leaf
+        $win32App = Get-IntuneWin32App
 
-            $userWin32AppRoot = $_.PSPath
-            $win32AppIDList = Get-ChildItem $userWin32AppRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique | ? { $_ -ne 'GRS' }
-
-            $win32AppIDList | % {
-                $win32AppID = $_
-
-                Write-Verbose "`tID $win32AppID"
-
-                $newestWin32AppRecord = Get-ChildItem $userWin32AppRoot | ? PSChildName -Match ([regex]::escape($win32AppID)) | Sort-Object -Descending -Property PSChildName | select -First 1
-
-                $lastUpdatedTimeUtc = Get-ItemPropertyValue $newestWin32AppRecord.PSPath -Name LastUpdatedTimeUtc
-                try {
-                    $complianceStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\ComplianceStateMessage" -Name ComplianceStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                } catch {
-                    Write-Verbose "`tUnable to get Compliance State Message data"
-                }
-                try {
-                    $enforcementStateMessage = Get-ItemPropertyValue "$($newestWin32AppRecord.PSPath)\EnforcementStateMessage" -Name EnforcementStateMessage -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                } catch {
-                    Write-Verbose "`tUnable to get Enforcement State Message data"
-                }
-
-                $lastError = $complianceStateMessage.ErrorCode
-                if (!$lastError) { $lastError = 0 } # because of HTML conditional formatting ($null means that cell will have red background)
-
-                if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "DisplayName"        = (_getIntuneApp $win32AppID).DisplayName
-                        "Id"                 = $win32AppID
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        # "Status"            = $complianceStateMessage.ComplianceState
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                    }
-                } else {
-                    # no 'DisplayName' property
-                    $property = [ordered]@{
-                        "Scope"              = _getTargetName $userAzureObjectID
-                        "Id"                 = $win32AppID
-                        "LastUpdatedTimeUtc" = $lastUpdatedTimeUtc
-                        # "Status"            = $complianceStateMessage.ComplianceState
-                        "ProductVersion"     = $complianceStateMessage.ProductVersion
-                        "LastError"          = $lastError
-                    }
-                }
-
-                if ($showURLs) {
-                    $property.IntuneWin32AppURL = "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$win32AppID"
-                }
-
-                New-Object -TypeName PSObject -Property $property
+        if ($showURLs) {
+            $win32App | % {
+                $_ | Add-Member -MemberType NoteProperty -Name "IntuneWin32AppURL" -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$($_.id)"
             }
+        } else {
+            $win32App
         }
     }
 

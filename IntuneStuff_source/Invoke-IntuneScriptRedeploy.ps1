@@ -30,6 +30,9 @@ function Invoke-IntuneScriptRedeploy {
     Azure Tenant ID.
     Requirement for Intune App authentication.
 
+    .PARAMETER all
+    Switch to redeploy all scripts of selected type (script, remediationScript).
+
     .EXAMPLE
     Invoke-IntuneScriptRedeploy -scriptType script
 
@@ -64,7 +67,9 @@ function Invoke-IntuneScriptRedeploy {
 
         [System.Management.Automation.PSCredential] $credential,
 
-        [string] $tenantId
+        [string] $tenantId,
+
+        [switch] $all
     )
 
     if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
@@ -342,7 +347,11 @@ function Invoke-IntuneScriptRedeploy {
 
     #region let user redeploy chosen app
     if ($script) {
-        $scriptToRedeploy = $script | Out-GridView -PassThru -Title "Pick script(s) for redeploy"
+        if ($all) {
+            $scriptToRedeploy = $script
+        } else {
+            $scriptToRedeploy = $script | Out-GridView -PassThru -Title "Pick script(s) for redeploy"
+        }
 
         if ($scriptToRedeploy) {
             $scriptBlock = {
@@ -362,7 +371,7 @@ function Invoke-IntuneScriptRedeploy {
                     $scriptId = $_.id
                     $scopeId = $_.scope
                     if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
-                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId)"
+                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $scriptKeys | ? { $_.PSChildName -Match "^$scriptId(_\d+)?" -and $_.PSParentPath -Match "\\$scopeId$" }
 
@@ -391,7 +400,7 @@ function Invoke-IntuneScriptRedeploy {
             Invoke-Command @param
         }
     } else {
-        Write-Warning "No deployed script detected"
+        Write-Warning "No deployed script detected. Try restarting service 'IntuneManagementExtension'"
     }
     #endregion let user redeploy chosen app
 

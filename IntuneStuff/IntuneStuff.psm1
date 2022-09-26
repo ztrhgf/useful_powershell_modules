@@ -3454,6 +3454,123 @@ function Get-IntuneReport {
     }
 }
 
+function Get-IntuneScriptContent {
+    <#
+    .SYNOPSIS
+    Function for getting content of the scripts deployed from Intune MDM to this computer.
+
+    Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
+
+    .DESCRIPTION
+    Function for getting content of the scripts deployed from Intune MDM to this computer.
+    Just ordinary scripts are retrieved, not remediation ones!
+
+    Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
+
+    Data are gathered by:
+     - forcing redeploy of Intune scripts (so we can capture them)
+     - watching folder where Intune temporarily stores scripts before they are being run ("C:\Program Files (x86)\Microsoft Intune Management Extension\Policies\Scripts") and by copying them to user TEMP location for further processing
+     - output the results as PS object
+
+    .PARAMETER force
+    Switch for skipping warning about redeploying Intune scripts.
+
+    .EXAMPLE
+    Get-IntuneScriptContent
+
+    Redeploy all Intune scripts to this client, capture their content during this time and return it as an PowerShell objects.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [switch] $force
+    )
+
+    # base variables
+    $jobName = "Intune_Script_Copy_" + (Get-Date).ToString('HH:mm.ss')
+    $tmpFolder = "$env:TEMP\intune_script_copy"
+
+    if (!$force) {
+        Write-Warning "All (non-remediation) scripts deployed from Intune will be reapplied! (this is the only way to get their content on the client side unfortunately)"
+
+        $choice = ""
+        while ($choice -notmatch "^[Y|N]$") {
+            $choice = Read-Host "Do you really want to continue? (Y|N)"
+        }
+        if ($choice -eq "N") {
+            return
+        }
+    }
+
+    if (Test-Path $tmpFolder -ErrorAction SilentlyContinue) {
+        Remove-Item $tmpFolder -Recurse -Force
+    } else {
+        $null = New-Item -Path $tmpFolder -ItemType Directory
+    }
+
+    # monitor & copy applied Intune scripts
+    Write-Warning "Starting Intune script monitor&copy job ($jobName)"
+    $null = Start-Job -Name $jobName {
+        Invoke-FileSystemWatcher -PathToMonitor "C:\Program Files (x86)\Microsoft Intune Management Extension\Policies\Scripts" -ChangeType Created -Filter "*.ps1" -Action {
+            $details = $event.SourceEventArgs
+            $name = $details.Name -replace "\.ps1"
+            $fullPath = $details.FullPath
+
+            Write-Verbose "Copying $name '$fullPath' to '$tmpFolder'"
+            Copy-Item $fullPath $tmpFolder -Force
+        }
+    }
+
+    # force Intune scripts redeployment
+    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+        Write-Warning "You are not running this function as administrator. Redeploy of Intune scripts cannot be forced. Just new deployments processed in background will be captured!"
+    } else {
+        Write-Warning "Forcing redeploy of Intune scripts"
+        Invoke-IntuneScriptRedeploy -scriptType script -all -WarningVariable redeployWarningMsg
+
+        if ($redeployWarningMsg -match "No deployed scripts detected") {
+            Write-Warning "Previous warning could be caused by running this function or 'Invoke-IntuneScriptRedeploy' in last few minutes. If this is the case, WAIT. If it is no, there are probably no Intune scripts deployed to your computer and you can cancel this function via CTRL + C shortcut."
+            #TODO remove job $jobName in case user use CTRL + C
+        }
+    }
+
+    # wait for Intune scripts processing to finish
+    Write-Warning "Waiting for the completion of Intune scripts redeploy (this can take several minutes!)"
+    $null = Invoke-FileContentWatcher -path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\AgentExecutor.log" -searchString "Agent executor completed." -stopOnFirstMatch
+
+    # stop copying job because all scripts were already processed
+    Write-Verbose "Removing Intune script copy job"
+    $result = Get-Job -Name $jobName | Receive-Job
+    Get-Job -Name $jobName | Remove-Job -Force
+
+    #region process & output copied Intune scripts
+    $intuneScript = Get-ChildItem $tmpFolder -File -Filter "*.ps1" | select -ExpandProperty FullName
+
+    if (!$intuneScript) {
+        throw "Script copy job haven't processed any scripts. Job output was: $result"
+    }
+
+    $intuneScript | % {
+        $scriptPath = $_
+
+        # script name is in format '<scope>_<scriptid>.ps1'
+        $scriptFileName = (Split-Path $scriptPath -Leaf) -replace "\.ps1$"
+        $scope = ($scriptFileName -split "_")[0]
+        $scriptId = ($scriptFileName -split "_")[1]
+
+        [PSCustomObject]@{
+            Id      = $scriptId
+            Scope   = $scope
+            Content = Get-Content $scriptPath -Raw
+        }
+    }
+    #endregion process & output copied Intune scripts
+
+    # cleanup
+    Write-Verbose "Removing folder '$tmpFolder'"
+    Remove-Item $tmpFolder -Recurse -Force
+}
+
 function Get-IntuneWin32App {
     <#
     .SYNOPSIS
@@ -4514,6 +4631,9 @@ function Invoke-IntuneScriptRedeploy {
     Azure Tenant ID.
     Requirement for Intune App authentication.
 
+    .PARAMETER all
+    Switch to redeploy all scripts of selected type (script, remediationScript).
+
     .EXAMPLE
     Invoke-IntuneScriptRedeploy -scriptType script
 
@@ -4548,7 +4668,9 @@ function Invoke-IntuneScriptRedeploy {
 
         [System.Management.Automation.PSCredential] $credential,
 
-        [string] $tenantId
+        [string] $tenantId,
+
+        [switch] $all
     )
 
     if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
@@ -4826,7 +4948,11 @@ function Invoke-IntuneScriptRedeploy {
 
     #region let user redeploy chosen app
     if ($script) {
-        $scriptToRedeploy = $script | Out-GridView -PassThru -Title "Pick script(s) for redeploy"
+        if ($all) {
+            $scriptToRedeploy = $script
+        } else {
+            $scriptToRedeploy = $script | Out-GridView -PassThru -Title "Pick script(s) for redeploy"
+        }
 
         if ($scriptToRedeploy) {
             $scriptBlock = {
@@ -4846,7 +4972,7 @@ function Invoke-IntuneScriptRedeploy {
                     $scriptId = $_.id
                     $scopeId = $_.scope
                     if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
-                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId)"
+                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $scriptKeys | ? { $_.PSChildName -Match "^$scriptId(_\d+)?" -and $_.PSParentPath -Match "\\$scopeId$" }
 
@@ -4875,7 +5001,7 @@ function Invoke-IntuneScriptRedeploy {
             Invoke-Command @param
         }
     } else {
-        Write-Warning "No deployed script detected"
+        Write-Warning "No deployed script detected. Try restarting service 'IntuneManagementExtension'"
     }
     #endregion let user redeploy chosen app
 
@@ -5850,6 +5976,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntuneReport, Get-IntuneWin32App, Get-MDMClientData, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntuneReport, Get-IntuneScriptContent, Get-IntuneWin32App, Get-MDMClientData, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAuthHeader, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, ipresult, New-IntuneAuthHeader, Repair-IntuneEnrollment, Reset-IntuneJoin

@@ -695,6 +695,62 @@ function Get-InstalledSoftware {
     }
 }
 
+function Get-SFCLogEvent {
+    <#
+    .SYNOPSIS
+    Function for outputting SFC related lines from CBS.log.
+
+    .DESCRIPTION
+    Function for outputting SFC related lines from CBS.log.
+
+    .PARAMETER computerName
+    Remote computer name.
+
+    .PARAMETER justError
+    Output just lines that matches regex specified in $errorRegex
+
+    .NOTES
+    https://docs.microsoft.com/en-US/troubleshoot/windows-client/deployment/analyze-sfc-program-log-file-entries
+    #>
+
+    [CmdletBinding()]
+    param(
+        [string] $computerName
+        ,
+        [switch] $justError
+    )
+
+    $cbsLog = "$env:windir\logs\cbs\cbs.log"
+
+    if ($computerName) {
+        $cbsLog = "\\$computerName\$cbsLog" -replace ":", "$"
+    }
+
+    Write-Verbose "Log path $cbsLog"
+
+    if (Test-Path $cbsLog) {
+        Get-Content $cbsLog | Select-String -Pattern "\[SR\] .*" | % {
+            if (!$justError -or ($justError -and ($_ | Select-String -Pattern "verify complete|Verifying \d+|Beginning Verify and Repair transaction" -NotMatch))) {
+                $match = ([regex]"^(\d{4}-\d{2}-\d{2} \d+:\d+:\d+), (\w+) \s+(.+)\[SR\] (.+)$").Match($_)
+
+                [PSCustomObject]@{
+                    Date    = Get-Date ($match.Captures.groups[1].value)
+                    Type    = $match.Captures.groups[2].value
+                    Message = $match.Captures.groups[4].value
+                }
+            }
+        }
+
+        if ($justError) {
+            Write-Warning "If didn't returned anything, command 'sfc /scannow' haven't been run here or there are no errors (regex: $errorRegex)"
+        } else {
+            Write-Warning "If didn't returned anything, command 'sfc /scannow' probably haven't been run here"
+        }
+    } else {
+        Write-Warning "Log $cbsLog is missing. Run 'sfc /scannow' to create it"
+    }
+}
+
 function Invoke-AsLoggedUser {
     <#
     .SYNOPSIS
@@ -1711,6 +1767,607 @@ function Invoke-AsSystem {
     }
 }
 
+function Invoke-FileContentWatcher {
+    <#
+    .SYNOPSIS
+    Function for monitoring file content.
+
+    .DESCRIPTION
+    Function for monitoring file content.
+    Allows you to react on create of new line with specific content.
+
+    Outputs line(s) that match searched string.
+
+    .PARAMETER path
+    Path to existing file that should be monitored.
+
+    .PARAMETER searchString
+    String that should be searched in newly added lines.
+
+    .PARAMETER searchAsRegex
+    Searched string is regex.
+
+    .PARAMETER stopOnFirstMatch
+    Switch for stopping search on first match.
+
+    .EXAMPLE
+    Invoke-FileContentWatcher -Path C:\temp\mylog.txt -searchString "Error occurred"
+
+    Start monitoring of newly added lines in C:\temp\mylog.txt file. If some line should contain "Error occurred" string, whole line will be outputted into console.
+
+    .EXAMPLE
+    Invoke-FileContentWatcher -Path C:\temp\mylog.txt -searchString "Action finished" -stopOnFirstMatch
+
+    Start monitoring of newly added lines in C:\temp\mylog.txt file. If some line should contain "Action finished" string, whole line will be outputted into console and function will end.
+    #>
+
+    [Alias("Watch-FileContent")]
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $path,
+
+        [Parameter(Mandatory = $true)]
+        [string] $searchString,
+
+        [switch] $searchAsRegex,
+
+        [switch] $stopOnFirstMatch
+    )
+
+    $fileName = Split-Path $path -Leaf
+    $jobName = "ContentWatcher_" + $fileName + "_" + (Get-Date).ToString('HH:mm.ss')
+
+    $null = Start-Job -Name $jobName -ScriptBlock {
+        param ($path, $searchString, $searchAsRegex)
+
+        $gcParam = @{
+            Path        = $path
+            Wait        = $true
+            Tail        = 0 # I am interested just in newly added lines
+            ErrorAction = 'Stop'
+        }
+
+        if ($searchAsRegex) {
+            Get-Content @gcParam | ? { $_ -match "$searchString" }
+        } else {
+            Get-Content @gcParam | ? { $_ -like "*$searchString*" }
+        }
+    } -ArgumentList $path, $searchString, $searchAsRegex
+
+    while (1) {
+        Start-Sleep -Milliseconds 300
+
+        if ((Get-Job -Name $jobName).state -eq 'Completed') {
+            $result = Get-Job -Name $jobName | Receive-Job
+
+            Get-Job -Name $jobName | Remove-Job -Force
+
+            throw "Watcher $jobName failed with error: $result"
+        }
+
+        if (Get-Job -Name $jobName | Receive-Job -Keep) {
+            # searched string was found
+            $result = Get-Job -Name $jobName | Receive-Job
+
+            if ($stopOnFirstMatch) {
+                Get-Job -Name $jobName | Remove-Job -Force
+
+                return $result
+            } else {
+                $result
+            }
+        }
+    }
+}
+
+function Invoke-FileSystemWatcher {
+    <#
+    .SYNOPSIS
+    Function for monitoring changes made in given folder.
+
+    .DESCRIPTION
+    Function for monitoring changes made in given folder.
+    Thanks to Action parameter, you can react as you wish.
+
+    .PARAMETER PathToMonitor
+    Path to folder to watch.
+
+    .PARAMETER Filter
+    How should name of file/folder to watch look like. Same syntax as for -like operator.
+
+    Default is '*'.
+
+    .PARAMETER IncludeSubdirectories
+    Switch for monitoring also changes in subfolders.
+
+    .PARAMETER Action
+    What should happen, when change is detected. Value should be string quoted by @''@.
+
+    Default is: @'
+            $details = $event.SourceEventArgs
+            $Name = $details.Name
+            $FullPath = $details.FullPath
+            $OldFullPath = $details.OldFullPath
+            $OldName = $details.OldName
+            $ChangeType = $details.ChangeType
+            $Timestamp = $event.TimeGenerated
+            if ($ChangeType -eq "Renamed") {
+                $text = "{0} was {1} at {2} to {3}" -f $FullPath, $ChangeType, $Timestamp, $Name
+            } else {
+                $text = "{0} was {1} at {2}" -f $FullPath, $ChangeType, $Timestamp
+            }
+            Write-Host $text
+    '@
+
+    so outputting changes to console.
+
+    .PARAMETER ChangeType
+    What kind of actions should be monitored.
+    Default is all i.e. "Created", "Changed", "Deleted", "Renamed"
+
+    .PARAMETER NotifyFilter
+    What kind of "sub" actions should be monitored. Can be used also to improve performance.
+    More at https://docs.microsoft.com/en-us/dotnet/api/system.io.notifyfilters?view=netframework-4.8
+
+    For example: 'FileName', 'DirectoryName', 'LastWrite'
+
+    .EXAMPLE
+    Invoke-FileSystemWatcher C:\temp "*.txt"
+
+    Just changes to txt files in root of temp folder will be monitored.
+
+    Just changes in name of files and folders in temp folder and its subfolders will be outputted to console and send by email.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Watch-FileSystem")]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript( {
+                If (Test-Path -Path $_ -PathType Container) {
+                    $true
+                } else {
+                    Throw "$_ doesn't exist or it's not a folder."
+                }
+            })]
+        [string] $PathToMonitor
+        ,
+        [string] $Filter = "*"
+        ,
+        [switch] $IncludeSubdirectories
+        ,
+        [scriptblock] $Action = {
+            $details = $event.SourceEventArgs
+            $Name = $details.Name
+            $FullPath = $details.FullPath
+            $OldFullPath = $details.OldFullPath
+            $OldName = $details.OldName
+            $ChangeType = $details.ChangeType
+            $Timestamp = $event.TimeGenerated
+            if ($ChangeType -eq "Renamed") {
+                $text = "{0} was {1} at {2} (previously {3})" -f $FullPath, $ChangeType, $Timestamp, $OldName
+            } else {
+                $text = "{0} was {1} at {2}" -f $FullPath, $ChangeType, $Timestamp
+            }
+            Write-Host $text
+        }
+        ,
+        [ValidateSet("Created", "Changed", "Deleted", "Renamed")]
+        [string[]] $ChangeType = ("Created", "Changed", "Deleted", "Renamed")
+        ,
+        [string[]] $NotifyFilter
+    )
+
+    $FileSystemWatcher = New-Object System.IO.FileSystemWatcher
+    $FileSystemWatcher.Path = $PathToMonitor
+    if ($IncludeSubdirectories) {
+        $FileSystemWatcher.IncludeSubdirectories = $true
+    }
+    if ($Filter) {
+        $FileSystemWatcher.Filter = $Filter
+    }
+    if ($NotifyFilter) {
+        $NotifyFilter = $NotifyFilter -join ', '
+        $FileSystemWatcher.NotifyFilter = [IO.NotifyFilters]$NotifyFilter
+    }
+    # Set emits events
+    $FileSystemWatcher.EnableRaisingEvents = $true
+
+    # Set event handlers
+    $handlers = . {
+        $changeType | % {
+            Register-ObjectEvent -InputObject $FileSystemWatcher -EventName $_ -Action $Action -SourceIdentifier "FS$_"
+        }
+    }
+
+    Write-Verbose "Watching for changes in $PathToMonitor where file/folder name like '$Filter'"
+
+    try {
+        do {
+            Wait-Event -Timeout 1
+        } while ($true)
+    } finally {
+        # End script actions + CTRL+C executes the remove event handlers
+        $changeType | % {
+            Unregister-Event -SourceIdentifier "FS$_"
+        }
+
+        # Remaining cleanup
+        $handlers | Remove-Job
+
+        $FileSystemWatcher.EnableRaisingEvents = $false
+        $FileSystemWatcher.Dispose()
+
+        Write-Warning -Message 'Event Handler completed and disabled.'
+    }
+}
+
+function Invoke-MSTSC {
+    <#
+    .SYNOPSIS
+    Function for automatization of RDP connection to computer.
+    By default it tries to read LAPS password and use it for connection (using cmdkey tool, that imports such credentials to Credential Manager temporarily). But can also be used for autofill of domain credentials (using AutoIt PowerShell module).
+
+    .DESCRIPTION
+    Function for automatization of RDP connection to computer.
+    By default it tries to read LAPS password and use it for connection (using cmdkey tool, that imports such credentials to Credential Manager temporarily). But can also be used for autofill of domain credentials (using AutoIt PowerShell module).
+
+    It has to be run from PowerShell console, that is running under account with permission for reading LAPS password!
+
+    It uses AdmPwd.PS for getting LAPS password and AutoItx PowerShell module for automatic filling of credentials into mstsc.exe app for RDP, in case LAPS password wasn't retrieved or domain account is used.
+
+    It is working only on English OS.
+
+    .PARAMETER computerName
+    Name of remote computer/s
+
+    .PARAMETER useDomainAdminAccount
+    Instead of local admin account, your domain account will be used.
+
+    .PARAMETER credential
+    Object with credentials, which should be used to authenticate to remote computer
+
+    .PARAMETER port
+    RDP port. Default is 3389
+
+    .PARAMETER admin
+    Switch. Use admin RDP mode
+
+    .PARAMETER restrictedAdmin
+    Switch. Use restrictedAdmin mode
+
+    .PARAMETER remoteGuard
+    Switch. Use remoteGuard mode
+
+    .PARAMETER multiMon
+    Switch. Use multiMon
+
+    .PARAMETER fullScreen
+    Switch. Open in fullscreen
+
+    .PARAMETER public
+    Switch. Use public mode
+
+    .PARAMETER width
+    Width of window
+
+    .PARAMETER height
+    Heigh of windows
+
+    .PARAMETER gateway
+    What gateway to use
+
+    .PARAMETER localAdmin
+    What is the name of local administrator, that will be used for LAPS connection
+
+    .EXAMPLE
+    Invoke-MSTSC pc1
+
+    Run remote connection to pc1 using builtin administrator account and his LAPS password.
+
+    .EXAMPLE
+    Invoke-MSTSC pc1 -useDomainAdminAccount
+
+    Run remote connection to pc1 using adm_<username> domain account.
+
+    .EXAMPLE
+    $credentials = Get-Credential
+    Invoke-MSTSC pc1 -credential $credentials
+
+    Run remote connection to pc1 using credentials stored in $credentials
+
+    .NOTES
+    Automatic filling is working only on english operating systems.
+    Author: OndĹ™ej Ĺ ebela - ztrhgf@seznam.cz
+    #>
+
+    [CmdletBinding()]
+    [Alias("rdp")]
+    param (
+        [Parameter(Position = 0, ValueFromPipeline = $true, Mandatory = $True)]
+        [ValidateNotNullOrEmpty()]
+        $computerName
+        ,
+        [switch] $useDomainAdminAccount
+        ,
+        [PSCredential] $credential
+        ,
+        [int] $port = 3389
+        ,
+        [switch] $admin
+        ,
+        [switch] $restrictedAdmin
+        ,
+        [switch] $remoteGuard
+        ,
+        [switch] $multiMon
+        ,
+        [switch] $fullScreen
+        ,
+        [switch] $public
+        ,
+        [int] $width
+        ,
+        [int] $height
+        ,
+        [string] $gateway
+        ,
+        [string] $localAdmin = "administrator"
+    )
+
+    begin {
+        # remove validation ValidateNotNullOrEmpty
+        (Get-Variable computerName).Attributes.Clear()
+
+        try {
+            $null = Import-Module AdmPwd.PS -ErrorAction Stop -Verbose:$false
+        } catch {
+            throw "Module AdmPwd.PS isn't available"
+        }
+
+        try {
+            Write-Verbose "Get list of domain DCs"
+            $DC = [System.Directoryservices.Activedirectory.Domain]::GetCurrentDomain().DomainControllers | ForEach-Object { ($_.name -split "\.")[0] }
+        } catch {
+            throw "Unable to contact your AD domain"
+        }
+
+        Write-Verbose "Get NETBIOS domain name"
+        if (!$domainNetbiosName) {
+            $domainNetbiosName = $env:userdomain
+
+            if ($domainNetbiosName -eq $env:computername) {
+                # function is running under local account therefore $env:userdomain cannot be used
+                $domainNetbiosName = (Get-WmiObject Win32_NTDomain).DomainName # slow but gets the correct value
+            }
+        }
+        Write-Verbose "Get domain name"
+        if (!$domainName) {
+            $domainName = (Get-WmiObject Win32_ComputerSystem).Domain
+        }
+
+        $defaultRDP = Join-Path $env:USERPROFILE "Documents\Default.rdp"
+        if (Test-Path $defaultRDP -ErrorAction SilentlyContinue) {
+            Write-Verbose "RDP settings from $defaultRDP will be used"
+        }
+
+        if ($computerName.GetType().name -ne 'string') {
+            while ($choice -notmatch "[Y|N]") {
+                $choice = Read-Host "Do you really want to connect to all these computers:($($computerName.count))? (Y|N)"
+            }
+            if ($choice -eq "N") {
+                break
+            }
+        }
+
+        if ($credential) {
+            $UserName = $Credential.UserName
+            $Password = $Credential.GetNetworkCredential().Password
+        } elseif ($useDomainAdminAccount) {
+            $dAdmin = $env:USERNAME
+            $userName = "$domainNetbiosName\$dAdmin"
+        } else {
+            # no credentials were given, try to get LAPS password
+            ++$tryLaps
+        }
+
+        # set MSTSC parameters
+        switch ($true) {
+            { $admin } { $mstscArguments += '/admin ' }
+            { $restrictedAdmin } { $mstscArguments += '/restrictedAdmin ' }
+            { $remoteGuard } { $mstscArguments += '/remoteGuard ' }
+            { $multiMon } { $mstscArguments += '/multimon ' }
+            { $fullScreen } { $mstscArguments += '/f ' }
+            { $public } { $mstscArguments += '/public ' }
+            { $width } { $mstscArguments += "/w:$width " }
+            { $height } { $mstscArguments += "/h:$height " }
+            { $gateway } { $mstscArguments += "/g:$gateway " }
+        }
+
+        $params = @{
+            filePath = "$($env:SystemRoot)\System32\mstsc.exe"
+        }
+
+        if ($mstscArguments) {
+            $params.argumentList = $mstscArguments
+        }
+    }
+
+    process {
+        foreach ($computer in $computerName) {
+            # get just hostname
+            if ($computer -match "\d+\.\d+\.\d+\.\d+") {
+                # it is IP
+                $computerHostname = $computer
+            } else {
+                # it is hostname or fqdn
+                $computerHostname = $computer.split('\.')[0]
+            }
+            $computerHostname = $computerHostname.ToLower()
+
+            if ($tryLaps -and $computerHostname -notin $DC.ToLower()) {
+                Write-Verbose "Getting LAPS password for $computerHostname"
+                $password = (Get-AdmPwdPassword $computerHostname).password
+
+                if (!$password) {
+                    Write-Warning "Unable to get LAPS password for $computerHostname."
+                }
+            }
+
+            if ($tryLaps) {
+                if ($computerHostname -in $DC.ToLower()) {
+                    # connecting to DC (there are no local accounts
+                    # $userName = "$domainNetbiosName\$tier0Account"
+                    $userName = "$domainNetbiosName\$Env:USERNAME"
+                } else {
+                    # connecting to non-DC computer
+                    if ($computerName -notmatch "\d+\.\d+\.\d+\.\d+") {
+                        $userName = "$computerHostname\$localAdmin"
+                    } else {
+                        # IP was used instead of hostname, therefore I assume there is no LAPS
+                        $UserName = " "
+                    }
+                }
+            }
+
+            # if hostname is not in FQDN and it is a server, I will add domain suffix (because of RDP certificate that is probably generated there)
+            if ($computer -notmatch "\.") {
+                Write-Verbose "Adding $domainName suffix to $computer"
+                $computer = $computer + "." + $domainName
+            }
+
+            $connectTo = $computer
+
+            if ($port -ne 3389) {
+                $connectTo += ":$port"
+            }
+
+            # clone mstsc parameters just in case I am connecting to more than one computer, to be able to easily add /v hostname parameter
+            $fParams = $params.Clone()
+
+            #
+            # log on automatization
+            if ($password) {
+                # I have password, so I will use cmdkey to store it in Cred. Manager
+                Write-Verbose "Saving credentials for $computer and $userName to CredMan"
+                $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $Process = New-Object System.Diagnostics.Process
+                $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
+                $ProcessInfo.Arguments = "/generic:TERMSRV/$computer /user:$userName /pass:`"$password`""
+                $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $Process.StartInfo = $ProcessInfo
+                [void]$Process.Start()
+                $null = $Process.WaitForExit()
+
+                if ($Process.ExitCode -ne 0) {
+                    throw "Unable to add credentials to Cred. Manageru, but just for sure, check it."
+                }
+
+                # remote computer
+                $fParams.argumentList += "/v $connectTo"
+            } else {
+                # I don't have credentials, so I have to use AutoIt for log on automation
+
+                Write-Verbose "I don't have credentials, so AutoIt will be used instead"
+
+                if ([console]::CapsLock) {
+                    $keyBoardObject = New-Object -ComObject WScript.Shell
+                    $keyBoardObject.SendKeys("{CAPSLOCK}")
+                    Write-Warning "CAPS LOCK was turned on, disabling"
+                }
+
+                $titleCred = "Windows Security"
+                if (((Get-AU3WinHandle -Title $titleCred) -ne 0) -and $password) {
+                    Write-Warning "There is opened window for entering credentials. It has to be closed or auto-fill of credentials will not work."
+                    Write-Host 'Enter any key to continue' -NoNewline
+                    $null = [Console]::ReadKey('?')
+                }
+            }
+
+            #
+            # running mstsc
+            Write-Verbose "Running mstsc.exe with parameter: $($fParams.argumentList)"
+            Start-Process @fParams
+
+            if ($password) {
+                # I have password, so cmdkey was used for automation
+                # so I will now remove saved credentials from Cred. Manager
+                Write-Verbose "Removing saved credentials from CredMan"
+                Start-Sleep -Seconds 1.5
+                $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $Process = New-Object System.Diagnostics.Process
+                $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
+                $ProcessInfo.Arguments = "/delete:TERMSRV/$computer"
+                $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $Process.StartInfo = $ProcessInfo
+                [void]$Process.Start()
+                $null = $Process.WaitForExit()
+
+                if ($Process.ExitCode -ne 0) {
+                    throw "Removal of credentials failed. Remove them manually from  Cred. Manager!"
+                }
+            } else {
+                # I don't have password, so AutoIt will be used
+
+                Write-Verbose "Automating log on process using AutoIt"
+
+                try {
+                    $null = Get-Command Show-AU3WinActivate -ErrorAction Stop
+                } catch {
+                    try {
+                        $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                    } catch {
+                        throw "Module AutoItX isn't available. It is part of the AutoIt installer https://www.autoitconsulting.com/site/scripting/autoit-cmdlets-for-windows-powershell/"
+                    }
+                }
+
+                # click on "Show options" in mstsc console
+                $title = "Remote Desktop Connection"
+                Start-Sleep -Milliseconds 300 # to get the handle on last started mstsc
+                $null = Wait-AU3Win -Title $title -Timeout 1
+                $winHandle = Get-AU3WinHandle -Title $title
+                $null = Show-AU3WinActivate -WinHandle $winHandle
+                $controlHandle = Get-AU3ControlHandle -WinHandle $winhandle -Control "ToolbarWindow321"
+                $null = Invoke-AU3ControlClick -WinHandle $winHandle -ControlHandle $controlHandle
+                Start-Sleep -Milliseconds 600
+
+
+                # fill computer and username
+                Write-Verbose "Connecting to: $connectTo as: $userName"
+                Send-AU3Key -Key "{CTRLDOWN}A{CTRLUP}{DELETE}" # delete any existing text
+                Send-AU3Key -Key "$connectTo{DELETE}" # delete any suffix, that could be autofilled there
+
+                Send-AU3Key -Key "{TAB}"
+                Start-Sleep -Milliseconds 400
+
+                Send-AU3Key -Key "{CTRLDOWN}A{CTRLUP}{DELETE}" # delete any existing text
+                Send-AU3Key -Key $userName
+                Send-AU3Key -Key "{ENTER}"
+            }
+
+            # # accept any untrusted certificate
+            # $title = "Remote Desktop Connection"
+            # $null = Wait-AU3Win -Title $title -Timeout 1
+            # $winHandle = ''
+            # $count = 0
+            # while ((!$winHandle -or $winHandle -eq 0) -and $count -le 40) {
+            #     # nema smysl cekat moc dlouho, protoze certak muze byt ok nebo uz ma vyjimku
+            #     $winHandle = Get-AU3WinHandle -Title $title -Text "The certificate is not from a trusted certifying authority"
+            #     Start-Sleep -Milliseconds 100
+            #     ++$count
+            # }
+            # # je potreba potvrdit nesedici certifikat
+            # if ($winHandle) {
+            #     $null = Show-AU3WinActivate -WinHandle $winHandle
+            #     Start-Sleep -Milliseconds 100
+            #     $controlHandle = Get-AU3ControlHandle -WinHandle $winhandle -Control "Button5"
+            #     $null = Invoke-AU3ControlClick -WinHandle $winHandle -ControlHandle $controlHandle
+            # }
+        }
+    }
+}
+
 function Invoke-SQL {
     <#
     .SYNOPSIS
@@ -1792,6 +2449,156 @@ function Invoke-SQL {
     $connection.Close()
     $adapter.Dispose()
     $dataSet.Tables
+}
+
+function Invoke-WindowsUpdate {
+    <#
+    .SYNOPSIS
+    Function for invoking Windows Update.
+    Updates will be searched, downloaded and installed.
+
+    .DESCRIPTION
+    Function for invoking Windows Update.
+    Updates will be searched (only updates that would be automatically selected in WU are searched), downloaded and installed (by default only the critical ones).
+
+    Supports only Server 2016 and 2019 and partially 2012!
+
+    .PARAMETER computerName
+    Name of computer(s) where WU should be started.
+
+    .PARAMETER allUpdates
+    Switch for installing all available updates, not just critical ones.
+    But in either case, just updates that would be automatically selected in WU are searched (because of AutoSelectOnWebSites=1 filter).
+
+    .PARAMETER restartIfRequired
+    Switch for restarting the computer if reboot is pending after updates installation.
+    If not used and restart is needed, warning will be outputted.
+
+    .EXAMPLE
+    Invoke-WindowsUpdate app-15
+
+    On server app-15 will be downloaded and installed all critical updates.
+
+    .EXAMPLE
+    Invoke-WindowsUpdate app-15 -restartIfRequired
+
+    On server app-15 will be downloaded and installed all critical updates.
+    Restart will be invoked in needed.
+
+    .EXAMPLE
+    Invoke-WindowsUpdate app-15 -restartIfRequired -allUpdates
+
+    On server app-15 will be downloaded and installed all updates.
+    Restart will be invoked in needed.
+
+    .NOTES
+    Inspired by https://github.com/microsoft/WSLab/tree/master/Scenarios/Windows%20Update#apply-updates-on-2016-and-2019
+    #>
+
+    [CmdletBinding()]
+    [Alias("Invoke-WU", "Install-WindowsUpdate")]
+    param (
+        [string[]] $computerName
+        ,
+        [switch] $allUpdates
+        ,
+        [switch] $restartIfRequired
+    )
+
+    Invoke-Command -ComputerName $computerName {
+        param ($allUpdates, $restartIfRequired)
+
+        $os = (Get-CimInstance -Class Win32_OperatingSystem).Caption
+        $result = @()
+
+        switch ($os) {
+            "2012" {
+                if (!$allUpdates) {
+                    Write-Warning "On Server 2012 are always installed all updates"
+                }
+
+                # find & apply all updates
+                wuauclt /detectnow /updatenow
+            }
+
+            "2016" {
+                # find updates
+                $Instance = New-CimInstance -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName MSFT_WUOperationsSession
+                $ScanResult = $instance | Invoke-CimMethod -MethodName ScanForUpdates -Arguments @{SearchCriteria = "IsInstalled=0 AND AutoSelectOnWebSites=1"; OnlineScan = $true }
+
+                # filter just critical ones
+                if (!$allUpdates) {
+                    $ScanResult = $ScanResult | ? { $_.updates.MsrcSeverity -eq "Critical" }
+                }
+
+                # apply updates
+                if ($ScanResult.Updates) {
+                    $null = $instance | Invoke-CimMethod -MethodName DownloadUpdates -Arguments @{Updates = [ciminstance[]]$ScanResult.Updates }
+                    $result = $instance | Invoke-CimMethod -MethodName InstallUpdates -Arguments @{Updates = [ciminstance[]]$ScanResult.Updates }
+                }
+            }
+
+            "2019" {
+                # find updates
+                try {
+                    $ScanResult = Invoke-CimMethod -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName "MSFT_WUOperations" -MethodName ScanForUpdates -Arguments @{SearchCriteria = "IsInstalled=0" } -ErrorAction Stop
+                } catch {
+                    try {
+                        $ScanResult = Invoke-CimMethod -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName "MSFT_WUOperations" -MethodName ScanForUpdates -Arguments @{SearchCriteria = "IsInstalled=0 AND AutoSelectOnWebSites=1" }-ErrorAction Stop
+                    } catch {
+                        # this should work for Core server
+                        $ScanResult = Invoke-CimMethod -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName "MSFT_WUOperations" -MethodName ScanForUpdates -Arguments @{SearchCriteria = "IsInstalled=0 AND Type='Software'" } -ErrorAction Stop
+                    }
+                }
+
+                # filter just critical ones
+                if (!$allUpdates) {
+                    $ScanResult = $ScanResult | ? { $_.updates.MsrcSeverity -eq "Critical" }
+                }
+
+                # apply updates
+                if ($ScanResult.Updates) {
+                    $result = Invoke-CimMethod -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName "MSFT_WUOperations" -MethodName InstallUpdates -Arguments @{Updates = $ScanResult.Updates }
+                }
+            }
+
+            default {
+                throw "$os is not defined"
+            }
+        }
+
+        #region inform about results
+        if ($failed = $result | ? { $_.returnValue -ne 0 }) {
+            $failed = " ($($failed.count) failed"
+        }
+
+        if (@($result).count) {
+            "Installed $(@($result).count) updates$failed on $env:COMPUTERNAME"
+        } else {
+            if ($os -match "2012") {
+                "You have to check manually if some updates were installed (because it's Server 2012)"
+            } else {
+                "No updates found on $env:COMPUTERNAME"
+            }
+        }
+        #endregion inform about results
+
+        #region restart system
+        if ($os -notmatch "2012") {
+            $pendingReboot = Invoke-CimMethod -Namespace "root/Microsoft/Windows/WindowsUpdate" -ClassName "MSFT_WUSettings" -MethodName IsPendingReboot | select -exp pendingReboot
+        } else {
+            "Unable to detect if restart is required (because it's Server 2012)"
+        }
+
+        if ($restartIfRequired -and $pendingReboot -eq $true) {
+            Write-Warning "Restarting $env:COMPUTERNAME"
+            shutdown /r /t 30 /c "restarting because of newly installed updates"
+        }
+        if (!$restartIfRequired -and $pendingReboot -eq $true) {
+            Write-Warning "Restart is required on $env:COMPUTERNAME!"
+        }
+        #endregion restart system
+    } -ArgumentList $allUpdates, $restartIfRequired
 }
 
 function Uninstall-ApplicationViaUninstallString {
@@ -1925,5 +2732,6 @@ function Uninstall-ApplicationViaUninstallString {
     }
 }
 
-Export-ModuleMember -function ConvertFrom-XML, Export-ScriptsToModule, Get-InstalledSoftware, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-SQL, Uninstall-ApplicationViaUninstallString
+Export-ModuleMember -function ConvertFrom-XML, Export-ScriptsToModule, Get-InstalledSoftware, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-SQL, Invoke-WindowsUpdate, Uninstall-ApplicationViaUninstallString
 
+Export-ModuleMember -alias Install-WindowsUpdate, Invoke-WU, rdp, Watch-FileContent, Watch-FileSystem

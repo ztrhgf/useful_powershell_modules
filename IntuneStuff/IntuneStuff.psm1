@@ -3488,7 +3488,7 @@ function Get-IntuneScriptContent {
 
     # base variables
     $jobName = "Intune_Script_Copy_" + (Get-Date).ToString('HH:mm.ss')
-    $tmpFolder = "$env:TEMP\intune_script_copy"
+    $tmpFolder = "$env:TEMP\intune_script_copy" # if modified, change also in Invoke-FileSystemWatcher Action parameter!
 
     if (!$force) {
         Write-Warning "All (non-remediation) scripts deployed from Intune will be reapplied! (this is the only way to get their content on the client side unfortunately)"
@@ -3503,20 +3503,23 @@ function Get-IntuneScriptContent {
     }
 
     if (Test-Path $tmpFolder -ErrorAction SilentlyContinue) {
-        Remove-Item $tmpFolder -Recurse -Force
-    } else {
-        $null = New-Item -Path $tmpFolder -ItemType Directory
+        # cleanup
+        Remove-Item $tmpFolder -Recurse -Force -ErrorAction Stop
     }
+
+    $null = New-Item -Path $tmpFolder -ItemType Directory
 
     # monitor & copy applied Intune scripts
     Write-Warning "Starting Intune script monitor&copy job ($jobName)"
     $null = Start-Job -Name $jobName {
         Invoke-FileSystemWatcher -PathToMonitor "C:\Program Files (x86)\Microsoft Intune Management Extension\Policies\Scripts" -ChangeType Created -Filter "*.ps1" -Action {
+            $tmpFolder = "$env:TEMP\intune_script_copy" # has to be hardcoded :(
+
             $details = $event.SourceEventArgs
             $name = $details.Name -replace "\.ps1"
             $fullPath = $details.FullPath
 
-            Write-Verbose "Copying $name '$fullPath' to '$tmpFolder'"
+            # Write-Host "Copying $name '$fullPath' to '$tmpFolder'"
             Copy-Item $fullPath $tmpFolder -Force
         }
     }

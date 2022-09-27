@@ -3243,6 +3243,253 @@ function Get-IntuneOverallComplianceStatus {
     }
 }
 
+function Get-IntuneRemediationScript {
+    <#
+    .SYNOPSIS
+    Function for showing Remediation scripts deployed from Intune to local/remote computer.
+
+    Scripts details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log).
+
+    .DESCRIPTION
+    Function for showing Remediation scripts deployed from Intune to local/remote computer.
+
+    Scripts details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log).
+
+    .PARAMETER computerName
+    Name of remote computer where you want to get the data from.
+
+    .PARAMETER getDataFromIntune
+    Switch for getting Scripts and User names from Intune, so locally used IDs can be translated to them.
+
+    .PARAMETER credential
+    Credential object used for Intune authentication.
+
+    .PARAMETER tenantId
+    Azure Tenant ID.
+    Requirement for Intune App authentication.
+
+    .EXAMPLE
+    Get-IntuneRemediationScript
+
+    Get and show common Remediation script(s) deployed from Intune to this computer.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $computerName,
+
+        [switch] $getDataFromIntune,
+
+        [System.Management.Automation.PSCredential] $credential,
+
+        [string] $tenantId
+    )
+
+    #region helper function
+    function _getRemediationScript {
+        param ([string] $scriptID)
+        $intuneRemediationScript | ? id -EQ $scriptID
+    }
+
+    function _getScopeName {
+        param ([string] $id)
+
+        Write-Verbose "Translating $id"
+
+        if (!$id) {
+            Write-Verbose "id was null"
+            return
+        } elseif ($id -eq 'device') {
+            # xml nodes contains 'device' instead of 'Device'
+            return 'Device'
+        }
+
+        $errPref = $ErrorActionPreference
+        $ErrorActionPreference = "Stop"
+        try {
+            if ($id -eq '00000000-0000-0000-0000-000000000000' -or $id -eq 'S-0-0-00-0000000000-0000000000-000000000-000') {
+                return 'Device'
+            } elseif ($id -match "^S-\d+-\d+-\d+") {
+                # it is local account
+                return ((New-Object System.Security.Principal.SecurityIdentifier($id)).Translate([System.Security.Principal.NTAccount])).Value
+            } else {
+                # it is AzureAD account
+                if ($getDataFromIntune) {
+                    return ($intuneUser | ? id -EQ $id).userPrincipalName
+                } else {
+                    $userSID = Get-UserSIDForUserAzureID $id
+                    if ($userSID) {
+                        _getScopeName $userSID
+                    } else {
+                        return $id
+                    }
+                }
+            }
+        } catch {
+            Write-Warning "Unable to translate $id to account name ($_)"
+            $ErrorActionPreference = $errPref
+            return $id
+        }
+    }
+
+    # create helper functions text definition for usage in remote sessions
+    if ($computerName) {
+        $allFunctionDefs = "function _getScopeName { ${function:_getScopeName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-UserSIDForUserAzureID { ${function:Get-UserSIDForUserAzureID} }; function Get-IntuneLogRemediationScriptData { ${function:Get-IntuneLogRemediationScriptData} }"
+    }
+    #endregion helper function
+
+    #region prepare
+    if ($getDataFromIntune) {
+        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
+            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
+        }
+
+        if ($tenantId) {
+            # app logon
+            if (!$credential) {
+                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
+            }
+            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
+            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
+            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
+        } else {
+            # user logon
+            if ($credential) {
+                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
+                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
+            } else {
+                $null = Connect-MSGraph -ErrorAction Stop
+                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
+            }
+        }
+
+        Write-Verbose "Getting Intune data"
+        # filtering by ID is as slow as getting all data
+        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
+        $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
+        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+    }
+
+    if ($computerName) {
+        $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
+    }
+    #endregion prepare
+
+    #region get data
+    $scriptBlock = {
+        param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+
+        # inherit verbose settings from host session
+        $VerbosePreference = $verbosePref
+
+        # recreate functions from their text definitions
+        . ([ScriptBlock]::Create($allFunctionDefs))
+
+        # get additional script data (script content etc)
+        $scriptData = Get-IntuneLogRemediationScriptData
+
+        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Reports" -ErrorAction SilentlyContinue | % {
+            $userAzureObjectID = Split-Path $_.Name -Leaf
+            $userRemScriptRoot = $_.PSPath
+
+            # $lastFullReportTimeUTC = Get-ItemPropertyValue $userRemScriptRoot -Name LastFullReportTimeUTC
+            $remScriptIDList = Get-ChildItem $userRemScriptRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique
+
+            $remScriptIDList | % {
+                $remScriptID = $_
+
+                Write-Verbose "`tID $remScriptID"
+
+                $newestRemScriptRecord = Get-ChildItem $userRemScriptRoot | ? PSChildName -Match ([regex]::escape($remScriptID)) | Sort-Object -Descending -Property PSChildName | select -First 1
+
+                try {
+                    $result = Get-ItemPropertyValue "$($newestRemScriptRecord.PSPath)\Result" -Name Result | ConvertFrom-Json
+                } catch {
+                    Write-Verbose "`tUnable to get Remediation Script Result data"
+                }
+
+                $lastExecution = Get-ItemPropertyValue "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution\$userAzureObjectID\$($newestRemScriptRecord.PSChildName)" -Name LastExecution
+
+                $extraScriptData = $scriptData | ? PolicyId -EQ $remScriptID
+
+                if ($getDataFromIntune) {
+                    $property = [ordered]@{
+                        "Scope"                             = _getScopeName $userAzureObjectID
+                        "DisplayName"                       = (_getRemediationScript $remScriptID).DisplayName
+                        "Id"                                = $remScriptID
+                        "LastError"                         = $result.ErrorCode
+                        "LastExecution"                     = $lastExecution
+                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
+                        "InternalVersion"                   = $result.InternalVersion
+                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
+                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
+                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
+                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
+                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
+                        "RemediationExitCode"               = $result.Info.RemediationExitCode
+                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
+                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
+                        "ErrorDetails"                      = $result.Info.ErrorDetails
+                    }
+                } else {
+                    # no 'DisplayName' property
+                    $property = [ordered]@{
+                        "Scope"                             = _getScopeName $userAzureObjectID
+                        "Id"                                = $remScriptID
+                        "LastError"                         = $result.ErrorCode
+                        "LastExecution"                     = $lastExecution
+                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
+                        "InternalVersion"                   = $result.InternalVersion
+                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
+                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
+                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
+                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
+                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
+                        "RemediationExitCode"               = $result.Info.RemediationExitCode
+                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
+                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
+                        "ErrorDetails"                      = $result.Info.ErrorDetails
+                    }
+                }
+
+                # add additional properties when possible
+                if ($extraScriptData) {
+                    Write-Verbose "Enrich script object data with information found in Intune log files"
+
+                    $extraScriptData = $extraScriptData | select * -ExcludeProperty AccountId, PolicyId, DocumentSchemaVersion
+
+                    $newProperty = Get-Member -InputObject $extraScriptData -MemberType NoteProperty
+                    $newProperty | % {
+                        $propertyName = $_.Name
+                        $propertyValue = $extraScriptData.$propertyName
+
+                        $property.$propertyName = $propertyValue
+                    }
+                } else {
+                    Write-Verbose "For script $remScriptID there are no extra information in Intune log files"
+                }
+
+                New-Object -TypeName PSObject -Property $property
+            }
+        }
+    }
+
+    $param = @{
+        scriptBlock  = $scriptBlock
+        argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+    }
+    if ($computerName) {
+        $param.session = $session
+    }
+
+    Invoke-Command @param | select -Property * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    #endregion get data
+
+    if ($computerName) {
+        Remove-PSSession $session
+    }
+}
+
 function Get-IntuneReport {
     <#
     .SYNOPSIS
@@ -3454,16 +3701,262 @@ function Get-IntuneReport {
     }
 }
 
+function Get-IntuneScript {
+    <#
+    .SYNOPSIS
+    Function for showing (non-remediation) scripts deployed from Intune to local/remote computer.
+
+    Script details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Policies) and if 'includeScriptContent' parameter is used, script content is gathered during forced redeploy of the scripts.
+
+    .DESCRIPTION
+    Function for showing (non-remediation) scripts deployed from Intune to local/remote computer.
+
+    Script details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\Policies) and if 'includeScriptContent' parameter is used, script content is gathered during forced redeploy of the scripts.
+
+    .PARAMETER computerName
+    Name of remote computer where you want to force the redeploy.
+
+    .PARAMETER includeScriptContent
+    Switch for including Intune scripts content.
+
+    This will need administrator rights and lead to redeploy of all such scripts to the client!
+
+    .PARAMETER force
+    Switch for skipping script redeploy confirmation.
+
+    .PARAMETER credential
+    Credential object used for Intune authentication.
+
+    .PARAMETER tenantId
+    Azure Tenant ID.
+    Requirement for Intune App authentication.
+
+    .EXAMPLE
+    Get-IntuneScript
+
+    Get and show (non-remediation) script(s) deployed from Intune to this computer. Script content will NOT be included.
+
+    .EXAMPLE
+    Get-IntuneScript -includeScriptContent
+
+    Get and show (non-remediation) script(s) deployed from Intune to this computer. Script content will be included.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $computerName,
+
+        [switch] $includeScriptContent,
+
+        [switch] $force,
+
+        [switch] $getDataFromIntune,
+
+        [System.Management.Automation.PSCredential] $credential,
+
+        [string] $tenantId
+    )
+
+    #region helper function
+    function _getIntuneScript {
+        param ([string] $scriptID)
+
+        $intuneScript | ? id -EQ $scriptID
+    }
+
+    # function translates user Azure ID or SID to its display name
+    function _getTargetName {
+        param ([string] $id)
+
+        Write-Verbose "Translating account $id to its name (SID)"
+
+        if (!$id) {
+            Write-Verbose "Id was null"
+            return
+        } elseif ($id -eq 'device') {
+            # xml nodes contains 'device' instead of 'Device'
+            return 'Device'
+        }
+
+        $errPref = $ErrorActionPreference
+        $ErrorActionPreference = "Stop"
+        try {
+            if ($id -eq '00000000-0000-0000-0000-000000000000' -or $id -eq 'S-0-0-00-0000000000-0000000000-000000000-000') {
+                Write-Verbose "`t- Id belongs to device"
+                return 'Device'
+            } elseif ($id -match "^S-\d+-\d+-\d+") {
+                # it is local account
+                Write-Verbose "`t- Id is SID, trying to translate to local account name"
+                return ((New-Object System.Security.Principal.SecurityIdentifier($id)).Translate([System.Security.Principal.NTAccount])).Value
+            } else {
+                # it is AzureAD account
+                Write-Verbose "`t- Id belongs to AAD account"
+                if ($getDataFromIntune) {
+                    Write-Verbose "`t- Translating ID using Intune data"
+                    return ($intuneUser | ? id -EQ $id).userPrincipalName
+                } else {
+                    Write-Verbose "`t- Getting SID that belongs to AAD ID, by searching Intune logs"
+                    $userSID = Get-UserSIDForUserAzureID $id
+                    if ($userSID) {
+                        _getTargetName $userSID
+                    } else {
+                        return $id
+                    }
+                }
+            }
+        } catch {
+            Write-Warning "Unable to translate $id to account name ($_)"
+            $ErrorActionPreference = $errPref
+            return $id
+        }
+    }
+
+    # create helper functions text definition for usage in remote sessions
+    if ($computerName) {
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function Get-IntuneScriptContent { ${function:Get-IntuneScriptContent} }; function Invoke-IntuneScriptRedeploy { ${function:Invoke-IntuneScriptRedeploy} }"
+    }
+    #endregion helper function
+
+    #region prepare
+    if ($getDataFromIntune) {
+        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
+            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
+        }
+
+        if ($tenantId) {
+            # app logon
+            if (!$credential) {
+                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
+            }
+            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
+            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
+            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
+        } else {
+            # user logon
+            if ($credential) {
+                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
+                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
+            } else {
+                $null = Connect-MSGraph -ErrorAction Stop
+                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
+            }
+        }
+
+        Write-Verbose "Getting Intune data"
+        # filtering by ID is as slow as getting all data
+        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
+        $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
+        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+    }
+
+    if ($computerName) {
+        $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
+    }
+    #endregion prepare
+
+    #region get data
+    $scriptBlock = {
+        param ($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $includeScriptContent, $force)
+
+        # inherit verbose settings from host session
+        $VerbosePreference = $verbosePref
+
+        # caching of script ID > Name translations
+        $scriptNameList = @{}
+
+        # recreate functions from their text definitions
+        . ([ScriptBlock]::Create($allFunctionDefs))
+
+        if ($includeScriptContent) {
+            if ($force) {
+                $scriptContent = Get-IntuneScriptContent -force
+            } else {
+                $scriptContent = Get-IntuneScriptContent
+            }
+        }
+
+        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Policies" -ErrorAction SilentlyContinue | % {
+            $userAzureObjectID = Split-Path $_.Name -Leaf
+
+            Get-ChildItem $_.PSPath | % {
+                $scriptRegPath = $_.PSPath
+                $scriptID = Split-Path $_.Name -Leaf
+
+                Write-Verbose "`tID $scriptID"
+
+                $scriptRegData = Get-ItemProperty $scriptRegPath
+
+                # get output of the invoked script
+                if ($scriptRegData.ResultDetails) {
+                    try {
+                        $resultDetails = $scriptRegData.ResultDetails | ConvertFrom-Json -ErrorAction Stop | select -ExpandProperty ExecutionMsg
+                    } catch {
+                        Write-Verbose "`tUnable to get Script Output data"
+                    }
+                } else {
+                    $resultDetails = $null
+                }
+
+                if ($getDataFromIntune) {
+                    $property = [ordered]@{
+                        "Scope"                   = _getTargetName $userAzureObjectID
+                        "DisplayName"             = (_getIntuneScript $scriptID).DisplayName
+                        "Id"                      = $scriptID
+                        "Result"                  = $scriptRegData.Result
+                        "ErrorCode"               = $scriptRegData.ErrorCode
+                        "DownloadAndExecuteCount" = $scriptRegData.DownloadCount
+                        "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
+                        "RunAsAccount"            = $scriptRegData.RunAsAccount
+                        "ResultDetails"           = $resultDetails
+                    }
+                } else {
+                    # no 'DisplayName' property
+                    $property = [ordered]@{
+                        "Scope"                   = _getTargetName $userAzureObjectID
+                        "Id"                      = $scriptID
+                        "Result"                  = $scriptRegData.Result
+                        "ErrorCode"               = $scriptRegData.ErrorCode
+                        "DownloadAndExecuteCount" = $scriptRegData.DownloadCount
+                        "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
+                        "RunAsAccount"            = $scriptRegData.RunAsAccount
+                        "ResultDetails"           = $resultDetails
+                    }
+                }
+
+                if ($scriptContent) {
+                    $property.Content = $scriptContent | ? Id -EQ $scriptID | select -ExpandProperty Content
+                }
+
+                New-Object -TypeName PSObject -Property $property
+            }
+        }
+    }
+
+    $param = @{
+        scriptBlock  = $scriptBlock
+        argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $includeScriptContent, $force)
+    }
+    if ($computerName) {
+        $param.session = $session
+    }
+
+    Invoke-Command @param | select -Property * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
+    #endregion get data
+
+    if ($computerName) {
+        Remove-PSSession $session
+    }
+}
+
 function Get-IntuneScriptContent {
     <#
     .SYNOPSIS
-    Function for getting content of the scripts deployed from Intune MDM to this computer.
+    Function for getting content of the (non-remediation) scripts deployed from Intune MDM to this computer.
 
     Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
 
     .DESCRIPTION
-    Function for getting content of the scripts deployed from Intune MDM to this computer.
-    Just ordinary scripts are retrieved, not remediation ones!
+    Function for getting content of the (non-remediation) scripts deployed from Intune MDM to this computer.
 
     Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
 
@@ -3680,7 +4173,7 @@ function Get-IntuneWin32App {
                     return ($intuneUser | ? id -EQ $id).userPrincipalName
                 } else {
                     Write-Verbose "`t- Getting SID that belongs to AAD ID, by searching Intune logs"
-                    $userSID = Get-IntuneUserSID $id
+                    $userSID = Get-UserSIDForUserAzureID $id
                     if ($userSID) {
                         _getTargetName $userSID
                     } else {
@@ -3692,47 +4185,6 @@ function Get-IntuneWin32App {
             Write-Warning "Unable to translate $id to account name ($_)"
             $ErrorActionPreference = $errPref
             return $id
-        }
-    }
-
-    # function translates user Azure ID to local SID, by getting such info from Intune log files
-    function Get-IntuneUserSID {
-        param (
-            [Parameter(Mandatory = $true)]
-            [string] $userId
-        )
-
-        if ($userIdList.keys -contains $userId) {
-            return $userIdList.$userId
-        }
-
-        $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
-
-        if (!$intuneLogList) {
-            Write-Error "Unable to find any Intune log files. Redeploy will probably not work as expected."
-            return
-        }
-
-        foreach ($intuneLog in $intuneLogList) {
-            # how content of the log can looks like
-            # [Win32App] ..................... Processing user session 1, userId: e5834928-0f19-492d-8a69-3fbc98fd84eb, userSID: S-1-5-21-2475586523-545188003-3344463812-8050 .....................
-            # [Win32App] EspPreparation starts for userId: e5834928-0f19-442d-8a69-3fbc98fd84eb userSID: S-1-5-21-2475586523-545182003-3344463812-8050
-
-            $userMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] \.* Processing user session \d+, userId: $userId, userSID: (S-[0-9-]+) )|(?:\[Win32App\] EspPreparation starts for userId: $userId userSID: (S-[0-9-]+))" -List
-            if ($userMatch) {
-                # cache the results
-                if ($userIdList) {
-                    $userIdList.$userId = $userMatch.matches.groups[1].value
-                }
-                # return user SID
-                return $userMatch.matches.groups[1].value
-            }
-        }
-
-        Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
-        # cache the results
-        if ($userIdList) {
-            $userIdList.$userId = $null
         }
     }
 
@@ -3812,7 +4264,7 @@ function Get-IntuneWin32App {
     }
 
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-IntuneUserSID { ${function:Get-IntuneUserSID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }; function Get-IntuneLogWin32AppReportingResultData { ${function:Get-IntuneLogWin32AppReportingResultData} }"
+    $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function Get-UserSIDForUserAzureID { ${function:Get-UserSIDForUserAzureID} }; function Get-Win32AppErrMsg { ${function:Get-Win32AppErrMsg} }; function Get-IntuneLogWin32AppData { ${function:Get-IntuneLogWin32AppData} }; function Get-IntuneLogWin32AppReportingResultData { ${function:Get-IntuneLogWin32AppReportingResultData} }"
     #endregion helper function
 
     #region prepare
@@ -3858,9 +4310,6 @@ function Get-IntuneWin32App {
 
         # inherit verbose settings from host session
         $VerbosePreference = $verbosePref
-
-        # caching of user ID > SID translations
-        $userIdList = @{}
 
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
@@ -3981,6 +4430,7 @@ function Get-IntuneWin32App {
                 if (!$lastError) { $lastError = 0 } # because of HTML conditional formatting ($null means that cell will have red background)
                 #endregion get Win32App data
 
+                #TODO I don't differentiate between user and device scope, but it seems log contains just user data?
                 $appLogData = $logData | ? Id -EQ $win32AppID
                 $appLogReportingData = $logReportingData | ? Id -EQ $win32AppID
 
@@ -4601,6 +5051,70 @@ function Get-MDMClientData {
 
         New-Object -TypeName PSObject -Property $deviceProperty
     } # end of foreach
+}
+
+function Get-UserSIDForUserAzureID {
+    <#
+    .SYNOPSIS
+    Function finds SID for given user Azure ID.
+
+    .DESCRIPTION
+    Function finds SID for given user Azure ID.
+    Uses client's Intune log to get this information.
+
+    .PARAMETER userId
+    Azure ID to translate.
+
+    .EXAMPLE
+    Get-UserSIDForUserAzureID -userId 91b91882-f81b-4ba4-9d7d-10cd49219b79
+
+    Translates user Azure ID 91b91882-f81b-4ba4-9d7d-10cd49219b79 into local SID.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $userId
+    )
+
+    # create global variable for cache purposes
+    if (!$azureUserIdList.keys) {
+        $global:azureUserIdList = @{}
+    }
+
+    if ($azureUserIdList.keys -contains $userId) {
+        # return cached information
+        return $azureUserIdList.$userId
+    }
+
+    $intuneLogList = Get-ChildItem -Path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs" -Filter "IntuneManagementExtension*.log" -File | sort LastWriteTime -Descending | select -ExpandProperty FullName
+
+    if (!$intuneLogList) {
+        Write-Error "Unable to find any Intune log files. Redeploy will probably not work as expected."
+        return
+    }
+
+    foreach ($intuneLog in $intuneLogList) {
+        # how content of the log can looks like
+        # [Win32App] ..................... Processing user session 1, userId: e5834928-0f19-492d-8a69-3fbc98fd84eb, userSID: S-1-5-21-2475586523-545188003-3344463812-8050 .....................
+        # [Win32App] EspPreparation starts for userId: e5834928-0f19-442d-8a69-3fbc98fd84eb userSID: S-1-5-21-2475586523-545182003-3344463812-8050
+
+        Write-Verbose "Searching $userId in '$intuneLog'"
+
+        $userMatch = Select-String -Path $intuneLog -Pattern "(?:\[Win32App\] \.* Processing user session \d+, userId: $userId, userSID: (S-[0-9-]+) )|(?:\[Win32App\] EspPreparation starts for userId: $userId userSID: (S-[0-9-]+))" -List
+        if ($userMatch) {
+            # cache the results
+            if ($azureUserIdList) {
+                $azureUserIdList.$userId = $userMatch.matches.groups[1].value
+            }
+            # return user SID
+            return $userMatch.matches.groups[1].value
+        }
+    }
+
+    Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
+    # cache the results
+    $azureUserIdList.$userId = $null
 }
 
 function Invoke-IntuneScriptRedeploy {
@@ -5979,6 +6493,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntuneReport, Get-IntuneScriptContent, Get-IntuneWin32App, Get-MDMClientData, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntuneRemediationScript, Get-IntuneReport, Get-IntuneScript, Get-IntuneScriptContent, Get-IntuneWin32App, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAuthHeader, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, ipresult, New-IntuneAuthHeader, Repair-IntuneEnrollment, Reset-IntuneJoin

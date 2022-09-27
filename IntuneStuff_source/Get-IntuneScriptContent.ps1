@@ -1,13 +1,12 @@
 ﻿function Get-IntuneScriptContent {
     <#
     .SYNOPSIS
-    Function for getting content of the scripts deployed from Intune MDM to this computer.
+    Function for getting content of the (non-remediation) scripts deployed from Intune MDM to this computer.
 
     Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
 
     .DESCRIPTION
-    Function for getting content of the scripts deployed from Intune MDM to this computer.
-    Just ordinary scripts are retrieved, not remediation ones!
+    Function for getting content of the (non-remediation) scripts deployed from Intune MDM to this computer.
 
     Unfortunately scripts has to be reapplied on the client, so take that into account! Only during this time, it is possible to copy the scripts content.
 

@@ -41,6 +41,7 @@ function Invoke-IntuneWin32AppRedeploy {
     #>
 
     [CmdletBinding()]
+    [Alias("Invoke-IntuneWin32AppRedeployLocally")]
     param (
         [string] $computerName,
 
@@ -51,8 +52,8 @@ function Invoke-IntuneWin32AppRedeploy {
         [string] $tenantId
     )
 
-    if (!(Get-Command Get-IntuneWin32App)) {
-        throw "Command Get-IntuneWin32App is missing"
+    if (!(Get-Command Get-IntuneWin32AppLocally)) {
+        throw "Command Get-IntuneWin32AppLocally is missing"
     }
 
     if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
@@ -100,7 +101,7 @@ function Invoke-IntuneWin32AppRedeploy {
     if ($tenantId) { $param.tenantId = $tenantId }
 
     Write-Verbose "Getting deployed Win32Apps"
-    $win32App = Get-IntuneWin32App @param
+    $win32App = Get-IntuneWin32AppLocally @param
     #endregion get deployed Win32Apps
 
     if ($win32App) {
@@ -125,8 +126,8 @@ function Invoke-IntuneWin32AppRedeploy {
                     $scopeId = $_.scopeId
                     $scope = $_.scope
                     if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
-                    if (!$appId) { throw "ID property is missing. Problem is probably in function Get-IntuneWin32App." }
-                    if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32App." }
+                    if (!$appId) { throw "ID property is missing. Problem is probably in function Get-IntuneWin32AppLocally." }
+                    if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32AppLocally." }
                     $txt = $appName
                     if (!$txt) { $txt = $appId }
                     Write-Verbose "Redeploying app $txt (scope $scope)"

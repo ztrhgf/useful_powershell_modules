@@ -56,6 +56,7 @@ function Invoke-IntuneScriptRedeploy {
     #>
 
     [CmdletBinding()]
+    [Alias("Invoke-IntuneScriptRedeployLocally")]
     param (
         [string] $computerName,
 

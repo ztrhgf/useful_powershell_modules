@@ -79,7 +79,7 @@
         For authentication to Intune registered application secret will be used (AppID and secret stored in credentials object).
         #>
 
-    [Alias("ipresult", "Get-IntunePolicyResult")]
+    [Alias("ipresult", "Get-IntunePolicyResult", "Get-IntuneClientPolicyResult")]
     [CmdletBinding()]
     param (
         [string] $computerName,
@@ -221,7 +221,7 @@
 
     # create helper functions text definition for usage in remote sessions
     if ($computerName) {
-        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32App { ${function:Get-IntuneWin32App} }"
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32AppLocally { ${function:Get-IntuneWin32AppLocally} }"
     }
     #endregion helper functions
 
@@ -288,7 +288,7 @@
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
 
-        $win32App = Get-IntuneWin32App
+        $win32App = Get-IntuneWin32AppLocally
 
         if ($showURLs) {
             $win32App | % {

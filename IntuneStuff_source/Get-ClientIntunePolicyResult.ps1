@@ -23,6 +23,14 @@
 
         Default is "IntunePolicyReport.html" in user profile.
 
+        .PARAMETER includeScriptContent
+        Switch for including Intune scripts content.
+
+        This will need administrator rights and lead to redeploy of all such scripts to the client!
+
+        .PARAMETER force
+        Switch for skipping Intune script(s) redeploy confirmation (caused when 'includeScriptContent' parameter is used).
+
         .PARAMETER getDataFromIntune
         Switch for getting additional data (policy names and account names instead of IDs) from Intune itself.
         Microsoft.Graph.Intune module is required!
@@ -90,6 +98,10 @@
         [switch] $asHTML,
 
         [string] $HTMLReportPath = (Join-Path $env:USERPROFILE "IntunePolicyReport.html"),
+
+        [switch] $includeScriptContent,
+
+        [switch] $force,
 
         [switch] $getDataFromIntune,
 
@@ -221,7 +233,7 @@
 
     # create helper functions text definition for usage in remote sessions
     if ($computerName) {
-        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32AppLocally { ${function:Get-IntuneWin32AppLocally} }"
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getIntuneApp { ${function:_getIntuneApp} }; ; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-IntuneWin32AppLocally { ${function:Get-IntuneWin32AppLocally} }; function Get-IntuneScriptLocally { ${function:Get-IntuneScriptLocally} }; function Get-IntuneRemediationScriptLocally { ${function:Get-IntuneRemediationScriptLocally} }"
     }
     #endregion helper functions
 
@@ -330,7 +342,7 @@
     # https://oliverkieselbach.com/2018/02/12/part-2-deep-dive-microsoft-intune-management-extension-powershell-scripts/
     Write-Verbose "Processing 'Script' section"
     $scriptBlock = {
-        param($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+        param($verbosePref, $getDataFromIntune, $includeScriptContent, $force, $intuneScript, $intuneUser, $allFunctionDefs)
 
         # inherit verbose settings from host session
         $VerbosePreference = $verbosePref
@@ -338,66 +350,28 @@
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
 
-        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Policies" -ErrorAction SilentlyContinue | % {
-            $userAzureObjectID = Split-Path $_.Name -Leaf
+        $param = @{}
+        if ($includeScriptContent) {
+            $param.includeScriptContent = $true
+        }
+        if ($force) {
+            $param.force = $true
+        }
 
-            Get-ChildItem $_.PSPath | % {
-                $scriptRegPath = $_.PSPath
-                $scriptID = Split-Path $_.Name -Leaf
+        $script = Get-IntuneScriptLocally @param
 
-                Write-Verbose "`tID $scriptID"
-
-                $scriptRegData = Get-ItemProperty $scriptRegPath
-
-                # get output of the invoked script
-                if ($scriptRegData.ResultDetails) {
-                    try {
-                        $resultDetails = $scriptRegData.ResultDetails | ConvertFrom-Json -ErrorAction Stop | select -ExpandProperty ExecutionMsg
-                    } catch {
-                        Write-Verbose "`tUnable to get Script Output data"
-                    }
-                } else {
-                    $resultDetails = $null
-                }
-
-                if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"                   = _getTargetName $userAzureObjectID
-                        "DisplayName"             = (_getIntuneScript $scriptID).DisplayName
-                        "Id"                      = $scriptID
-                        "Result"                  = $scriptRegData.Result
-                        "ErrorCode"               = $scriptRegData.ErrorCode
-                        "DownloadAndExecuteCount" = $scriptRegData.DownloadCount
-                        "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
-                        "RunAsAccount"            = $scriptRegData.RunAsAccount
-                        "ResultDetails"           = $resultDetails
-                    }
-                } else {
-                    # no 'DisplayName' property
-                    $property = [ordered]@{
-                        "Scope"                   = _getTargetName $userAzureObjectID
-                        "Id"                      = $scriptID
-                        "Result"                  = $scriptRegData.Result
-                        "ErrorCode"               = $scriptRegData.ErrorCode
-                        "DownloadAndExecuteCount" = $scriptRegData.DownloadCount
-                        "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
-                        "RunAsAccount"            = $scriptRegData.RunAsAccount
-                        "ResultDetails"           = $resultDetails
-                    }
-                }
-
-                if ($showURLs) {
-                    $property.IntuneScriptURL = "https://endpoint.microsoft.com/#blade/Microsoft_Intune_DeviceSettings/ConfigureWMPolicyMenuBlade/properties/policyId/$scriptID/policyType/0"
-                }
-
-                New-Object -TypeName PSObject -Property $property
+        if ($showURLs) {
+            $script | % {
+                $_ | Add-Member -MemberType NoteProperty -Name IntuneScriptURL -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_DeviceSettings/ConfigureWMPolicyMenuBlade/properties/policyId/$($_.ID)/policyType/0"
             }
+        } else {
+            $script
         }
     }
 
     $param = @{
         scriptBlock  = $scriptBlock
-        argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+        argumentList = ($VerbosePreference, $getDataFromIntune, $includeScriptContent, $force, $intuneScript, $intuneUser, $allFunctionDefs)
     }
     if ($computerName) {
         $param.session = $session
@@ -432,71 +406,7 @@
         # recreate functions from their text definitions
         . ([ScriptBlock]::Create($allFunctionDefs))
 
-        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Reports" -ErrorAction SilentlyContinue | % {
-            $userAzureObjectID = Split-Path $_.Name -Leaf
-            $userRemScriptRoot = $_.PSPath
-
-            # $lastFullReportTimeUTC = Get-ItemPropertyValue $userRemScriptRoot -Name LastFullReportTimeUTC
-            $remScriptIDList = Get-ChildItem $userRemScriptRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique
-
-            $remScriptIDList | % {
-                $remScriptID = $_
-
-                Write-Verbose "`tID $remScriptID"
-
-                $newestRemScriptRecord = Get-ChildItem $userRemScriptRoot | ? PSChildName -Match ([regex]::escape($remScriptID)) | Sort-Object -Descending -Property PSChildName | select -First 1
-
-                try {
-                    $result = Get-ItemPropertyValue "$($newestRemScriptRecord.PSPath)\Result" -Name Result | ConvertFrom-Json
-                } catch {
-                    Write-Verbose "`tUnable to get Remediation Script Result data"
-                }
-
-                $lastExecution = Get-ItemPropertyValue "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution\$userAzureObjectID\$($newestRemScriptRecord.PSChildName)" -Name LastExecution
-
-                if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"                             = _getTargetName $userAzureObjectID
-                        "DisplayName"                       = (_getRemediationScript $remScriptID).DisplayName
-                        "Id"                                = $remScriptID
-                        "LastError"                         = $result.ErrorCode
-                        "LastExecution"                     = $lastExecution
-                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
-                        "InternalVersion"                   = $result.InternalVersion
-                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
-                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
-                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
-                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
-                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
-                        "RemediationExitCode"               = $result.Info.RemediationExitCode
-                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
-                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
-                        "ErrorDetails"                      = $result.Info.ErrorDetails
-                    }
-                } else {
-                    # no 'DisplayName' property
-                    $property = [ordered]@{
-                        "Scope"                             = _getTargetName $userAzureObjectID
-                        "Id"                                = $remScriptID
-                        "LastError"                         = $result.ErrorCode
-                        "LastExecution"                     = $lastExecution
-                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
-                        "InternalVersion"                   = $result.InternalVersion
-                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
-                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
-                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
-                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
-                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
-                        "RemediationExitCode"               = $result.Info.RemediationExitCode
-                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
-                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
-                        "ErrorDetails"                      = $result.Info.ErrorDetails
-                    }
-                }
-
-                New-Object -TypeName PSObject -Property $property
-            }
-        }
+        Get-IntuneRemediationScriptLocally
     }
 
     $param = @{

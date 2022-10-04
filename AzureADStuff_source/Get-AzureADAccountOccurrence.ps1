@@ -37,8 +37,15 @@ function Get-AzureADAccountOccurrence {
     'SharepointSiteOwner' - sharepoint sites where searched account is owner
     'Users&GroupsRoleAssignment' - applications Users and groups tab where searched account is assigned
     'DevOps' - occurrences in DevOps organizations
+    'KeyVaultAccessPolicy' - KeyVault access policies grants
 
     Based on the object type you are searching occurrences for, this can be automatically trimmed. Because for example device cannot be manager etc.
+
+    .PARAMETER tenantId
+    Name of the tenant if different then the default one should be used.
+
+    .PARAMETER sharePointUrl
+    Your sharepoint online url ("https://contoso-admin.sharepoint.com")
 
     .EXAMPLE
     Get-AzureADAccountOccurrence -objectId 1234-1234-1234
@@ -73,31 +80,48 @@ function Get-AzureADAccountOccurrence {
 
         [string[]] $objectId,
 
-        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps')]
+        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy')]
         [ValidateNotNullOrEmpty()]
-        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps')
+        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy'),
+
+        [string] $tenantId,
+
+        [string] $sharePointUrl
     )
 
     if (!$userPrincipalName -and !$objectId) {
         throw "You haven't specified userPrincipalname nor objectId parameter"
     }
 
+    if ($tenantId) {
+        $tenantIdParam = @{
+            tenantId = $tenantId
+        }
+    } else {
+        $tenantIdParam = @{}
+    }
+
     #region connect
     # connect to AzureAD
     Write-Verbose "Connecting to Azure for use with cmdlets from the AzureAD PowerShell modules"
-    $null = Connect-AzureAD2 -asYourself -ea Stop
 
-    Write-Verbose "Connecting to Azure for use with cmdlets from the Az PowerShell modules"
-    $null = Connect-AzAccount2 -ea Stop
+    $null = Connect-AzureAD2 @tenantIdParam -ea Stop
+
+    # Write-Verbose "Connecting to Azure for use with cmdlets from the Az PowerShell modules"
+    $null = Connect-AzAccount2 @tenantIdParam -ea Stop
 
     # connect Graph API
     Write-Verbose "Creating Graph API auth header"
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
+    $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
 
     # connect sharepoint online
     if ($data -contains 'SharepointSiteOwner') {
         Write-Verbose "Connecting to Sharepoint"
-        Connect-PnPOnline2 -asMFAUser -ea Stop
+        if ($sharePointUrl) {
+            Connect-PnPOnline2 -url $sharePointUrl -asMFAUser -ea Stop
+        } else {
+            Connect-PnPOnline2 -asMFAUser -ea Stop
+        }
     }
     #endregion connect
 
@@ -158,6 +182,10 @@ function Get-AzureADAccountOccurrence {
                 $allowedObjType = 'user', 'group'
             }
 
+            'KeyVaultAccessPolicy' {
+                $allowedObjType = 'user', 'group', 'servicePrincipal'
+            }
+
             default { throw "Undefined data to search $searchedData (edit _getAllowedSearchType function)" }
         }
 
@@ -192,9 +220,10 @@ function Get-AzureADAccountOccurrence {
     #endregion helper functions
 
     #region pre-cache data
+    #TODO cache only in case some allowed account type for such data is searched
     if ('IAM' -in $data) {
         Write-Warning "Caching AzureAD Role Assignments. This can take several minutes!"
-        $azureADRoleAssignments = Get-AzureADRoleAssignments
+        $azureADRoleAssignments = Get-AzureADRoleAssignments @tenantIdParam
     }
     if ('SharepointSiteOwner' -in $data) {
         Write-Warning "Caching Sharepoint sites ownership. This can take several minutes!"
@@ -203,7 +232,7 @@ function Get-AzureADAccountOccurrence {
 
     if ('DevOps' -in $data) {
         Write-Warning "Caching DevOps organizations."
-        $devOpsOrganization = Get-AzureDevOpsOrganizationOverview
+        $devOpsOrganization = Get-AzureDevOpsOrganizationOverview @tenantIdParam
 
         #TODO poresit strankovani!
         Write-Warning "Caching DevOps organizations groups."
@@ -243,6 +272,22 @@ function Get-AzureADAccountOccurrence {
             }
 
             $_ | Add-Member -MemberType NoteProperty -Name Users -Value $users
+        }
+    }
+
+    if ('KeyVaultAccessPolicy' -in $data) {
+        Write-Warning "Caching KeyVault Access Policies. This can take several minutes!"
+        $keyVaultAccessPolicyAssignments = @()
+        $CurrentContext = Get-AzContext
+        $Subscriptions = Get-AzSubscription -TenantId $CurrentContext.Tenant.Id
+        foreach ($Subscription in ($Subscriptions | Sort-Object Name)) {
+            Write-Verbose "Changing to Subscription $($Subscription.Name) ($($Subscription.SubscriptionId))"
+
+            $Context = Set-AzContext -TenantId $Subscription.TenantId -SubscriptionId $Subscription.Id -Force
+
+            Get-AzKeyVault -WarningAction SilentlyContinue | % {
+                $keyVaultAccessPolicyAssignments += Get-AzKeyVault -VaultName $_.VaultName -WarningAction SilentlyContinue
+            }
         }
     }
     #endregion pre-cache data
@@ -285,9 +330,20 @@ function Get-AzureADAccountOccurrence {
             AppUsersAndGroupsRoleAssignment = @()
             DevOpsOrganizationOwner         = @()
             DevOpsMemberOf                  = @()
+            KeyVaultAccessPolicy            = @()
         }
 
         #region get AAD account occurrences
+        #region KeyVault Access Policy
+        if ('KeyVaultAccessPolicy' -in $data -and (_getAllowedSearchType 'KeyVaultAccessPolicy')) {
+            Write-Verbose "Getting KeyVault Access Policy assignments"
+            Write-Progress -Activity $progressActivity -Status "Getting KeyVault Access Policy assignments" -PercentComplete (($i++ / $data.Count) * 100)
+
+            $keyVaultAccessPolicyAssignments | ? { $_.AccessPolicies.objectId -eq $id } | % {
+                $result.KeyVaultAccessPolicy += $_
+            }
+        }
+        #endregion KeyVault Access Policy
 
         #region IAM
         if ('IAM' -in $data -and (_getAllowedSearchType 'IAM')) {
@@ -319,9 +375,17 @@ function Get-AzureADAccountOccurrence {
 
             # reauthenticate just in case previous steps took too much time and the token has expired in the meantime
             Write-Verbose "Creating new auth token, just in case it expired"
-            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
+            $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
 
-            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/users/$id/transitiveMemberOf" -header $header | ? { $_ } | % {
+            switch ($objectType) {
+                'user' { $searchLocation = "users" }
+                'group' { $searchLocation = "groups" }
+                'device' { $searchLocation = "devices" }
+                'servicePrincipal' { $searchLocation = "servicePrincipals" }
+                default { throw "Undefined object type '$objectType'" }
+            }
+
+            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/$searchLocation/$id/memberOf" -header $header | ? { $_ } | % {
                 if ($_.'@odata.type' -eq '#microsoft.graph.directoryRole') {
                     # directory roles are added in different IF, moreover this query doesn't return custom roles
                 } elseif ($_.'@odata.context') {

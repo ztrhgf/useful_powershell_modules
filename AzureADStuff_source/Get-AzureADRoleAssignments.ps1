@@ -30,6 +30,9 @@ function Get-AzureADRoleAssignments {
     .PARAMETER objectId
     ObjectId of the User, Group or Service Principal whose assignments you want to get.
 
+    .PARAMETER tenantId
+    Tenant ID if different then the default one should be used.
+
     .EXAMPLE
     Get-AzureADRoleAssignments
 
@@ -70,14 +73,20 @@ function Get-AzureADRoleAssignments {
 
         [string] $userPrincipalName,
 
-        [string] $objectId
+        [string] $objectId,
+
+        [string] $tenantId
     )
 
     if ($objectId -and $userPrincipalName) {
         throw "You cannot use parameters objectId and userPrincipalName at the same time"
     }
 
-    Connect-AzAccount2 -ErrorAction Stop
+    if ($tenantId) {
+        $null = Connect-AzAccount2 -tenantId $tenantId -ErrorAction Stop
+    } else {
+        $null = Connect-AzAccount2 -ErrorAction Stop
+    }
 
     # get Current Context
     $CurrentContext = Get-AzContext
@@ -115,8 +124,8 @@ function Get-AzureADRoleAssignments {
     Write-Verbose "Getting Role Definitions..."
     $roleDefinition = Get-AzRoleDefinition
 
-    foreach ($Subscription in $Subscriptions) {
-        Write-Verbose "Changing to Subscription $($Subscription.Name)"
+    foreach ($Subscription in ($Subscriptions | Sort-Object Name)) {
+        Write-Verbose "Changing to Subscription $($Subscription.Name) ($($Subscription.SubscriptionId))"
 
         $Context = Set-AzContext -TenantId $Subscription.TenantId -SubscriptionId $Subscription.Id -Force
 
@@ -124,7 +133,8 @@ function Get-AzureADRoleAssignments {
         Write-Verbose "Getting information about Role Assignments..."
         try {
             $param = @{
-                ErrorAction = 'Stop'
+                ErrorAction   = 'Stop'
+                WarningAction = "SilentlyContinue" # to avoid: WARNING: We have migrated the API calls for this cmdlet from Azure Active Directory Graph to Microsoft Graph.Visit https://go.microsoft.com/fwlink/?linkid=2181475 for any permission issues.
             }
             if ($objectId) {
                 $param.objectId = $objectId

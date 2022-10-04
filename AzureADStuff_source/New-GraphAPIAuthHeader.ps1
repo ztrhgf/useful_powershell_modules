@@ -23,6 +23,10 @@
 
     Default is 'never'.
 
+    .PARAMETER useADAL
+    Switch for using ADAL for auth. token creation.
+    Can solve problem with 'forbidden' errors when default token creation method is used, but can be used only under user accounts.
+
     .EXAMPLE
     $header = New-GraphAPIAuthHeader -credential $cred
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
@@ -33,6 +37,14 @@
     $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
     $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .EXAMPLE
+    (there is existing AzureAD session already (made via Connect-AzureAD))
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -useADAL
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    Use ADAL for auth. token creation. Can help if default method leads to 'forbidden' errors when token is used.
 
     .NOTES
     https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
@@ -52,10 +64,14 @@
         [switch] $reuseExistingAzureADSession,
 
         [ValidateNotNullOrEmpty()]
+        [Alias("tenantId")]
         $tenantDomainName = $_tenantDomain,
 
         [ValidateSet('auto', 'always', 'never')]
-        [string] $showDialogType = 'never'
+        [string] $showDialogType = 'never',
+
+        [Parameter(ParameterSetName = "reuseSession")]
+        [switch] $useADAL
     )
 
     if (!$credential -and !$reuseExistingAzureADSession) {
@@ -79,17 +95,93 @@
         try {
             $ErrorActionPreference = "Stop"
 
-            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
-            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
-            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
-            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
-            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+            if ($useADAL) {
+                # https://github.com/microsoftgraph/powershell-intune-samples/blob/master/ManagedDevices/Win10_PrimaryUser_Set.ps1
+                $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+                $upn = $context.account.id
+                Write-Verbose "Connecting using $upn"
+                $tenant = (New-Object "System.Net.Mail.MailAddress" -ArgumentList $upn).Host
 
-            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+                Write-Verbose "Checking for AzureAD module..."
+                $AadModule = Get-Module -Name "AzureAD" -ListAvailable
 
-            return @{ Authorization = $token }
+                if ($AadModule -eq $null) {
+                    Write-Verbose "AzureAD PowerShell module not found, looking for AzureADPreview"
+                    $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
+                }
+
+                if ($AadModule -eq $null) {
+                    throw "AzureAD Powershell module not installed...Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt"
+                }
+
+                # Getting path to ActiveDirectory Assemblies
+                # If the module count is greater than 1 find the latest version
+                if ($AadModule.count -gt 1) {
+                    $Latest_Version = ($AadModule | select version | Sort-Object)[-1]
+
+                    $aadModule = $AadModule | ? { $_.version -eq $Latest_Version.version }
+
+                    # Checking if there are multiple versions of the same module found
+                    if ($AadModule.count -gt 1) {
+                        $aadModule = $AadModule | select -Unique
+                    }
+
+                    $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
+                    $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
+                } else {
+                    $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
+                    $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
+                }
+
+                [System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
+                [System.Reflection.Assembly]::LoadFrom($adalforms) | Out-Null
+                $clientId = "d1ddf0e4-d672-4dae-b554-9d5bdfd93547"
+                $redirectUri = "urn:ietf:wg:oauth:2.0:oob"
+                $resourceAppIdURI = "https://graph.microsoft.com"
+                $authority = "https://login.microsoftonline.com/$Tenant"
+
+                $authContext = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext" -ArgumentList $authority
+
+                # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
+                # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
+                $platformParameters = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters" -ArgumentList $showDialogType
+
+                $userId = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier" -ArgumentList ($upn, "OptionalDisplayableId")
+
+                $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $clientId, $redirectUri, $platformParameters, $userId).Result
+
+                # If the accesstoken is valid then create the authentication header
+                if ($authResult.AccessToken) {
+                    # Creating header for Authorization token
+                    $authHeader = @{
+                        'Authorization' = "Bearer " + $authResult.AccessToken
+                        'ExpiresOn'     = $authResult.ExpiresOn
+                    }
+
+                    return $authHeader
+                } else {
+                    throw "Authorization Access Token is null, please re-run authentication..."
+                }
+            } else {
+                # don't use ADAL
+
+                # tento zpusob nekdy nefugnuje (dostavam forbidden)
+                $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+                $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
+                $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
+                $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
+                $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+
+                $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+
+                $authHeader = @{
+                    Authorization = $token
+                }
+
+                return $authHeader
+            }
         } catch {
-            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
+            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change the showDialogType parameter?"
         }
     } else {
         # authenticate to obtain the token
@@ -100,12 +192,17 @@
             Client_Secret = $credential.GetNetworkCredential().password
         }
 
+        Write-Verbose "Connecting to $tenantDomainName"
         $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
 
         $token = $connectGraph.access_token
 
         if ($token) {
-            return @{ Authorization = "Bearer $($token)" }
+            $authHeader = @{
+                Authorization = "Bearer $($token)"
+            }
+
+            return $authHeader
         } else {
             throw "Unable to obtain token"
         }

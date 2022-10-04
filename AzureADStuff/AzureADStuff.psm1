@@ -1,6 +1,4 @@
-﻿#Requires -Modules AzureAD
-
-function Add-AzureADAppCertificate {
+﻿function Add-AzureADAppCertificate {
     <#
     .SYNOPSIS
     Function for (creating and) adding authentication certificate to selected AzureAD Application.
@@ -139,8 +137,6 @@ function Add-AzureADAppCertificate {
     Write-Warning "Adding certificate to the application $($application.DisplayName)"
     New-AzureADApplicationKeyCredential -ObjectId $appObjectId -CustomKeyIdentifier $base64Thumbprint -Type AsymmetricX509Cert -Usage Verify -Value $keyValue -StartDate $startDateTime -EndDate $endDateTime
 }
-
-#Requires -Modules Microsoft.Graph.Authentication,Microsoft.Graph.Applications,Microsoft.Graph.Users,Microsoft.Graph.Identity.SignIns
 
 function Add-AzureADAppUserConsent {
     <#
@@ -416,8 +412,6 @@ function Add-AzureADGuest {
     }
 }
 
-#Requires -Modules Az.Accounts
-
 function Connect-AzAccount2 {
     <#
     .SYNOPSIS
@@ -639,8 +633,6 @@ function Connect-AzureAD2 {
     }
 }
 
-#Requires -Modules Pnp.PowerShell
-
 function Connect-PnPOnline2 {
     <#
     .SYNOPSIS
@@ -811,8 +803,6 @@ function Disable-AzureADGuest {
     }
 }
 
-#Requires -Modules AzureAD,Az.Accounts,Pnp.PowerShell,MSAL.PS
-
 function Get-AzureADAccountOccurrence {
     <#
     .SYNOPSIS
@@ -848,8 +838,15 @@ function Get-AzureADAccountOccurrence {
     'SharepointSiteOwner' - sharepoint sites where searched account is owner
     'Users&GroupsRoleAssignment' - applications Users and groups tab where searched account is assigned
     'DevOps' - occurrences in DevOps organizations
+    'KeyVaultAccessPolicy' - KeyVault access policies grants
 
     Based on the object type you are searching occurrences for, this can be automatically trimmed. Because for example device cannot be manager etc.
+
+    .PARAMETER tenantId
+    Name of the tenant if different then the default one should be used.
+
+    .PARAMETER sharePointUrl
+    Your sharepoint online url ("https://contoso-admin.sharepoint.com")
 
     .EXAMPLE
     Get-AzureADAccountOccurrence -objectId 1234-1234-1234
@@ -884,31 +881,48 @@ function Get-AzureADAccountOccurrence {
 
         [string[]] $objectId,
 
-        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps')]
+        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy')]
         [ValidateNotNullOrEmpty()]
-        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps')
+        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy'),
+
+        [string] $tenantId,
+
+        [string] $sharePointUrl
     )
 
     if (!$userPrincipalName -and !$objectId) {
         throw "You haven't specified userPrincipalname nor objectId parameter"
     }
 
+    if ($tenantId) {
+        $tenantIdParam = @{
+            tenantId = $tenantId
+        }
+    } else {
+        $tenantIdParam = @{}
+    }
+
     #region connect
     # connect to AzureAD
     Write-Verbose "Connecting to Azure for use with cmdlets from the AzureAD PowerShell modules"
-    $null = Connect-AzureAD2 -asYourself -ea Stop
 
-    Write-Verbose "Connecting to Azure for use with cmdlets from the Az PowerShell modules"
-    $null = Connect-AzAccount2 -ea Stop
+    $null = Connect-AzureAD2 @tenantIdParam -ea Stop
+
+    # Write-Verbose "Connecting to Azure for use with cmdlets from the Az PowerShell modules"
+    $null = Connect-AzAccount2 @tenantIdParam -ea Stop
 
     # connect Graph API
     Write-Verbose "Creating Graph API auth header"
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
+    $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
 
     # connect sharepoint online
     if ($data -contains 'SharepointSiteOwner') {
         Write-Verbose "Connecting to Sharepoint"
-        Connect-PnPOnline2 -asMFAUser -ea Stop
+        if ($sharePointUrl) {
+            Connect-PnPOnline2 -url $sharePointUrl -asMFAUser -ea Stop
+        } else {
+            Connect-PnPOnline2 -asMFAUser -ea Stop
+        }
     }
     #endregion connect
 
@@ -969,6 +983,10 @@ function Get-AzureADAccountOccurrence {
                 $allowedObjType = 'user', 'group'
             }
 
+            'KeyVaultAccessPolicy' {
+                $allowedObjType = 'user', 'group', 'servicePrincipal'
+            }
+
             default { throw "Undefined data to search $searchedData (edit _getAllowedSearchType function)" }
         }
 
@@ -1003,9 +1021,10 @@ function Get-AzureADAccountOccurrence {
     #endregion helper functions
 
     #region pre-cache data
+    #TODO cache only in case some allowed account type for such data is searched
     if ('IAM' -in $data) {
         Write-Warning "Caching AzureAD Role Assignments. This can take several minutes!"
-        $azureADRoleAssignments = Get-AzureADRoleAssignments
+        $azureADRoleAssignments = Get-AzureADRoleAssignments @tenantIdParam
     }
     if ('SharepointSiteOwner' -in $data) {
         Write-Warning "Caching Sharepoint sites ownership. This can take several minutes!"
@@ -1014,7 +1033,7 @@ function Get-AzureADAccountOccurrence {
 
     if ('DevOps' -in $data) {
         Write-Warning "Caching DevOps organizations."
-        $devOpsOrganization = Get-AzureDevOpsOrganizationOverview
+        $devOpsOrganization = Get-AzureDevOpsOrganizationOverview @tenantIdParam
 
         #TODO poresit strankovani!
         Write-Warning "Caching DevOps organizations groups."
@@ -1054,6 +1073,22 @@ function Get-AzureADAccountOccurrence {
             }
 
             $_ | Add-Member -MemberType NoteProperty -Name Users -Value $users
+        }
+    }
+
+    if ('KeyVaultAccessPolicy' -in $data) {
+        Write-Warning "Caching KeyVault Access Policies. This can take several minutes!"
+        $keyVaultAccessPolicyAssignments = @()
+        $CurrentContext = Get-AzContext
+        $Subscriptions = Get-AzSubscription -TenantId $CurrentContext.Tenant.Id
+        foreach ($Subscription in ($Subscriptions | Sort-Object Name)) {
+            Write-Verbose "Changing to Subscription $($Subscription.Name) ($($Subscription.SubscriptionId))"
+
+            $Context = Set-AzContext -TenantId $Subscription.TenantId -SubscriptionId $Subscription.Id -Force
+
+            Get-AzKeyVault -WarningAction SilentlyContinue | % {
+                $keyVaultAccessPolicyAssignments += Get-AzKeyVault -VaultName $_.VaultName -WarningAction SilentlyContinue
+            }
         }
     }
     #endregion pre-cache data
@@ -1096,9 +1131,20 @@ function Get-AzureADAccountOccurrence {
             AppUsersAndGroupsRoleAssignment = @()
             DevOpsOrganizationOwner         = @()
             DevOpsMemberOf                  = @()
+            KeyVaultAccessPolicy            = @()
         }
 
         #region get AAD account occurrences
+        #region KeyVault Access Policy
+        if ('KeyVaultAccessPolicy' -in $data -and (_getAllowedSearchType 'KeyVaultAccessPolicy')) {
+            Write-Verbose "Getting KeyVault Access Policy assignments"
+            Write-Progress -Activity $progressActivity -Status "Getting KeyVault Access Policy assignments" -PercentComplete (($i++ / $data.Count) * 100)
+
+            $keyVaultAccessPolicyAssignments | ? { $_.AccessPolicies.objectId -eq $id } | % {
+                $result.KeyVaultAccessPolicy += $_
+            }
+        }
+        #endregion KeyVault Access Policy
 
         #region IAM
         if ('IAM' -in $data -and (_getAllowedSearchType 'IAM')) {
@@ -1130,9 +1176,17 @@ function Get-AzureADAccountOccurrence {
 
             # reauthenticate just in case previous steps took too much time and the token has expired in the meantime
             Write-Verbose "Creating new auth token, just in case it expired"
-            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -showDialogType auto -ea Stop
+            $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
 
-            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/users/$id/transitiveMemberOf" -header $header | ? { $_ } | % {
+            switch ($objectType) {
+                'user' { $searchLocation = "users" }
+                'group' { $searchLocation = "groups" }
+                'device' { $searchLocation = "devices" }
+                'servicePrincipal' { $searchLocation = "servicePrincipals" }
+                default { throw "Undefined object type '$objectType'" }
+            }
+
+            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/$searchLocation/$id/memberOf" -header $header | ? { $_ } | % {
                 if ($_.'@odata.type' -eq '#microsoft.graph.directoryRole') {
                     # directory roles are added in different IF, moreover this query doesn't return custom roles
                 } elseif ($_.'@odata.context') {
@@ -1717,6 +1771,91 @@ function Get-AzureADAssessNotificationEmail {
     #endregion get email addresses of all users with privileged roles
 }
 
+function Get-AzureADDeviceMembership {
+    <#
+    .SYNOPSIS
+    Function for getting Azure device membership.
+
+    .DESCRIPTION
+    Function for getting Azure device membership.
+
+    .PARAMETER deviceName
+    Name of the device.
+
+    .PARAMETER deviceObjectId
+    ObjectID of the device.
+
+    .PARAMETER transitiveMemberOf
+    Switch for getting transitive memberOf.
+
+    .PARAMETER header
+    Authentication header.
+
+    Can be created using New-GraphAPIAuthHeader.
+
+    .EXAMPLE
+    Connect-AzureAD2 -asYourself
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+
+    Get-AzureADDeviceMembership -deviceName PC-01
+
+    .NOTES
+    Original post: https://www.michev.info/Blog/Post/3096/reporting-on-group-membership-for-azure-ad-devices
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'name')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "name")]
+        [string] $deviceName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "id")]
+        [string] $deviceObjectId,
+
+        [switch] $transitiveMemberOf,
+
+        $header
+    )
+
+    if (!$header) {
+        $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+    }
+
+    #region get device details
+    Write-Verbose "Get device details"
+    if ($deviceName) {
+        # name
+        $uri = "https://graph.microsoft.com/v1.0/devices?`$filter=displayName eq '$deviceName'&`$select=displayName,id,deviceId"
+        $deviceObj = Invoke-GraphAPIRequest -header $header -uri $uri
+        $deviceObjectId = $deviceObj.id
+    } else {
+        # id
+        $uri = "https://graph.microsoft.com/v1.0/devices/$deviceObjectId?`$select=displayName,id,deviceId"
+        $deviceObj = Invoke-GraphAPIRequest -header $header -uri $uri
+    }
+
+    # it or name doesn't correspond to any device
+    if (!$deviceObj.displayName) {
+        throw "Device wasn't found"
+    }
+    #endregion get device details
+
+    #region get device group membership
+    if ($transitiveMemberOf) {
+        $method = "transitivememberof"
+    } else {
+        $method = "memberof"
+    }
+
+    Write-Verbose "Get device membership"
+    $uri = "https://graph.microsoft.com/v1.0/devices/$deviceObjectId/$method`?`$select=displayName,id,groupTypes,mailEnabled,securityEnabled"
+    $deviceMemberOf = Invoke-GraphAPIRequest -header $header -uri $uri | select -Property DisplayName, @{n = 'ObjectId'; e = { $_.Id } }, GroupTypes, MailEnabled, SecurityEnabled
+    $deviceObj | Add-Member -MemberType NoteProperty -Name "MemberOf" -Value $deviceMemberOf
+    #endregion get device group membership
+
+    # output the result
+    $deviceObj
+}
+
 function Get-AzureADEnterpriseApplication {
     <#
     .SYNOPSIS
@@ -2099,8 +2238,6 @@ function Get-AzureADResource {
     }
 }
 
-#Requires -Modules Az.Accounts,Az.Resources
-
 function Get-AzureADRoleAssignments {
     <#
     .SYNOPSIS
@@ -2130,6 +2267,9 @@ function Get-AzureADRoleAssignments {
 
     .PARAMETER objectId
     ObjectId of the User, Group or Service Principal whose assignments you want to get.
+
+    .PARAMETER tenantId
+    Tenant ID if different then the default one should be used.
 
     .EXAMPLE
     Get-AzureADRoleAssignments
@@ -2171,14 +2311,20 @@ function Get-AzureADRoleAssignments {
 
         [string] $userPrincipalName,
 
-        [string] $objectId
+        [string] $objectId,
+
+        [string] $tenantId
     )
 
     if ($objectId -and $userPrincipalName) {
         throw "You cannot use parameters objectId and userPrincipalName at the same time"
     }
 
-    Connect-AzAccount2 -ErrorAction Stop
+    if ($tenantId) {
+        $null = Connect-AzAccount2 -tenantId $tenantId -ErrorAction Stop
+    } else {
+        $null = Connect-AzAccount2 -ErrorAction Stop
+    }
 
     # get Current Context
     $CurrentContext = Get-AzContext
@@ -2216,8 +2362,8 @@ function Get-AzureADRoleAssignments {
     Write-Verbose "Getting Role Definitions..."
     $roleDefinition = Get-AzRoleDefinition
 
-    foreach ($Subscription in $Subscriptions) {
-        Write-Verbose "Changing to Subscription $($Subscription.Name)"
+    foreach ($Subscription in ($Subscriptions | Sort-Object Name)) {
+        Write-Verbose "Changing to Subscription $($Subscription.Name) ($($Subscription.SubscriptionId))"
 
         $Context = Set-AzContext -TenantId $Subscription.TenantId -SubscriptionId $Subscription.Id -Force
 
@@ -2225,7 +2371,8 @@ function Get-AzureADRoleAssignments {
         Write-Verbose "Getting information about Role Assignments..."
         try {
             $param = @{
-                ErrorAction = 'Stop'
+                ErrorAction   = 'Stop'
+                WarningAction = "SilentlyContinue" # to avoid: WARNING: We have migrated the API calls for this cmdlet from Azure Active Directory Graph to Microsoft Graph.Visit https://go.microsoft.com/fwlink/?linkid=2181475 for any permission issues.
             }
             if ($objectId) {
                 $param.objectId = $objectId
@@ -2761,8 +2908,6 @@ function Get-AzureDevOpsOrganizationOverview {
     Invoke-WebRequest -Uri "https://aexprodweu1.vsaex.visualstudio.com/_apis/EnterpriseCatalog/Organizations?tenantId=$tenantId" -Method get -ContentType "application/json" -Headers $header | select -ExpandProperty content | ConvertFrom-Csv | select @{name = 'OrganizationName'; expression = { $_.'Organization Name' } }, @{name = 'OrganizationId'; expression = { $_.'Organization Id' } }, Url, Owner, @{name = 'ExceptionType'; expression = { $_.'Exception Type' } }, @{name = 'ErrorMessage'; expression = { $_.'Error Message' } } -ExcludeProperty 'Organization Name', 'Organization Id', 'Exception Type', 'Error Message'
 }
 
-#Requires -Modules Pnp.PowerShell
-
 function Get-SharepointSiteOwner {
     <#
     .SYNOPSIS
@@ -3254,8 +3399,6 @@ function New-AzureADMSIPConditionalAccessPolicy {
     #endregion conditional policy
 }
 
-#Requires -Modules MSAL.PS
-
 function New-AzureDevOpsAuthHeader {
     <#
     .SYNOPSIS
@@ -3320,6 +3463,10 @@ function New-GraphAPIAuthHeader {
 
     Default is 'never'.
 
+    .PARAMETER useADAL
+    Switch for using ADAL for auth. token creation.
+    Can solve problem with 'forbidden' errors when default token creation method is used, but can be used only under user accounts.
+
     .EXAMPLE
     $header = New-GraphAPIAuthHeader -credential $cred
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
@@ -3330,6 +3477,14 @@ function New-GraphAPIAuthHeader {
     $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
     $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    .EXAMPLE
+    (there is existing AzureAD session already (made via Connect-AzureAD))
+    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -useADAL
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    Use ADAL for auth. token creation. Can help if default method leads to 'forbidden' errors when token is used.
 
     .NOTES
     https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
@@ -3349,10 +3504,14 @@ function New-GraphAPIAuthHeader {
         [switch] $reuseExistingAzureADSession,
 
         [ValidateNotNullOrEmpty()]
+        [Alias("tenantId")]
         $tenantDomainName = $_tenantDomain,
 
         [ValidateSet('auto', 'always', 'never')]
-        [string] $showDialogType = 'never'
+        [string] $showDialogType = 'never',
+
+        [Parameter(ParameterSetName = "reuseSession")]
+        [switch] $useADAL
     )
 
     if (!$credential -and !$reuseExistingAzureADSession) {
@@ -3376,17 +3535,93 @@ function New-GraphAPIAuthHeader {
         try {
             $ErrorActionPreference = "Stop"
 
-            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
-            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
-            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
-            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
-            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+            if ($useADAL) {
+                # https://github.com/microsoftgraph/powershell-intune-samples/blob/master/ManagedDevices/Win10_PrimaryUser_Set.ps1
+                $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+                $upn = $context.account.id
+                Write-Verbose "Connecting using $upn"
+                $tenant = (New-Object "System.Net.Mail.MailAddress" -ArgumentList $upn).Host
 
-            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+                Write-Verbose "Checking for AzureAD module..."
+                $AadModule = Get-Module -Name "AzureAD" -ListAvailable
 
-            return @{ Authorization = $token }
+                if ($AadModule -eq $null) {
+                    Write-Verbose "AzureAD PowerShell module not found, looking for AzureADPreview"
+                    $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
+                }
+
+                if ($AadModule -eq $null) {
+                    throw "AzureAD Powershell module not installed...Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt"
+                }
+
+                # Getting path to ActiveDirectory Assemblies
+                # If the module count is greater than 1 find the latest version
+                if ($AadModule.count -gt 1) {
+                    $Latest_Version = ($AadModule | select version | Sort-Object)[-1]
+
+                    $aadModule = $AadModule | ? { $_.version -eq $Latest_Version.version }
+
+                    # Checking if there are multiple versions of the same module found
+                    if ($AadModule.count -gt 1) {
+                        $aadModule = $AadModule | select -Unique
+                    }
+
+                    $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
+                    $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
+                } else {
+                    $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
+                    $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
+                }
+
+                [System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
+                [System.Reflection.Assembly]::LoadFrom($adalforms) | Out-Null
+                $clientId = "d1ddf0e4-d672-4dae-b554-9d5bdfd93547"
+                $redirectUri = "urn:ietf:wg:oauth:2.0:oob"
+                $resourceAppIdURI = "https://graph.microsoft.com"
+                $authority = "https://login.microsoftonline.com/$Tenant"
+
+                $authContext = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext" -ArgumentList $authority
+
+                # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
+                # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
+                $platformParameters = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters" -ArgumentList $showDialogType
+
+                $userId = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier" -ArgumentList ($upn, "OptionalDisplayableId")
+
+                $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $clientId, $redirectUri, $platformParameters, $userId).Result
+
+                # If the accesstoken is valid then create the authentication header
+                if ($authResult.AccessToken) {
+                    # Creating header for Authorization token
+                    $authHeader = @{
+                        'Authorization' = "Bearer " + $authResult.AccessToken
+                        'ExpiresOn'     = $authResult.ExpiresOn
+                    }
+
+                    return $authHeader
+                } else {
+                    throw "Authorization Access Token is null, please re-run authentication..."
+                }
+            } else {
+                # don't use ADAL
+
+                # tento zpusob nekdy nefugnuje (dostavam forbidden)
+                $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
+                $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
+                $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
+                $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
+                $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
+
+                $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
+
+                $authHeader = @{
+                    Authorization = $token
+                }
+
+                return $authHeader
+            }
         } catch {
-            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
+            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change the showDialogType parameter?"
         }
     } else {
         # authenticate to obtain the token
@@ -3397,12 +3632,17 @@ function New-GraphAPIAuthHeader {
             Client_Secret = $credential.GetNetworkCredential().password
         }
 
+        Write-Verbose "Connecting to $tenantDomainName"
         $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
 
         $token = $connectGraph.access_token
 
         if ($token) {
-            return @{ Authorization = "Bearer $($token)" }
+            $authHeader = @{
+                Authorization = "Bearer $($token)"
+            }
+
+            return $authHeader
         } else {
             throw "Unable to obtain token"
         }
@@ -4000,8 +4240,6 @@ function Remove-AzureADAccountOccurrence {
     }
 }
 
-#Requires -Modules Microsoft.Graph.Identity.SignIns,AzureAD
-
 function Remove-AzureADAppUserConsent {
     <#
     .SYNOPSIS
@@ -4102,6 +4340,122 @@ function Remove-AzureADAppUserConsent {
     }
 }
 
+function Set-AADDeviceExtensionAttribute {
+    <#
+    .SYNOPSIS
+    Function for setting Azure device ExtensionAttribute.
+
+    .DESCRIPTION
+    Function for setting Azure device ExtensionAttribute.
+
+    .PARAMETER deviceName
+    Device name.
+
+    .PARAMETER deviceId
+    Device ID as returned by Get-MGDevice command.
+
+    Can be used instead of device name.
+
+    .PARAMETER extensionId
+    Id number of the extension you want to set.
+
+    Possible values are 1-15.
+
+    .PARAMETER extensionValue
+    Value you want to set. If empty, currently set value will be removed.
+
+    .PARAMETER scope
+    Permissions you want to use for connecting to Graph.
+
+    Default is 'Directory.AccessAsUser.All' and can be used if you have Global or Intune administrator role.
+
+    Possible values are: 'Directory.AccessAsUser.All', 'Device.ReadWrite.All', 'Directory.ReadWrite.All'
+
+    .EXAMPLE
+    Set-AADDeviceExtensionAttribute -deviceName nn-69-ntb -extensionId 1 -extensionValue 'ntb'
+
+    On device nn-69-ntb set value 'ntb' into device ExtensionAttribute1.
+
+    .EXAMPLE
+    Set-AADDeviceExtensionAttribute -deviceName nn-69-ntb -extensionId 1
+
+    On device nn-69-ntb empty current value saved in device ExtensionAttribute1.
+
+    .NOTES
+    https://blogs.aaddevsup.xyz/2022/05/how-to-use-microsoft-graph-sdk-for-powershell-to-update-a-registered-devices-extension-attribute/?utm_source=rss&utm_medium=rss&utm_campaign=how-to-use-microsoft-graph-sdk-for-powershell-to-update-a-registered-devices-extension-attribute
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'deviceName')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "deviceName")]
+        [string] $deviceName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "deviceId")]
+        [string] $deviceId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 15)]
+        $extensionId,
+
+        [string] $extensionValue,
+
+        [ValidateSet('Directory.AccessAsUser.All', 'Device.ReadWrite.All', 'Directory.ReadWrite.All')]
+        [string] $scope = 'Directory.AccessAsUser.All'
+    )
+
+    #region checks
+    if (!(Get-Module "Microsoft.Graph.Authentication" -ListAvailable -ea SilentlyContinue)) {
+        throw "Microsoft.Graph.Authentication module is missing"
+    }
+
+    if (!(Get-Module "Microsoft.Graph.Identity.DirectoryManagement" -ListAvailable -ea SilentlyContinue)) {
+        throw "Microsoft.Graph.Identity.DirectoryManagement module is missing"
+    }
+    #endregion checks
+
+    # connect to Graph
+    $null = Connect-MgGraph -Scopes $scope
+
+    # get the device
+    if ($deviceName) {
+        $device = Get-MgDevice -Filter "DisplayName eq '$deviceName'"
+    } else {
+        $device = Get-MgDeviceById -DeviceId $deviceId -ErrorAction SilentlyContinue
+        $deviceName = $device.DisplayName
+    }
+    if (!$device) {
+        throw "$device device wasn't found"
+    }
+    if ($device.count -gt 1) {
+        throw "There are more than one devices with name $device. Use DeviceId instead."
+    }
+
+    # get current value saved in attribute
+    $currentExtensionValue = $device.AdditionalProperties.extensionAttributes."extensionAttribute$extensionId"
+
+    # set attribute if necessary
+    if (($currentExtensionValue -eq $extensionValue) -or ([string]::IsNullOrEmpty($currentExtensionValue) -and [string]::IsNullOrEmpty($extensionValue))) {
+        Write-Warning "New extension value is same as existing one set in extensionAttribute$extensionId on device $deviceName. Skipping"
+    } else {
+        if ($extensionValue) {
+            $verb = "Setting '$extensionValue' to"
+        } else {
+            $verb = "Emptying"
+        }
+
+        Write-Warning "$verb extensionAttribute$extensionId on device $deviceName (previous value was '$currentExtensionValue')"
+
+        # prepare value hash
+        $params = @{
+            "extensionAttributes" = @{
+                "extensionAttribute$extensionId" = $extensionValue
+            }
+        }
+
+        Update-MgDevice -DeviceId $device.id -BodyParameter ($params | ConvertTo-Json)
+    }
+}
+
 function Start-AzureADSync {
     <#
         .SYNOPSIS
@@ -4148,6 +4502,6 @@ function Start-AzureADSync {
     } while ($ErrState -eq $true)
 }
 
-Export-ModuleMember -function Add-AzureADAppCertificate, Add-AzureADAppUserConsent, Add-AzureADGuest, Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Disable-AzureADGuest, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADAppRegistration, Get-AzureADAppUsersAndGroups, Get-AzureADAppVerificationStatus, Get-AzureADAssessNotificationEmail, Get-AzureADEnterpriseApplication, Get-AzureAdGroupMemberRecursive, Get-AzureADManagedIdentity, Get-AzureADResource, Get-AzureADRoleAssignments, Get-AzureADServicePrincipalOverview, Get-AzureADSPPermissions, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureADMSIPConditionalAccessPolicy, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage, Remove-AzureADAccountOccurrence, Remove-AzureADAppUserConsent, Start-AzureADSync
+Export-ModuleMember -function Add-AzureADAppCertificate, Add-AzureADAppUserConsent, Add-AzureADGuest, Connect-AzAccount2, Connect-AzureAD2, Connect-PnPOnline2, Disable-AzureADGuest, Get-AzureADAccountOccurrence, Get-AzureADAppConsentRequest, Get-AzureADAppRegistration, Get-AzureADAppUsersAndGroups, Get-AzureADAppVerificationStatus, Get-AzureADAssessNotificationEmail, Get-AzureADDeviceMembership, Get-AzureADEnterpriseApplication, Get-AzureAdGroupMemberRecursive, Get-AzureADManagedIdentity, Get-AzureADResource, Get-AzureADRoleAssignments, Get-AzureADServicePrincipalOverview, Get-AzureADSPPermissions, Get-AzureDevOpsOrganizationOverview, Get-SharepointSiteOwner, Invoke-GraphAPIRequest, New-AzureADMSIPConditionalAccessPolicy, New-AzureDevOpsAuthHeader, New-GraphAPIAuthHeader, Open-AzureADAdminConsentPage, Remove-AzureADAccountOccurrence, Remove-AzureADAppUserConsent, Set-AADDeviceExtensionAttribute, Start-AzureADSync
 
 Export-ModuleMember -alias Get-AzureADIAMRoleAssignments, Get-AzureADPSPermissionGrants, Get-AzureADPSPermissions, Get-AzureADRBACRoleAssignments, Get-AzureADServiceAppRoleAssignment2, Get-AzureADServicePrincipal2, Get-AzureADServicePrincipalPermissions, Get-IntuneAuthHeader, New-AzureADGuest, New-IntuneAuthHeader, Remove-AzureADGuest, Sync-ADtoAzure

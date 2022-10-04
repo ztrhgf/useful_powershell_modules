@@ -25,8 +25,8 @@ function Invoke-IntuneWin32AppRedeploy {
     Azure Tenant ID.
     Requirement for Intune App authentication.
 
-    .PARAMETER excludeSystemApp
-    Switch for excluding Apps targeted to SYSTEM.
+    .PARAMETER dontWait
+    Don't wait on Win32App redeploy completion.
 
     .EXAMPLE
     Invoke-IntuneWin32AppRedeploy
@@ -49,7 +49,9 @@ function Invoke-IntuneWin32AppRedeploy {
 
         [System.Management.Automation.PSCredential] $credential,
 
-        [string] $tenantId
+        [string] $tenantId,
+
+        [switch] $dontWait
     )
 
     if (!(Get-Command Get-IntuneWin32AppLocally)) {
@@ -110,7 +112,7 @@ function Invoke-IntuneWin32AppRedeploy {
         #region redeploy selected Win32Apps
         if ($appToRedeploy) {
             $scriptBlock = {
-                param ($verbosePref, $allFunctionDefs, $appToRedeploy)
+                param ($verbosePref, $allFunctionDefs, $appToRedeploy, $dontWait)
 
                 # inherit verbose settings from host session
                 $VerbosePreference = $verbosePref
@@ -130,7 +132,7 @@ function Invoke-IntuneWin32AppRedeploy {
                     if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32AppLocally." }
                     $txt = $appName
                     if (!$txt) { $txt = $appId }
-                    Write-Verbose "Redeploying app $txt (scope $scope)"
+                    Write-Warning "Preparing redeploy for Win32App '$txt' (scope $scopeId) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $win32AppKeys | ? { $_.PSChildName -Match "^$appId`_\d+" -and $_.PSParentPath -Match "\\$scopeId$" }
 
@@ -155,13 +157,20 @@ function Invoke-IntuneWin32AppRedeploy {
                     }
                 }
 
-                Write-Warning "Invoking redeploy (by removing registry key and restarting service IntuneManagementExtension). Redeploy can take several minutes!"
+                Write-Warning "Invoking redeploy (by restarting service IntuneManagementExtension). Redeploy can take several minutes!"
                 Restart-Service IntuneManagementExtension -Force
+
+                if (!$dontWait) {
+                    Write-Warning "Waiting for start of the Intune Win32App(s) redeploy (this can take minute or two)"
+                    $null = Invoke-FileContentWatcher -path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log" -searchString "Load global Win32App settings" -stopOnFirstMatch
+                    Write-Warning "Waiting for the completion of the Intune Win32App(s) redeploy (this can take several minutes!)"
+                    $null = Invoke-FileContentWatcher -path "$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log" -searchString "application poller stopped." -stopOnFirstMatch
+                }
             }
 
             $param = @{
                 scriptBlock  = $scriptBlock
-                argumentList = ($VerbosePreference, $allFunctionDefs, $appToRedeploy)
+                argumentList = ($VerbosePreference, $allFunctionDefs, $appToRedeploy, $dontWait)
             }
             if ($computerName) {
                 $param.computerName = $computerName

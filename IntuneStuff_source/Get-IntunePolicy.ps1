@@ -56,7 +56,7 @@ function Get-IntunePolicy {
 
     .PARAMETER flatOutput
     Switch. All Intune policies will be outputted as array instead of one psobject with policies divided into separate sections/object properties.
-    Policies "parent" section is added as new property 'Section' to each policy.
+    Policy parent "type" is added as new property 'PolicyType' to each policy for filtration purposes.
 
     .EXAMPLE
     Connect-MSGraph
@@ -487,7 +487,7 @@ function Get-IntunePolicy {
 
             $result.$polType | ? { $_ } | % {
                 # add parent section as property
-                $_ | Add-Member -MemberType NoteProperty -Name PolicyType -Value $polType
+                $_ | Add-Member -MemberType NoteProperty -Name 'PolicyType' -Value $polType
                 # output modified child object
                 $_
             }

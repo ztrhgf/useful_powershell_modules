@@ -245,7 +245,7 @@ function Search-IntuneAccountPolicyAssignment {
 
     if (!$justDirectGroupAssignments) {
         if ($accountMemberOfGroup) {
-            Write-Verbose "Account is member of group(s): $(($accountMemberOfGroup | % {$_.displayName + " (" + $_.ObjectId + ")"}) -join ', ')"
+            Write-Verbose "Account is member of group(s):`n$(($accountMemberOfGroup | % {"`t" + $_.displayName + " (" + $_.ObjectId + ")"}) -join "`n")"
         } elseif ($objectType -ne 'group' -and !$accountMemberOfGroup -and $skipAllUsersAllDevicesAssignments) {
             Write-Warning "Account $accountId isn't member of any group and 'All Users', 'All Devices' assignments should be skipped. Stopping."
 
@@ -283,6 +283,8 @@ function Search-IntuneAccountPolicyAssignment {
 
         $intunePolicy | Get-Member -MemberType NoteProperty | select -ExpandProperty name | % {
             $policyName = $_
+
+            Write-Verbose "$policyName policies:"
 
             if ($intunePolicy.$policyName) {
                 # filter out policies that are not assigned to searched account

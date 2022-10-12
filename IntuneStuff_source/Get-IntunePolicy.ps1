@@ -143,26 +143,74 @@ function Get-IntunePolicy {
         $resultProperty.App = $app
     }
 
-    # iOS App Provisioning profiles
-    if ($all -or $policyType -contains 'iosAppProvisioningProfile') {
-        Write-Verbose "Processing iOS App Provisioning profiles"
-        Write-Progress -Activity $progressActivity -Status "Processing iOS App Provisioning profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
+    # App Configuration policies
+    if ($all -or $policyType -contains 'appConfigurationPolicy') {
+        Write-Verbose "Processing App Configuration policies"
+        Write-Progress -Activity $progressActivity -Status "Processing App Configuration policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosLobAppProvisioningConfigurations?$expandFilter$selectFilter"
-        $iosAppProvisioningProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $appConfigurationPolicy = @()
 
-        $resultProperty.IOSAppProvisioningProfile = $iosAppProvisioningProfile
+        # targetedManagedAppConfigurations
+        Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
+        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
+
+        # mobileAppConfigurations
+        Write-Verbose "`t- processing 'mobileAppConfigurations'"
+        $uri = "https://graph.microsoft.com//beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false)$expandFilter$selectFilter" -replace "\s+", "%20"
+        $mobileAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $mobileAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
+
+        if ($appConfigurationPolicy) {
+            $resultProperty.AppConfigurationPolicy = $appConfigurationPolicy
+        } else {
+            $resultProperty.AppConfigurationPolicy = $null
+        }
     }
 
-    # S mode supplemental policies
-    if ($all -or $policyType -contains 'sModeSupplementalPolicy') {
-        Write-Verbose "Processing S mode supplemental policies"
-        Write-Progress -Activity $progressActivity -Status "Processing S mode supplemental policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+    # App Protection policies
+    if ($all -or $policyType -contains 'appProtectionPolicy') {
+        Write-Verbose "Processing App Protection policies"
+        Write-Progress -Activity $progressActivity -Status "Processing App Protection policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/wdacSupplementalPolicies?$expandFilter$selectFilter"
-        $sModeSupplementalPolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $appProtectionPolicy = @()
 
-        $resultProperty.SModeSupplementalPolicy = $sModeSupplementalPolicy
+        # iosManagedAppProtections
+        Write-Verbose "`t- processing 'iosManagedAppProtections'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections?$expandFilter$selectFilter"
+        $iosManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $iosManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
+
+        # androidManagedAppProtections
+        Write-Verbose "`t- processing 'androidManagedAppProtections'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections?$expandFilter$selectFilter"
+        $androidManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $androidManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
+
+        # targetedManagedAppConfigurations
+        Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
+        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations | ? { $_ } | % { $appProtectionPolicy += $_ }
+
+        # windowsInformationProtectionPolicies
+        Write-Verbose "`t- processing 'windowsInformationProtectionPolicies'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsInformationProtectionPolicies?$expandFilter$selectFilter"
+        $windowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
+
+        # mdmWindowsInformationProtectionPolicies
+        Write-Verbose "`t- processing 'mdmWindowsInformationProtectionPolicies'"
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mdmWindowsInformationProtectionPolicies?$expandFilter$selectFilter"
+        $mdmWindowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $mdmWindowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
+
+        if ($appProtectionPolicy) {
+            $resultProperty.AppProtectionPolicy = $appProtectionPolicy
+        } else {
+            $resultProperty.AppProtectionPolicy = $null
+        }
     }
 
     # Device Compliance
@@ -186,25 +234,60 @@ function Get-IntunePolicy {
 
         # Templates profile type
         # api returns also Windows Update Ring policies, but they are filtered, so just policies as in GUI are returned
+        Write-Verbose "`t- processing 'deviceConfigurations'"
         $dcTemplate = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=(not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration'))$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
         $dcTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Administrative Templates
+        Write-Verbose "`t- processing 'groupPolicyConfigurations'"
         $dcAdmTemplate = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/groupPolicyConfigurations?$expandFilter$selectFilter" | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
         $dcAdmTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # mobileAppConfigurations
+        Write-Verbose "`t- processing 'mobileAppConfigurations'"
         $dcMobileAppConf = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true)$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
         $dcMobileAppConf | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Settings Catalog profile type
         # api returns also Attack Surface Reduction Rules and Account protection policies (from Endpoint Security section), but they are filtered, so just policies as in GUI are returned
         # configurationPolicies objects have property Name instead of DisplayName
+        Write-Verbose "`t- processing 'configurationPolicies'"
         $custSelectFilter = $selectFilter -replace "displayname", "name"
-        $dcSettingCatalog = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')$expandFilter$custSelectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select @{n = 'Displayname'; e = { $_.Name } }, * -ExcludeProperty 'Name', 'assignments@odata.context'
+        if ($basicOverview) {
+            $custExpandFilter = $expandFilter
+        } else {
+            $custExpandFilter = "$expandFilter,settings"
+        }
+        $dcSettingCatalog = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')$custExpandFilter$custSelectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select @{n = 'Displayname'; e = { $_.Name } }, * -ExcludeProperty 'Name', 'assignments@odata.context'
         $dcSettingCatalog | ? { $_ } | % { $configurationPolicy += $_ }
 
-        $resultProperty.ConfigurationPolicy = $configurationPolicy
+        if ($configurationPolicy) {
+            $resultProperty.ConfigurationPolicy = $configurationPolicy
+        } else {
+            $resultProperty.ConfigurationPolicy = $null
+        }
+    }
+
+    # MacOS Custom Attribute Shell scripts
+    if ($all -or $policyType -contains 'customAttributeShellScript') {
+        Write-Verbose "Processing Custom Attribute Shell scripts"
+        Write-Progress -Activity $progressActivity -Status "Processing Custom Attribute Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCustomAttributeShellScripts?$expandFilter$selectFilter"
+        $customAttributeShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.CustomAttributeShellScript = $customAttributeShellScript
+    }
+
+    # ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions configurations
+    if ($all -or $policyType -contains 'deviceEnrollmentConfiguration') {
+        Write-Verbose "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions"
+        Write-Progress -Activity $progressActivity -Status "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations?$expandFilter$selectFilter"
+        $deviceEnrollmentConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.DeviceEnrollmentConfiguration = $deviceEnrollmentConfiguration
     }
 
     # Device Configuration Powershell Scripts
@@ -229,28 +312,6 @@ function Get-IntunePolicy {
         $resultProperty.DeviceManagementShellScript = $deviceConfigShellScript
     }
 
-    # MacOS Custom Attribute Shell scripts
-    if ($all -or $policyType -contains 'customAttributeShellScript') {
-        Write-Verbose "Processing Remediation (Health) scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing Custom Attribute Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCustomAttributeShellScripts?$expandFilter$selectFilter"
-        $customAttributeShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
-        $resultProperty.CustomAttributeShellScript = $customAttributeShellScript
-    }
-
-    # Remediation Scripts
-    if ($all -or $policyType -contains 'remediationScript') {
-        Write-Verbose "Processing Remediation (Health) scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing Remediation (Health) scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?$expandFilter$selectFilter"
-        $remediationScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
-        $resultProperty.RemediationScript = $remediationScript
-    }
-
     # Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies, Local User Group Membership, Firewall, Endpoint detection and response, Attack surface reduction
     if ($all -or $policyType -contains 'endpointSecurity') {
         Write-Verbose "Processing Endpoint Security policies"
@@ -266,7 +327,6 @@ function Get-IntunePolicy {
             $endpointSecPol = @()
             foreach ($template in $templates) {
                 Write-Verbose "`t- processing intent $($template.id), template $($template.templateId)"
-
 
                 $settings = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents/$($template.id)/settings"
                 $templateDetail = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/templates/$($template.templateId)"
@@ -331,7 +391,84 @@ function Get-IntunePolicy {
         }
         $endpointSecPol2 | ? { $_ } | % { $endpointSecurityPolicy += $_ }
 
-        $resultProperty.EndpointSecurity = $endpointSecurityPolicy
+        if ($endpointSecurityPolicy) {
+            $resultProperty.EndpointSecurity = $endpointSecurityPolicy
+        } else {
+            $resultProperty.EndpointSecurity = $null
+        }
+    }
+
+    # iOS App Provisioning profiles
+    if ($all -or $policyType -contains 'iosAppProvisioningProfile') {
+        Write-Verbose "Processing iOS App Provisioning profiles"
+        Write-Progress -Activity $progressActivity -Status "Processing iOS App Provisioning profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosLobAppProvisioningConfigurations?$expandFilter$selectFilter"
+        $iosAppProvisioningProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.IOSAppProvisioningProfile = $iosAppProvisioningProfile
+    }
+
+    # iOS Update configurations
+    if ($all -or $policyType -contains 'iosUpdateConfiguration') {
+        Write-Verbose "Processing iOS Update configurations"
+        Write-Progress -Activity $progressActivity -Status "Processing iOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.iosUpdateConfiguration')$expandFilter$selectFilter"
+        $iosUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.IOSUpdateConfiguration = $iosUpdateConfiguration
+    }
+
+    # Policy Sets
+    if ($all -or $policyType -contains 'policySet') {
+        Write-Verbose "Processing Policy Sets"
+        Write-Progress -Activity $progressActivity -Status "Processing Policy Sets" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $policySet = @()
+
+        $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/policySets'
+        $policySetList = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages
+
+        if ($basicOverview) {
+            $custExpandFilter = $expandFilter
+        } else {
+            $custExpandFilter = "$expandFilter,items"
+        }
+        foreach ($policy in $policySetList) {
+            $uri = "https://graph.microsoft.com/beta/deviceAppManagement/policySets/$($policy.id)/?$custExpandFilter$selectFilter"
+            $policyContent = Invoke-MSGraphRequest -Url $uri | select -Property * -ExcludeProperty '@odata.context', 'assignments@odata.context', 'items@odata.context'
+
+            $policySet += $policyContent
+        }
+
+        if ($policySet) {
+            $resultProperty.PolicySet = $policySet
+        } else {
+            $resultProperty.PolicySet = $null
+        }
+    }
+
+    # Remediation Scripts
+    if ($all -or $policyType -contains 'remediationScript') {
+        Write-Verbose "Processing Remediation (Health) scripts"
+        Write-Progress -Activity $progressActivity -Status "Processing Remediation (Health) scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?$expandFilter$selectFilter"
+        $remediationScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.RemediationScript = $remediationScript
+    }
+
+    # S mode supplemental policies
+    if ($all -or $policyType -contains 'sModeSupplementalPolicy') {
+        Write-Verbose "Processing S Mode Supplemental policies"
+        Write-Progress -Activity $progressActivity -Status "Processing S mode supplemental policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+
+        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/wdacSupplementalPolicies?$expandFilter$selectFilter"
+        $sModeSupplementalPolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+
+        $resultProperty.SModeSupplementalPolicy = $sModeSupplementalPolicy
     }
 
     # Windows Autopilot Deployment profile
@@ -343,17 +480,6 @@ function Get-IntunePolicy {
         $windowsAutopilotDeploymentProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
 
         $resultProperty.WindowsAutopilotDeploymentProfile = $windowsAutopilotDeploymentProfile
-    }
-
-    # ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions configurations
-    if ($all -or $policyType -contains 'deviceEnrollmentConfiguration') {
-        Write-Verbose "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions"
-        Write-Progress -Activity $progressActivity -Status "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations?$expandFilter$selectFilter"
-        $deviceEnrollmentConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
-        $resultProperty.DeviceEnrollmentConfiguration = $deviceEnrollmentConfiguration
     }
 
     # Windows Feature Update profiles
@@ -387,93 +513,6 @@ function Get-IntunePolicy {
         $windowsUpdateRing = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
 
         $resultProperty.WindowsUpdateRing = $windowsUpdateRing
-    }
-
-    # iOS Update configurations
-    if ($all -or $policyType -contains 'iosUpdateConfiguration') {
-        Write-Verbose "Processing iOS Update configurations"
-        Write-Progress -Activity $progressActivity -Status "Processing iOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.iosUpdateConfiguration')$expandFilter$selectFilter"
-        $iosUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
-        $resultProperty.IOSUpdateConfiguration = $iosUpdateConfiguration
-    }
-
-    # App Configuration policies
-    if ($all -or $policyType -contains 'appConfigurationPolicy') {
-        Write-Verbose "Processing App Configuration policies"
-        Write-Progress -Activity $progressActivity -Status "Processing App Configuration policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $appConfigurationPolicy = @()
-
-        # targetedManagedAppConfigurations
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $targetedManagedAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
-
-        # mobileAppConfigurations
-        $uri = "https://graph.microsoft.com//beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false)$expandFilter$selectFilter" -replace "\s+", "%20"
-        $mobileAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $mobileAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
-
-        $resultProperty.AppConfigurationPolicy = $appConfigurationPolicy
-    }
-
-    # App Protection policies
-    if ($all -or $policyType -contains 'appProtectionPolicy') {
-        Write-Verbose "Processing App Protection policies"
-        Write-Progress -Activity $progressActivity -Status "Processing App Protection policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $appProtectionPolicy = @()
-
-        # iosManagedAppProtections
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections?$expandFilter$selectFilter"
-        $iosManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $iosManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # androidManagedAppProtections
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections?$expandFilter$selectFilter"
-        $androidManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $androidManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # targetedManagedAppConfigurations
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $targetedManagedAppConfigurations | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # windowsInformationProtectionPolicies
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $windowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $windowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # mdmWindowsInformationProtectionPolicies
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mdmWindowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $mdmWindowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $mdmWindowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        $resultProperty.AppProtectionPolicy = $appProtectionPolicy
-    }
-
-    # Policy Sets
-    if ($all -or $policyType -contains 'policySet') {
-        Write-Verbose "Processing Policy Sets"
-        Write-Progress -Activity $progressActivity -Status "Processing Policy Sets" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/policySets'
-        $policySet = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages
-        $resultProperty.policySet = @()
-        if ($basicOverview) {
-            $custExpandFilter = $expandFilter
-        } else {
-            $custExpandFilter = "$expandFilter,items"
-        }
-        foreach ($policy in $policySet) {
-            $uri = "https://graph.microsoft.com/beta/deviceAppManagement/policySets/$($policy.id)/?$custExpandFilter$selectFilter"
-            $policyContent = Invoke-MSGraphRequest -Url $uri | select -Property * -ExcludeProperty '@odata.context', 'assignments@odata.context', 'items@odata.context'
-
-            $resultProperty.PolicySet += $policyContent
-        }
     }
     #endregion get Intune policies
 

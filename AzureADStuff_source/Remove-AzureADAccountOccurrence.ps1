@@ -22,6 +22,7 @@
         Owner
         SharepointSiteOwner
         AppUsersAndGroupsRoleAssignment
+        KeyVaultAccessPolicy
 
     .PARAMETER replaceByUser
     (optional) ObjectId or UPN of the AAD user that will replace processed user as a new owner/manager.
@@ -490,6 +491,18 @@
                 }
             }
             #endregion devops
+
+            #region keyVaultAccessPolicy
+            if ($_.KeyVaultAccessPolicy) {
+                $_.KeyVaultAccessPolicy | % {
+                    $vaultName = $_.VaultName
+                    $removedObjectId = $_.AccessPolicies.ObjectId | select -Unique
+                    "Removing Access from KeyVault $vaultName for '$removedObjectId'"
+
+                    Remove-AzKeyVaultAccessPolicy -VaultName $vaultName -ObjectId $removedObjectId -WarningAction SilentlyContinue
+                }
+            }
+            #endregion keyVaultAccessPolicy
 
             #endregion remove AAD account occurrences
 

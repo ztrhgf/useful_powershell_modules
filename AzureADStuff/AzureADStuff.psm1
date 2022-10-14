@@ -1078,7 +1078,7 @@ function Get-AzureADAccountOccurrence {
 
     if ('KeyVaultAccessPolicy' -in $data) {
         Write-Warning "Caching KeyVault Access Policies. This can take several minutes!"
-        $keyVaultAccessPolicyAssignments = @()
+        $keyVaultList = @()
         $CurrentContext = Get-AzContext
         $Subscriptions = Get-AzSubscription -TenantId $CurrentContext.Tenant.Id
         foreach ($Subscription in ($Subscriptions | Sort-Object Name)) {
@@ -1087,7 +1087,7 @@ function Get-AzureADAccountOccurrence {
             $Context = Set-AzContext -TenantId $Subscription.TenantId -SubscriptionId $Subscription.Id -Force
 
             Get-AzKeyVault -WarningAction SilentlyContinue | % {
-                $keyVaultAccessPolicyAssignments += Get-AzKeyVault -VaultName $_.VaultName -WarningAction SilentlyContinue
+                $keyVaultList += Get-AzKeyVault -VaultName $_.VaultName -WarningAction SilentlyContinue
             }
         }
     }
@@ -1100,6 +1100,7 @@ function Get-AzureADAccountOccurrence {
         $AADAccountObj = Get-AzureADObjectByObjectId -ObjectId $id
         if (!$AADAccountObj) {
             Write-Error "Account $id was not found in AAD"
+            continue
         }
 
         # progress variables
@@ -1140,8 +1141,13 @@ function Get-AzureADAccountOccurrence {
             Write-Verbose "Getting KeyVault Access Policy assignments"
             Write-Progress -Activity $progressActivity -Status "Getting KeyVault Access Policy assignments" -PercentComplete (($i++ / $data.Count) * 100)
 
-            $keyVaultAccessPolicyAssignments | ? { $_.AccessPolicies.objectId -eq $id } | % {
-                $result.KeyVaultAccessPolicy += $_
+            $keyVaultList | % {
+                $keyVault = $_
+                $accessPolicies = $keyVault.AccessPolicies | ? { $_.objectId -eq $id }
+
+                if ($accessPolicies) {
+                    $result.KeyVaultAccessPolicy += $keyVault | select *, @{n = 'AccessPolicies'; e = { $accessPolicies } } -ExcludeProperty AccessPolicies, AccessPoliciesText
+                }
             }
         }
         #endregion KeyVault Access Policy
@@ -3735,6 +3741,7 @@ function Remove-AzureADAccountOccurrence {
         Owner
         SharepointSiteOwner
         AppUsersAndGroupsRoleAssignment
+        KeyVaultAccessPolicy
 
     .PARAMETER replaceByUser
     (optional) ObjectId or UPN of the AAD user that will replace processed user as a new owner/manager.
@@ -4203,6 +4210,18 @@ function Remove-AzureADAccountOccurrence {
                 }
             }
             #endregion devops
+
+            #region keyVaultAccessPolicy
+            if ($_.KeyVaultAccessPolicy) {
+                $_.KeyVaultAccessPolicy | % {
+                    $vaultName = $_.VaultName
+                    $removedObjectId = $_.AccessPolicies.ObjectId | select -Unique
+                    "Removing Access from KeyVault $vaultName for '$removedObjectId'"
+
+                    Remove-AzKeyVaultAccessPolicy -VaultName $vaultName -ObjectId $removedObjectId -WarningAction SilentlyContinue
+                }
+            }
+            #endregion keyVaultAccessPolicy
 
             #endregion remove AAD account occurrences
 

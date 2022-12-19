@@ -25,12 +25,16 @@ function Set-ConfluencePage2 {
     By default 0 a.k.a. the first one.
 
     .EXAMPLE
+    Connect-Confluence
+
     $body = get-process notepad | select name, cpu, id | ConvertTo-ConfluenceTable | ConvertTo-ConfluenceStorageFormat
     Set-ConfluencePage2 -pageID 1234 -body $body -setJustTable
 
     Replace just HTML code of the first table on the Confluence page (ID 1234) with new code (specified in body parameter). Leaves what was before and after that table intact.
 
     .EXAMPLE
+    Connect-Confluence
+
     $body = get-process notepad | select name, cpu, id | ConvertTo-ConfluenceTable | ConvertTo-ConfluenceStorageFormat
     Set-ConfluencePage2 -pageID 1234 -body $body -setJustTable -tableIndex 1
 

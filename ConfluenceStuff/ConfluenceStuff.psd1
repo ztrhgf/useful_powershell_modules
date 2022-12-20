@@ -12,7 +12,7 @@
 RootModule = 'ConfluenceStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.2'
+ModuleVersion = '1.0.3'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -34,6 +34,7 @@ Description = 'Various functions for working with Atlassian Confluence. Some of 
 
     Some of the interesting functions:
     - Connect-Confluence - authenticates to your Confluence instance
+    - Compare-ConfluencePageTable - compares two list of objects where first one is gathered from given Confluence wiki page table (identified using page ID and table index)
     - ConvertTo-ConfluenceTableHtml - converts given object into HTML table code but
         - pipe | sign in object value no more breaks table formatting
         - values in cells are not surrounded with spaces a.k.a. table columns can be sorted
@@ -81,9 +82,9 @@ RequiredModules = @('ConfluencePS',
 # NestedModules = @()
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
-FunctionsToExport = 'Connect-Confluence', 'ConvertTo-ConfluenceTableHtml', 
-               'Get-ConfluencePage2', 'Get-ConfluencePageTable', 
-               'Set-ConfluencePage2'
+FunctionsToExport = 'Compare-ConfluencePageTable', 'Connect-Confluence', 
+               'ConvertTo-ConfluenceTableHtml', 'Get-ConfluencePage2', 
+               'Get-ConfluencePageTable', 'Set-ConfluencePage2'
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = '*'

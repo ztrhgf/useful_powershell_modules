@@ -119,7 +119,7 @@
     #endregion helper functions
 
     # check whether already connected
-    $setApiUri = $global:PSDefaultParameterValues.GetEnumerator() | ? Name -EQ "Get-ConfluencePage:ApiUri" | select -ExpandProperty Value
+    $setApiUri = $PSDefaultParameterValues.GetEnumerator() | ? Name -EQ "Get-ConfluencePage:ApiUri" | select -ExpandProperty Value
 
     # authenticate to Confluence
     if ($setApiUri -and $setApiUri -like "$baseUri*") {

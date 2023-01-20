@@ -34,10 +34,13 @@
     .PARAMETER moduleVersion
     (optional) PSH module version whose dependencies should be searched.
 
-    .PARAMETER checkModuleFunctionsDependencies
-    Switch for searching dependencies for all commands defined in processed modules.
+    .PARAMETER moduleBasePath
+    Base path of the module that should be checked.
 
-    By default just '#requires -module' statements is used for getting module dependencies.
+    .PARAMETER checkModuleFunctionsDependencies
+    Switch for searching dependencies also for all commands defined in processed modules. Such command cannot be binary a.k.a. plaintext definition has to be available so it is possible to process it using AST.
+
+    By default just required modules defined in module manifest are used for getting module dependencies.
 
     .PARAMETER availableModules
     To speed up repeated function runs, save all available modules into variable and use it as value for this parameter.
@@ -45,21 +48,43 @@
     By default this function caches all available modules before each run which can take several seconds.
 
     .EXAMPLE
-    Get-CodeDependency -scriptPath "C:\scripts\Get-AzureADServicePrincipalOverview.ps1" -Verbose
-
-    .EXAMPLE
-    Get-CodeDependency -moduleName scripts -checkModuleFunctionsDependencies
-
-    .EXAMPLE
-    Get-CodeDependency -moduleName scripts -checkModuleFunctionsDependencies
-
-    .EXAMPLE
-    Get-CodeDependency -scriptContent 'Connect-MsolService' -Verbose
-
-    .EXAMPLE
+    # cache available modules to make following calls faster
     $availableModules = @(Get-Module -ListAvailable)
 
-    Get-CodeDependency -scriptContent 'Connect-MsolService' -availableModules $availableModules -Verbose
+    Get-CodeDependency -scriptPath "C:\scripts\Get-AzureADServicePrincipalOverview.ps1" -availableModules $availableModules -Verbose
+
+    Get dependencies of given script.
+
+    .EXAMPLE
+    $code = @'
+        Import-Module AzureAD
+
+        Connect-MsolService
+
+        ...
+    '@
+
+    Get-CodeDependency -scriptContent $code -Verbose
+
+    Get dependencies of given code.
+
+    .EXAMPLE
+    Get-CodeDependency -moduleName MyModule
+
+    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Only dependencies defined in module manifest will be processed.
+
+    .EXAMPLE
+    Get-CodeDependency -moduleName MyModule -checkModuleFunctionsDependencies
+
+    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Dependencies defined in module manifest AND all commands it defines will be processed.
+
+    .EXAMPLE
+    Get-CodeDependency -moduleBasePath 'C:\modules\AWS.Tools.Common\4.1.233' -Verbose
+
+    Get dependencies of module AWS.Tools.Common. Such module does NOT have to be available in $env:PSModulePath.
+    Only dependencies defined in module manifest will be processed.
     #>
 
     [CmdletBinding()]
@@ -340,7 +365,7 @@
 
             #region get module data from PSH Gallery
             if (!$module) {
-                Write-Warning ("`t`t`t`t" * $indent + "- Module '$moduleName' (ver. $moduleVersion) isn't present on this machine. Trying to find it in online PowerShell Gallery")
+                Write-Warning "- Module '$moduleName' (ver. $moduleVersion) isn't present on this machine. Trying to find it in online PowerShell Gallery"
 
                 # if ('Trusted' -ne ($Policy = (Get-PSRepository PSGallery).InstallationPolicy)) {
                 #     Set-PSRepository PSGallery -InstallationPolicy Trusted
@@ -389,7 +414,7 @@
                             $null = $global:availableModules.add($module)
                         } catch {
                             if ($_ -like "*No match was found for the specified search criteria*") {
-                                Write-Warning ("`t`t`t`t" * $indent + "- Module isn't available in the PowerShell Gallery either")
+                                Write-Warning "- Module isn't available in the PowerShell Gallery either"
                             } else {
                                 Write-Error $_
                             }
@@ -414,7 +439,7 @@
                         $pshgModule = Find-Module @param
                     } catch {
                         if ($_ -like "*No match was found for the specified search criteria*") {
-                            Write-Warning ("`t`t`t`t" * $indent + "- Module isn't available in the PowerShell Gallery either")
+                            Write-Warning "- Module isn't available in the PowerShell Gallery either"
                         } else {
                             Write-Error $_
                         }
@@ -506,7 +531,7 @@
 
         #TODO vytahnout i dalsi DotNetFrameworkVersion, PowerShellVersion, RequiredAssemblies
         #endregion get dependencies for every required module
-    }
+    } # end of Get-ModuleDependency function
 
     function Get-ScriptDependency {
         [CmdletBinding()]
@@ -804,7 +829,7 @@
                 }
             }
         }
-    }
+    } # end of Get-ScriptDependency function
     #endregion helper functions
 
     if ($scriptPath -or $scriptContent) {

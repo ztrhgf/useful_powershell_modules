@@ -12,7 +12,7 @@
 RootModule = 'DependencySearch.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.0.1'
+ModuleVersion = '0.0.3'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -30,7 +30,7 @@ CompanyName = 'Unknown'
 Copyright = '(c) 2023 @AndrewZtrhgf. All rights reserved.'
 
 # Description of the functionality provided by this module
-Description = 'Module contains function Get-CodeDependency which returns dependencies of given script/code/module. Such dependencies can be: required modules, PSSnapins, #requires statements. Dependencies are searched recursively across all used commands. Besides defined #requires or module dependencies also modules added through Import-Module and PSSnapins added through Add-PSSnapin are processed'
+Description = 'Module contains functions that allows you to check for PowerShell code/script/module dependencies through static code analysis. Supports also checks agains PowerShell Gallery.'
 
 # Minimum version of the Windows PowerShell engine required by this module
 # PowerShellVersion = ''

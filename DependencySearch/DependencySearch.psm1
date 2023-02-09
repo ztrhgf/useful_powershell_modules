@@ -128,7 +128,7 @@ function Get-CodeDependency {
         - else it is skipped
 
     b) When module is given:
-    - module is searched in locally available modules (using name and optionally version)
+    - module is searched in locally available modules ($env:PSModulePath) using name and optionally version
         - if not found, it is searched again online in PowerShell Gallery
     - #requires statements is checked and option b) is called upon for every required module recursively
     - (if 'processDefinedCommand' switch is used) text definition of every command in module is searched for dependencies using option a) recursively
@@ -184,19 +184,42 @@ function Get-CodeDependency {
     .EXAMPLE
     Get-CodeDependency -moduleName MyModule
 
-    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Get dependencies of module MyModule. Such module has to be placed in any folder from $env:PSModulePath or must exist in PowerShell Gallery.
     Only dependencies defined in module manifest will be processed.
 
     .EXAMPLE
     Get-CodeDependency -moduleName MyModule -checkModuleFunctionsDependencies
 
-    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Get dependencies of module MyModule. Such module has to be placed in any folder from $env:PSModulePath or must exist in PowerShell Gallery.
     Dependencies defined in module manifest AND all commands it defines will be processed.
 
     .EXAMPLE
     Get-CodeDependency -moduleBasePath 'C:\modules\AWS.Tools.Common\4.1.233' -Verbose
 
-    Get dependencies of module AWS.Tools.Common. Such module does NOT have to be available in $env:PSModulePath.
+    Get dependencies of module AWS.Tools.Common. Such module does NOT have to be placed in folder from $env:PSModulePath.
+    Only dependencies defined in module manifest will be processed.
+
+    .EXAMPLE
+    #save current variable content, so it can be restored later
+    $PSModulePathBkp = $env:PSModulePath
+
+    # path to modules folder that is outside module auto-discovery paths and that contains module 'MyCustomModule'
+    $myPrivateModules = "C:\useful_powershell_modules"
+
+    # add modules path if necessary
+    if ($myPrivateModules -notin ($env:PSModulePath -split ";")) {
+        $env:PSModulePath = $env:PSModulePath + ";$myPrivateModules"
+    }
+
+    # cache available modules including the extra ones
+    $availableModules = Get-Module -ListAvailable
+
+    Get-CodeDependency -moduleName MyCustomModule -availableModules $availableModules
+
+    # restore previous version of $env:PSModulePath
+    $env:PSModulePath = $PSModulePathBkp
+
+    Example of getting dependencies of MyCustomModule module that is placed outside of $env:PSModulePath.
     Only dependencies defined in module manifest will be processed.
     #>
 
@@ -586,7 +609,7 @@ function Get-CodeDependency {
                                     Command    = "<module manifest>"
                                 }
                                 if ($reqModuleVersion) {
-                                    $param.version = $reqModuleVersion
+                                    $param.moduleVersion = $reqModuleVersion
                                 }
 
                                 Get-ModuleDependency @param
@@ -817,7 +840,7 @@ function Get-CodeDependency {
 
         Write-Verbose ("`t`t`t`t" * $indent + "- Getting dependencies (for used COMMANDS)")
         # list of prefixes added to commands imported from modules
-        $importModulePrefix = $importModuleCommandList.Prefix
+        $importModulePrefix = $importModuleCommandList.Prefix | ? { $_ }
         foreach ($cmd in $usedCommand) {
             $cmdName = $cmd.CommandElements[0].Value
             $cmdCommand = $cmd.Extent.Text
@@ -1236,6 +1259,64 @@ function Get-CodeDependencyStatus {
     #endregion unnecessary module requirement
 }
 
+function Get-CorrespondingGraphCommand {
+    <#
+    .SYNOPSIS
+    Function finds corresponding Graph command for MSOnline and AzureAD commands.
+
+    .DESCRIPTION
+    Function finds corresponding Graph command for MSOnline and AzureAD commands.
+
+    .PARAMETER commandName
+    MSOnline or AzureAD command name.
+
+    .EXAMPLE
+    Get-CorrespondingGraphCommand Get-MsolUser
+
+    Finds corresponding Graph command for Get-MsolUser command. A.k.a. Get-MgUser.
+
+    .EXAMPLE
+    $scripts = Get-ChildItem C:\scripts -Recurse -Filter "*.ps1" -file | ? name -Match "\.ps1$" | select -exp FullName
+
+    $moduleList = @()
+    "AzureAD", "AzureADPreview", "MSOnline", "AzureRM" | % {
+        $module = Get-Module $_ -ListAvailable
+        if ($module) {
+            $moduleList += $module
+        } else {
+            Write-Warning "Module $_ isn't available on you system. Add it to `$env:PSModulePath or install using Install-Module?"
+        }
+    }
+
+    $scripts | % {
+        Get-ModuleCommandUsedInCode -scriptPath $_ -module $moduleList | Select-Object *, @{n = 'GraphCommand'; e = { (Get-CorrespondingGraphCommand $_.command).GraphCommand } } | Format-Table -AutoSize
+    }
+
+    Search all ps1 scripts in C:\scripts folder for commands defined in modules "AzureAD", "AzureADPreview", "MSOnline", "AzureRM". Show where they are used and if possible also equivalent Graph command.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $commandName
+    )
+
+    $cacheFile = "$env:TEMP\graphcommandmap.xml"
+
+    if ((Test-Path $cacheFile -ea SilentlyContinue) -and ((Get-Item $cacheFile).LastWriteTime -gt [datetime]::Today.AddDays(-30))) {
+        Write-Verbose "Using $cacheFile"
+        $table = Import-Clixml $cacheFile
+    } else {
+        Write-Verbose "Getting command map"
+        $uri = "https://learn.microsoft.com/en-au/powershell/microsoftgraph/azuread-msoline-cmdlet-map?view=graph-powershell-beta"
+        $pageContent = (Invoke-WebRequest -Method GET -Uri $uri -UseBasicParsing).content
+        $table = ConvertFrom-HTMLTable $pageContent -useHTMLAgilityPack -asArrayOfTables -all
+        $table | Export-Clixml $cacheFile -Force
+    }
+
+    $table | % { $_ | select @{n = "Command"; e = { if ($_."Azure AD cmdlets") { $_."Azure AD cmdlets" } else { $_."MSOnline cmdlets" } } }, @{n = "GraphCommand"; e = { $_."Microsoft Graph PowerShell cmdlets" } } } | ? Command -EQ $commandName
+}
+
 function Get-ImportModuleFromAST {
     <#
     .SYNOPSIS
@@ -1406,6 +1487,115 @@ function Get-ImportModuleFromAST {
     }
 }
 
-Export-ModuleMember -function Get-AddPSSnapinFromAST, Get-CodeDependency, Get-CodeDependencyStatus, Get-ImportModuleFromAST
+function Get-ModuleCommandUsedInCode {
+    <#
+    .SYNOPSIS
+    Function for getting commands (defined in given module) that are used in given script.
+
+    .DESCRIPTION
+    Function for getting commands (defined in given module) that are used in given script.
+
+    .PARAMETER scriptPath
+    Path to the ps1 script that should be searched for used commands.
+
+    .PARAMETER module
+    Module(s) object whose commands/aliases will be searched in given script.
+
+    Should be retrieved using Get-Module command a.k.a. has to exist on local system!
+
+    .EXAMPLE
+    $module = Get-Module MSOnline -ListAvailable | select -last 1
+
+    Get-ModuleCommandUsedInCode -scriptPath "C:\repo\AzureAD_monitoring\AzureAD_user_APS.ps1" -module $module
+
+    Get all commands used in "AzureAD_user_APS.ps1" script that are defined in the module MSOnline.
+
+    .EXAMPLE
+    $scripts = Get-ChildItem C:\scripts -Recurse -Filter "*.ps1" -file | ? name -Match "\.ps1$" | select -exp FullName
+
+    $moduleList = @()
+    "AzureAD", "AzureADPreview", "MSOnline", "AzureRM" | % {
+        $module = Get-Module $_ -ListAvailable
+        if ($module) {
+            $moduleList += $module
+        } else {
+            Write-Warning "Module $_ isn't available on you system. Add it to `$env:PSModulePath or install using Install-Module?"
+        }
+    }
+
+    $scripts | % {
+        Get-ModuleCommandUsedInCode -scriptPath $_ -module $moduleList
+    }
+
+    Search all ps1 scripts in C:\scripts folder for commands defined in modules "AzureAD", "AzureADPreview", "MSOnline", "AzureRM".
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript( {
+                if ((Test-Path -Path $_ -PathType leaf) -and $_ -match "\.ps1$") {
+                    $true
+                } else {
+                    throw "$_ is not a ps1 file or it doesn't exist"
+                }
+            })]
+        [string] $scriptPath,
+
+        [Parameter(Mandatory = $true)]
+        [PSModuleInfo[]] $module
+    )
+
+    #TODO if module has default prefix, add it to each exported commands
+    # $modulePrefix = $module.Prefix
+
+    #region get commands & aliases defined in the module
+    # hash with where keys are function names defined in given module(s) and value is name of module where it is defined
+    $definedCommand = @{}
+
+    # fill the $definedCommand hash
+    $module | % {
+        $moduleObj = $_
+        $moduleObj.ExportedCommands.keys | % { $definedCommand.$_ = $moduleObj.Name }
+        $moduleObj.ExportedAliases.keys | % { $definedCommand.$_ = $moduleObj.Name }
+
+        if (($moduleObj.ExportedCommands.keys).count -eq 0 -and ($moduleObj.ExportedAliases.keys).count -eq 0) {
+            Write-Warning "Module $($_.Name) doesn't contain any commands"
+        }
+    }
+    #endregion get commands & aliases defined in the module
+
+    #region get commands & aliases used in the script
+    $AST = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath), [ref] $null, [ref] $null)
+
+    $usedCommand = $AST.FindAll( { $args[0] -is [System.Management.Automation.Language.CommandAst ] }, $true)
+
+    if (!$usedCommand) {
+        Write-Warning "Script '$scriptPath' doesn't contain any commands"
+        return
+    }
+    #endregion get commands & aliases used in the script
+
+    #region output the results
+    [System.Collections.ArrayList] $result = @()
+
+    $usedCommand | % {
+        $commandName = $_.CommandElements[0].Value
+        $commandLine = $_.Extent.StartLineNumber
+        if ($commandName -in $definedCommand.Keys) {
+            $null = $result.add([PSCustomObject]@{
+                    Command = $commandName
+                    Line    = $commandLine
+                    Module  = $definedCommand.$commandName
+                    Script  = $scriptPath
+                })
+        }
+    }
+
+    $result | Sort-Object -Property Command
+    #endregion output the results
+}
+
+Export-ModuleMember -function Get-AddPSSnapinFromAST, Get-CodeDependency, Get-CodeDependencyStatus, Get-CorrespondingGraphCommand, Get-ImportModuleFromAST, Get-ModuleCommandUsedInCode
 
 Export-ModuleMember -alias Get-Dependency, Get-PSHCodeDependency

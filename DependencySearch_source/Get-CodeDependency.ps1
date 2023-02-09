@@ -15,7 +15,7 @@
         - else it is skipped
 
     b) When module is given:
-    - module is searched in locally available modules (using name and optionally version)
+    - module is searched in locally available modules ($env:PSModulePath) using name and optionally version
         - if not found, it is searched again online in PowerShell Gallery
     - #requires statements is checked and option b) is called upon for every required module recursively
     - (if 'processDefinedCommand' switch is used) text definition of every command in module is searched for dependencies using option a) recursively
@@ -71,19 +71,42 @@
     .EXAMPLE
     Get-CodeDependency -moduleName MyModule
 
-    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Get dependencies of module MyModule. Such module has to be placed in any folder from $env:PSModulePath or must exist in PowerShell Gallery.
     Only dependencies defined in module manifest will be processed.
 
     .EXAMPLE
     Get-CodeDependency -moduleName MyModule -checkModuleFunctionsDependencies
 
-    Get dependencies of module MyModule. Such module has to be available in $env:PSModulePath or in PowerShell Gallery.
+    Get dependencies of module MyModule. Such module has to be placed in any folder from $env:PSModulePath or must exist in PowerShell Gallery.
     Dependencies defined in module manifest AND all commands it defines will be processed.
 
     .EXAMPLE
     Get-CodeDependency -moduleBasePath 'C:\modules\AWS.Tools.Common\4.1.233' -Verbose
 
-    Get dependencies of module AWS.Tools.Common. Such module does NOT have to be available in $env:PSModulePath.
+    Get dependencies of module AWS.Tools.Common. Such module does NOT have to be placed in folder from $env:PSModulePath.
+    Only dependencies defined in module manifest will be processed.
+
+    .EXAMPLE
+    #save current variable content, so it can be restored later
+    $PSModulePathBkp = $env:PSModulePath
+
+    # path to modules folder that is outside module auto-discovery paths and that contains module 'MyCustomModule'
+    $myPrivateModules = "C:\useful_powershell_modules"
+
+    # add modules path if necessary
+    if ($myPrivateModules -notin ($env:PSModulePath -split ";")) {
+        $env:PSModulePath = $env:PSModulePath + ";$myPrivateModules"
+    }
+
+    # cache available modules including the extra ones
+    $availableModules = Get-Module -ListAvailable
+
+    Get-CodeDependency -moduleName MyCustomModule -availableModules $availableModules
+
+    # restore previous version of $env:PSModulePath
+    $env:PSModulePath = $PSModulePathBkp
+
+    Example of getting dependencies of MyCustomModule module that is placed outside of $env:PSModulePath.
     Only dependencies defined in module manifest will be processed.
     #>
 
@@ -473,7 +496,7 @@
                                     Command    = "<module manifest>"
                                 }
                                 if ($reqModuleVersion) {
-                                    $param.version = $reqModuleVersion
+                                    $param.moduleVersion = $reqModuleVersion
                                 }
 
                                 Get-ModuleDependency @param
@@ -704,7 +727,7 @@
 
         Write-Verbose ("`t`t`t`t" * $indent + "- Getting dependencies (for used COMMANDS)")
         # list of prefixes added to commands imported from modules
-        $importModulePrefix = $importModuleCommandList.Prefix
+        $importModulePrefix = $importModuleCommandList.Prefix | ? { $_ }
         foreach ($cmd in $usedCommand) {
             $cmdName = $cmd.CommandElements[0].Value
             $cmdCommand = $cmd.Extent.Text

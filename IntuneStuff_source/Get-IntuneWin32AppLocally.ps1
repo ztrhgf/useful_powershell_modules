@@ -34,7 +34,7 @@
     IDs of targeted users and apps will be translated using information from local Intune log files.
 
     .EXAMPLE
-    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune credential (Get-Credentials)
+    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune credential (Get-Credential)
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names.
 
@@ -252,7 +252,7 @@
 
         $processedWin32AppId = @()
 
-        foreach ($scope in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue)) {
+        foreach ($scope in (Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps" -ErrorAction SilentlyContinue | ? PSChildName -NotIn "OperationalState", "Reporting")) {
             $userAzureObjectID = Split-Path $scope.Name -Leaf
 
             if ($excludeSystemApp -and $userAzureObjectID -eq "00000000-0000-0000-0000-000000000000") {

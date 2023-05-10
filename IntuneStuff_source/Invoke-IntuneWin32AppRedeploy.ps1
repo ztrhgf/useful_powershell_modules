@@ -78,10 +78,10 @@ function Invoke-IntuneWin32AppRedeploy {
         }
 
         foreach ($intuneLog in $intuneLogList) {
-            $appMatch = Select-String -Path $intuneLog -Pattern "\[Win32App\] ExecManager: processing targeted app .+ id='$appId'" -Context 0, 2
+            $appMatch = Select-String -Path $intuneLog -Pattern "\[Win32App\]\[V3Processor\] Processing subgraph with app ids: $appId" -Context 0, 1
             if ($appMatch) {
                 foreach ($match in $appMatch) {
-                    $hash = ([regex]"\d+:Hash = ([^]]+)\]").Matches($match).captures.groups[1].value
+                    $hash = ([regex]"\\GRS\\(.*)\\").Matches($match).captures.groups[1].value
                     if ($hash) {
                         return $hash
                     }

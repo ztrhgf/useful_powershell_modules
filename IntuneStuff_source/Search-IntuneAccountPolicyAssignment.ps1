@@ -1,5 +1,5 @@
 ﻿
-#requires -modules AzureAD
+#requires -modules Microsoft.Graph.DirectoryObjects
 #requires -modules Microsoft.Graph.Intune
 function Search-IntuneAccountPolicyAssignment {
     <#
@@ -55,25 +55,29 @@ function Search-IntuneAccountPolicyAssignment {
     Policy parent "type" is added as new property 'PolicyType' to each policy for filtration purposes.
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -justDirectGroupAssignments
 
     Get all Intune policies assigned DIRECTLY to specified GROUP account (a.k.a. NOT to groups where specified group is member of!). Policies assigned to 'All Users', 'All Devices' will be omitted. Policies where specified GROUP is excluded will be omitted!
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -policyType 'compliancePolicy','configurationPolicy'
 
     Get just 'compliancePolicy','configurationPolicy' Intune policies assigned to specified account (a.k.a. groups where he is member of (directly/transitively)). Policies assigned to 'All Users', 'All Devices' will be included. Policies where specified account (a.k.a. groups where he is member of (directly/transitively)) is excluded will be omitted!
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7
 
     Get all Intune policies assigned to specified account (a.k.a. groups where he is member of (directly/transitively)). Policies assigned to 'All Users', 'All Devices' will be included. Policies where specified account (a.k.a. groups where he is member of (directly/transitively)) is excluded will be omitted!
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -basicOverview
 
     Get all Intune policies assigned to specified account (a.k.a. groups where he is member of (directly/transitively)). Policies assigned to 'All Users', 'All Devices' will be included. Policies where specified account (a.k.a. groups where he is member of (directly/transitively)) is excluded will be omitted!
@@ -81,7 +85,8 @@ function Search-IntuneAccountPolicyAssignment {
     Result will be one PSObject with policies saved in it's properties. And just subset of available properties for each policy will be gathered.
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -flatOutput
 
     Get all Intune policies assigned to specified account (a.k.a. groups where he is member of (directly/transitively)). Policies assigned to 'All Users', 'All Devices' will be included. Policies where specified account (a.k.a. groups where he is member of (directly/transitively)) is excluded will be omitted!
@@ -89,7 +94,8 @@ function Search-IntuneAccountPolicyAssignment {
     Result will be array of policies.
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     # cache the Intune policies
     $intunePolicy = Get-IntunePolicy
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -intunePolicy $intunePolicy -basicOverview
@@ -98,7 +104,8 @@ function Search-IntuneAccountPolicyAssignment {
     Do multiple searches using cached Intune policies.
 
     .EXAMPLE
-    Connect-MSGraph
+    $null = Connect-MSGraph
+    $null = Connect-MgGraph
     $intunePolicy = Get-IntunePolicy -flatOutput
     Search-IntuneAccountPolicyAssignment -accountId a815da8b-6324-4feb-94ef-96723ba4fbf7 -intunePolicy $intunePolicy -basicOverview -flatOutput
     Search-IntuneAccountPolicyAssignment -accountId 3465da8b-6325-daeb-94ef-56723ba4f5gt -intunePolicy $intunePolicy -flatOutput
@@ -134,8 +141,8 @@ function Search-IntuneAccountPolicyAssignment {
 
     Write-Warning "For now, assignment filters are ignored when deciding if assignment should be shown as applied!"
 
-    if (!(Get-Module AzureAD) -and !(Get-Module AzureAD -ListAvailable)) {
-        throw "Module AzureAD is missing"
+    if (!(Get-Module Microsoft.Graph.DirectoryObjects) -and !(Get-Module Microsoft.Graph.DirectoryObjects -ListAvailable)) {
+        throw "Module Microsoft.Graph.DirectoryObjects is missing"
     }
     if (!(Get-Module Microsoft.Graph.Intune) -and !(Get-Module Microsoft.Graph.Intune -ListAvailable)) {
         throw "Module Microsoft.Graph.Intune is missing"
@@ -160,7 +167,7 @@ function Search-IntuneAccountPolicyAssignment {
             foreach ($assignment in $policy.assignments) {
                 # Write-Verbose "`tApplied to group(s): $($assignment.target.groupId -join ', ')"
 
-                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.objectid -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
+                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isAssigned = $true
                 } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
@@ -169,7 +176,7 @@ function Search-IntuneAccountPolicyAssignment {
                 } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All users' exists"
                     $isAssigned = $true
-                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.objectid -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
+                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
                     Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isExcluded = $true
                     break # faster processing, but INCLUDE assignments process after EXCLUDE ones won't be shown
@@ -194,12 +201,12 @@ function Search-IntuneAccountPolicyAssignment {
     $objectType = $null
     $accountObj = $null
 
-    $accountObj = Get-AzureADObjectByObjectId -ObjectIds $accountId -Types group, user, device -ErrorAction Stop
+    $accountObj = Get-MgDirectoryObjectById -Ids $accountId -Types group, user, device -ErrorAction Stop | Expand-MgAdditionalProperties
     $objectType = $accountObj.ObjectType
     if (!$objectType) {
         throw "Undefined object. It is not user, group or device."
     }
-    Write-Verbose "$accountId '$($accountObj.displayName)' is a $objectType"
+    Write-Verbose "$accountId '$($accountObj.DisplayName)' is a $objectType"
 
     switch ($objectType) {
         'device' {
@@ -208,7 +215,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select @{n = 'ObjectId'; e = { $_.id } }, DisplayName
+            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
 
         }
 
@@ -218,7 +225,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select @{n = 'ObjectId'; e = { $_.id } }, DisplayName
+            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
         }
 
         'group' {
@@ -228,14 +235,14 @@ function Search-IntuneAccountPolicyAssignment {
                 $skipAllUsersAllDevicesAssignments = $true
 
                 # search just the group itself
-                $accountMemberOfGroup = $accountObj | select ObjectId, DisplayName
+                $accountMemberOfGroup = $accountObj | select Id, DisplayName
             } else {
                 Write-Verbose "Getting account transitive memberOf property"
                 $accountMemberOfGroup = @()
                 # add group itself
-                $accountMemberOfGroup += $accountObj | select ObjectId, DisplayName
+                $accountMemberOfGroup += $accountObj | select Id, DisplayName
                 # add group transitive memberof
-                $accountMemberOfGroup += Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select @{n = 'ObjectId'; e = { $_.id } }, DisplayName
+                $accountMemberOfGroup += Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
             }
         }
 
@@ -246,7 +253,7 @@ function Search-IntuneAccountPolicyAssignment {
 
     if (!$justDirectGroupAssignments) {
         if ($accountMemberOfGroup) {
-            Write-Verbose "Account is member of group(s):`n$(($accountMemberOfGroup | % {"`t" + $_.displayName + " (" + $_.ObjectId + ")"}) -join "`n")"
+            Write-Verbose "Account is member of group(s):`n$(($accountMemberOfGroup | % {"`t" + $_.DisplayName + " (" + $_.Id + ")"}) -join "`n")"
         } elseif ($objectType -ne 'group' -and !$accountMemberOfGroup -and $skipAllUsersAllDevicesAssignments) {
             Write-Warning "Account $accountId isn't member of any group and 'All Users', 'All Devices' assignments should be skipped. Stopping."
 

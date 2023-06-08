@@ -80,6 +80,8 @@
             throw "Path $scriptFolder is not accessible"
         }
 
+        [Void][System.IO.Directory]::CreateDirectory($moduleFolder)
+
         $moduleName = Split-Path $moduleFolder -Leaf
         $modulePath = Join-Path $moduleFolder "$moduleName.psm1"
         $function2Export = @()
@@ -292,7 +294,7 @@
                         param([System.Management.Automation.Language.Ast] $ast)
 
                         $ast -is [System.Management.Automation.Language.AttributeAst]
-                    }, $true) | ? { $_.parent.extent.text -match '^param' } | Select-Object -ExpandProperty PositionalArguments | Select-Object -ExpandProperty Value -ErrorAction SilentlyContinue # filter out aliases for function parameters
+                    }, $true) | ? { $_.typeName.name -eq "Alias" -and $_.parent.extent.text -match '^param' } | Select-Object -ExpandProperty PositionalArguments | Select-Object -ExpandProperty Value -ErrorAction SilentlyContinue # filter out aliases for function parameters
 
                 if ($innerAliasDefinition) {
                     $innerAliasDefinition | % {
@@ -390,10 +392,19 @@
                     } else {
                         # $manifestDataHash.AliasesToExport = @()
                     }
+
                     # remove key if empty, because Update-ModuleManifest doesn't like it
                     if ($manifestDataHash.keys -contains "RequiredModules" -and !$manifestDataHash.RequiredModules) {
                         Write-Verbose "Removing manifest key RequiredModules because it is empty"
                         $manifestDataHash.Remove('RequiredModules')
+                    }
+                    if ($manifestDataHash.keys -contains "CmdletsToExport" -and !$manifestDataHash.CmdletsToExport) {
+                        Write-Verbose "Removing manifest key CmdletsToExport because it is empty"
+                        $manifestDataHash.Remove('CmdletsToExport')
+                    }
+                    if ($manifestDataHash.keys -contains "AliasesToExport" -and !$manifestDataHash.AliasesToExport) {
+                        Write-Verbose "Removing manifest key AliasesToExport because it is empty"
+                        $manifestDataHash.Remove('AliasesToExport')
                     }
 
                     # warn about missing required modules in manifest file
@@ -404,14 +415,48 @@
                         }
                     }
 
+                    # fix for Update-ModuleManifest error: The specified RequiredModules entry 'XXX' in the module manifest 'XXX.psd1' is invalid
+                    # because every required module defined in the manifest file have to be in local available module list
+                    # so I temporarily create dummy one if necessary
+                    if ($manifestDataHash.RequiredModules) {
+                        # make a backup of $env:PSModulePath
+                        $bkpPSModulePath = $env:PSModulePath
+
+                        $tempModulePath = Join-Path $env:TEMP (Get-Random)
+                        # add temp module folder
+                        $env:PSModulePath = "$env:PSModulePath;$tempModulePath"
+
+                        $manifestDataHash.RequiredModules | % {
+                            $mName = $_
+
+                            if (!(Get-Module $mName -ListAvailable)) {
+                                Write-Warning "Generating temporary dummy required module $mName. It's mentioned in manifest file but missing from this PC available modules list"
+                                [Void][System.IO.Directory]::CreateDirectory("$tempModulePath\$mName")
+                                'function dummy {}' > "$tempModulePath\$mName\$mName.psm1"
+                            }
+                        }
+                    }
+
                     # create final manifest file
                     Write-Verbose "Generating module manifest file"
+
                     # create empty one and than update it because of the bug https://github.com/PowerShell/PowerShell/issues/5922
                     New-ModuleManifest -Path (Join-Path $moduleFolder "$moduleName.psd1")
-                    Update-ModuleManifest -Path (Join-Path $moduleFolder "$moduleName.psd1") @manifestDataHash
-                    if ($manifestDataHash.PrivateData.PSData) {
+
+                    if (($manifestDataHash.PrivateData.PSData.Keys).count -ge 1) {
                         # bugfix because PrivateData parameter expect content of PSData instead of PrivateData
-                        Update-ModuleManifest -Path (Join-Path $moduleFolder "$moduleName.psd1") -PrivateData $manifestDataHash.PrivateData.PSData
+                        $manifestDataHash.PrivateData = $manifestDataHash.PrivateData.PSData
+                    }
+
+                    Update-ModuleManifest -Path (Join-Path $moduleFolder "$moduleName.psd1") @manifestDataHash
+
+                    if ($bkpPSModulePath) {
+                        # restore $env:PSModulePath from the backup
+                        $env:PSModulePath = $bkpPSModulePath
+                    }
+                    if ($tempModulePath -and (Test-Path $tempModulePath)) {
+                        Write-Verbose "Remove required temporary folder '$tempModulePath'"
+                        Remove-Item $tempModulePath -Recurse -Force
                     }
                 }
             } else {

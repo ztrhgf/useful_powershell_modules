@@ -112,7 +112,6 @@
 
         if (!$header) {
             # authenticate
-            Import-Module Variables
             $header = New-GraphAPIAuthHeader -ErrorAction Stop
         }
 

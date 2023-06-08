@@ -1961,7 +1961,6 @@ function Get-IntuneDeviceComplianceStatus {
 
     if (!$header) {
         # authenticate
-        Import-Module Variables
         $header = New-GraphAPIAuthHeader -ErrorAction Stop
     }
 
@@ -4404,7 +4403,6 @@ function Get-IntuneReport {
 
         if (!$header) {
             # authenticate
-            Import-Module Variables
             $header = New-GraphAPIAuthHeader -ErrorAction Stop
         }
 

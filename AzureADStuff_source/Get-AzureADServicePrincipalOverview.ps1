@@ -65,7 +65,7 @@
         Connect-AzureAD2 -ErrorAction Stop
     }
     if (!$header) {
-        $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+        $header = New-GraphAPIAuthHeader -ErrorAction Stop
     }
     #endregion authenticate
 

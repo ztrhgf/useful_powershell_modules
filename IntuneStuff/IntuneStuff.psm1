@@ -4403,7 +4403,7 @@ function Get-IntuneReport {
 
         if (!$header) {
             # authenticate
-            $header = New-GraphAPIAuthHeader -ErrorAction Stop
+            $header = New-GraphAPIAuthHeader -useMSAL
         }
 
         #region prepare filter for FeatureUpdateDeviceState report if not available
@@ -4453,12 +4453,12 @@ function Get-IntuneReport {
         if ($filter) { $body.filter = $filter }
         Write-Warning "Requesting the report $reportName"
         try {
-            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs" -Body $body -Method Post
         } catch {
             switch ($_) {
-                ($_ -like "*(400) Bad Request*") { throw "Faulty request. There has to be some mistake in this request" }
-                ($_ -like "*(401) Unauthorized*") { throw "Unauthorized request (try different credentials?)" }
-                ($_ -like "*Forbidden*") { throw "Forbidden access. Use account with correct API permissions for this request" }
+                { $_ -like "*(400) Bad Request*" } { throw "Faulty request. There has to be some mistake in this request" }
+                { $_ -like "*(401) Unauthorized*" } { throw "Unauthorized request (try different credentials?)" }
+                { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request" }
                 default { throw $_ }
             }
         }
@@ -6744,38 +6744,97 @@ function Invoke-ReRegisterDeviceToIntune {
 function New-GraphAPIAuthHeader {
     <#
     .SYNOPSIS
-    Function for generating header that can be used for authentication of Graph API requests.
+    Function for generating header that can be used for authentication of Graph API requests (via Invoke-RestMethod).
 
     .DESCRIPTION
-    Function for generating header that can be used for authentication of Graph API requests.
-    Credentials can be given or existing AzureAD session can be reused to obtain auth. header.
+    Function for generating header that can be used for authentication of Graph API requests (via Invoke-RestMethod).
+
+    Authentication can be done in several ways:
+     - (default behavior) reuse existing AzureAD session created using Connect-AzAccount
+        - advantages:
+            - unattended
+        - disadvantages:
+            - token cannot be used for some high privilege API calls (you'll get forbidden error), check 'useMSAL' parameter help for more information
+     - connect as a current user using MSAL authentication library
+        - advantages:
+            - token contains all user assigned delegated scopes
+            - supports specifying permission scopes
+        - disadvantages:
+            - (can be) interactive
+     - connect using application credentials
+        - advantages:
+            - unattended
+            - token contains all granted application permissions
+        - disadvantages:
+            - you have to create such application and grant it required application permissions
 
     .PARAMETER credential
-    Credentials for Graph API authentication (AppID + AppSecret) that will be used to obtain auth. header.
+    Application credentials (AppID + AppSecret) that should be used (instead of the current user) to obtain auth. header.
 
-    .PARAMETER reuseExistingAzureADSession
-    Switch for using existing AzureAD session (created via Connect-AzureAD) to obtain auth. header.
-
-    .PARAMETER TenantDomainName
+    .PARAMETER tenantDomainName
     Name of your Azure tenant.
+    Mandatory for application and MSAL authentication.
 
-    .PARAMETER showDialogType
-    Modify behavior of auth. dialog window.
+    For example: "contoso.onmicrosoft.com"
 
-    Possible values are: auto, always, never.
+    .PARAMETER useMSAL
+    Switch for using MSAL authentication library for auth. token creation.
+    When 'credential' parameter is NOT used, existing AzureAD session will be used (created via Connect-AzAccount aka 'Azure PowerShell' app is used) to obtain the token.
+    But such token will contains only 'Directory.AccessAsUser.All' delegated permission therefore it cannot be used for access API which requires high privileged permission.
+    Such privileged calls will end with 'forbidden' error, so for such cases use MSAL authentication library instead. It uses 'Microsoft Graph PowerShell' app instead and returns all user assigned permission by default.
 
-    Default is 'never'.
+    For more information check https://github.com/Azure/azure-powershell/issues/14085#issuecomment-1163204817
+
+    .PARAMETER tokenLifeTime
+    Token lifetime in minutes.
+    Will be saved into the header 'ExpiresOn' key and can be used for expiration detection (need to create new token).
+    By default it is random number between 60 and 90 minutes (https://learn.microsoft.com/en-us/azure/active-directory/develop/access-tokens#access-token-lifetime) but can be changed in tenant policy.
+
+    Default is 60.
+
+    .PARAMETER scope
+    Graph API permission scopes that should be requested when 'useMSAL' parameter is used.
+
+    For example: 'https://graph.microsoft.com/User.Read', 'https://graph.microsoft.com/Files.ReadWrite'
 
     .EXAMPLE
-    $header = New-GraphAPIAuthHeader -credential $cred
+    $cred = Get-Credential -Message "Enter application credentials (AppID + AppSecret) that should be used to obtain auth. header."
+    $header = New-GraphAPIAuthHeader -credential $cred -tenantDomainName "contoso.onmicrosoft.com"
+
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
     $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
 
+    Authenticate using given application credentials.
+
     .EXAMPLE
-    (there is existing AzureAD session already (made via Connect-AzureAD))
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    Connect-AzAccount
+
+    $header = New-GraphAPIAuthHeader
+
     $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
     $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    Authenticate as current user.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    $header = New-GraphAPIAuthHeader -useMSAL
+
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    Use MSAL for auth. token creation. Can help if token created by calling New-GraphAPIAuthHeader without any parameters (reusing existing AzureAD session) fails with 'forbidden' error when used.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    $header = New-GraphAPIAuthHeader -useMSAL -scope 'https://graph.microsoft.com/Device.Read'
+
+    $URI = 'https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/'
+    $managedDevices = (Invoke-RestMethod -Headers $header -Uri $URI -Method Get).value
+
+    Use MSAL for auth. token creation. Can help if token created by calling New-GraphAPIAuthHeader without any parameters (reusing existing AzureAD session) fails with 'forbidden' error when used.
 
     .NOTES
     https://adamtheautomator.com/powershell-graph-api/#AppIdSecret
@@ -6783,74 +6842,163 @@ function New-GraphAPIAuthHeader {
     https://github.com/microsoftgraph/powershell-intune-samples
     https://tech.nicolonsky.ch/explaining-microsoft-graph-access-token-acquisition/
     https://gist.github.com/psignoret/9d73b00b377002456b24fcb808265c23
+    https://learn.microsoft.com/en-us/answers/questions/922137/using-microsoft-graph-powershell-to-create-script
     #>
 
-    [CmdletBinding()]
-    [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader")]
+    [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader", "New-MgAuthHeader")]
     param (
-        [Parameter(ParameterSetName = "authenticate")]
         [System.Management.Automation.PSCredential] $credential,
 
-        [Parameter(ParameterSetName = "reuseSession")]
-        [switch] $reuseExistingAzureADSession,
-
         [ValidateNotNullOrEmpty()]
+        [Alias("tenantId")]
         $tenantDomainName = $_tenantDomain,
 
-        [ValidateSet('auto', 'always', 'never')]
-        [string] $showDialogType = 'never'
+        [switch] $useMSAL,
+
+        [string[]] $scope,
+
+        [int] $tokenLifeTime
     )
 
-    if (!$credential -and !$reuseExistingAzureADSession) {
-        $credential = (Get-Credential -Message "Enter AppID as UserName and AppSecret as Password")
-    }
-    if (!$credential -and !$reuseExistingAzureADSession) { throw "Credentials for creating Graph API authentication header is missing" }
+    #region checks
+    if ($useMSAL) {
+        Write-Verbose "Checking for MSAL.PS module..."
+        $MSALModule = Get-Module -Name "MSAL.PS" -ListAvailable
 
-    if (!$tenantDomainName -and !$reuseExistingAzureADSession) { throw "TenantDomainName is missing" }
+        if ($MSALModule -eq $null) {
+            throw "MSAL.PS Powershell module is not installed"
+        }
+    }
+
+    if (!$credential -and !$useMSAL) {
+        Write-Verbose "Checking for Az.Accounts module..."
+        $AZModule = Get-Module -Name "Az.Accounts" -ListAvailable
+
+        if ($AZModule -eq $null) {
+            throw "Az.Accounts Powershell module is not installed"
+        }
+    }
+
+    if ($tokenLifeTime -and (!$credential -or ($credential -and $useMSAL))) {
+        Write-Warning "'tokenLifeTime' parameter will be ignored. It can be used only with 'credential' but without 'useMSAL' parameter."
+    }
+
+    if ($scope -and !$useMSAL) {
+        Write-Warning "'scope' parameter will be ignored, because 'useMSAL' parameter is not used"
+    }
+    #endregion checks
 
     Write-Verbose "Getting token"
 
-    if ($reuseExistingAzureADSession) {
-        # get auth. token using the existing session created by the AzureAD PowerShell module
-        try {
-            # test if connection already exists
-            $c = Get-AzureADCurrentSessionInfo -ea Stop
-        } catch {
-            throw "There is no active session to AzureAD. Omit reuseExistingAzureADSession parameter or call this function after Connect-AzureAD."
+    if ($credential) {
+        # use service principal credentials to obtain the auth. token
+
+        Write-Verbose "Using provided application credentials"
+
+        if ($useMSAL) {
+            # authenticate using MSAL
+
+            if (!$tenantDomainName) {
+                throw "tenantDomainName parameter has to be set (something like contoso.onmicrosoft.com)"
+            }
+
+            $param = @{
+                ClientId     = $credential.username
+                ClientSecret = $credential.password
+                TenantId     = $tenantDomainName
+            }
+            if ($scope) { $param.scopes = $scope }
+
+            $token = Get-MsalToken @param
+
+            if ($token.AccessToken) {
+                $authHeader = @{
+                    ExpiresOn     = $token.ExpiresOn
+                    Authorization = "Bearer $($token.AccessToken)"
+                }
+
+                return $authHeader
+            } else {
+                throw "Unable to obtain token"
+            }
+        } else {
+            # authenticate using direct API call
+
+            $body = @{
+                Grant_Type    = "client_credentials"
+                Scope         = "https://graph.microsoft.com/.default"
+                Client_Id     = $credential.username
+                Client_Secret = $credential.GetNetworkCredential().password
+            }
+
+            Write-Verbose "Setting TLS 1.2"
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+            Write-Verbose "Connecting to $tenantDomainName"
+            $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
+
+            $token = $connectGraph.access_token
+
+            if ($token) {
+                if (!$tokenLifeTime) {
+                    $tokenLifeTime = 60
+                }
+
+                $authHeader = @{
+                    ExpiresOn     = (Get-Date).AddMinutes($tokenLifeTime - 10) # shorter by 10 minutes just for sure
+                    Authorization = "Bearer $($token)"
+                }
+
+                return $authHeader
+            } else {
+                throw "Unable to obtain token"
+            }
         }
+    }
 
-        try {
-            $ErrorActionPreference = "Stop"
+    if ($useMSAL) {
+        # authenticate using MSAL as a current user
 
-            $context = [Microsoft.Open.Azure.AD.CommonLibrary.AzureRmProfileProvider]::Instance.Profile.Context
-            $authenticationFactory = [Microsoft.Open.Azure.AD.CommonLibrary.AzureSession]::AuthenticationFactory
-            $msGraphEndpointResourceId = "MsGraphEndpointResourceId"
-            $msGraphEndpoint = $context.Environment.Endpoints[$msGraphEndpointResourceId]
-            $auth = $authenticationFactory.Authenticate($context.Account, $context.Environment, $context.Tenant.Id.ToString(), $null, [Microsoft.Open.Azure.AD.CommonLibrary.ShowDialog]::$showDialogType, $null, $msGraphEndpointResourceId)
-
-            $token = $auth.AuthorizeRequest($msGraphEndpointResourceId)
-
-            return @{ Authorization = $token }
-        } catch {
-            throw "Unable to obtain auth. token:`n`n$($_.exception.message)`n`n$($_.invocationInfo.PositionMessage)`n`nTry change of showDialogType parameter?"
+        Write-Verbose "Interactively as an user using MSAL"
+        $param = @{
+            ClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e" # 14d82eec-204b-4c2f-b7e8-296a70dab67e for 'Microsoft Graph PowerShell'
         }
-    } else {
-        # authenticate to obtain the token
-        $body = @{
-            Grant_Type    = "client_credentials"
-            Scope         = "https://graph.microsoft.com/.default"
-            Client_Id     = $credential.username
-            Client_Secret = $credential.GetNetworkCredential().password
-        }
+        if ($tenantDomainName) { $param.TenantId = $tenantDomainName }
+        if ($scope) { $param.scopes = $scope }
 
-        $connectGraph = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantDomainName/oauth2/v2.0/token" -Method POST -Body $body
+        $token = Get-MsalToken @param
 
-        $token = $connectGraph.access_token
+        if ($token.AccessToken) {
+            $authHeader = @{
+                ExpiresOn     = $token.ExpiresOn
+                Authorization = "Bearer $($token.AccessToken)"
+            }
 
-        if ($token) {
-            return @{ Authorization = "Bearer $($token)" }
+            return $authHeader
         } else {
             throw "Unable to obtain token"
+        }
+    } else {
+        # get auth. token using the existing session created by the Connect-AzAccount command (from Az.Accounts PowerShell module)
+
+        Write-Verbose "Non-interactively as an user using existing AzureAD session (created using Connect-AzAccount)"
+
+        try {
+            # test if connection already exists
+            $azConnectionToken = Get-AzAccessToken -ResourceTypeName MSGraph -ea Stop
+
+            # use AZ connection
+
+            Write-Warning "Creating auth token from existing user ($($azConnectionToken.UserId)) session. If token usage ends with 'forbidden' error, use New-GraphAPIAuthHeader with 'useMSAL' parameter!"
+
+            $authHeader = @{
+                ExpiresOn     = $azConnectionToken.ExpiresOn
+                Authorization = $azConnectionToken.token
+            }
+
+            return $authHeader
+        } catch {
+            throw "There is no active session to AzureAD. Call this function after Connect-AzAccount or use 'useMSAL' parameter or provide application credentials using 'credential' parameter."
         }
     }
 }
@@ -7490,7 +7638,7 @@ function Upload-IntuneAutopilotHash {
         }
     }
 
-    $AuthToken = New-GraphAPIAuthHeader -reuseExistingAzureADSession -useADAL -showDialogType auto
+    $AuthToken = New-GraphAPIAuthHeader -useMSAL
 
     function Get-ErrorResponseBody {
         param(
@@ -7643,4 +7791,4 @@ function Upload-IntuneAutopilotHash {
 
 Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScript, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-GraphAPIAuthHeader, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
-Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneAuthHeader, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, New-IntuneAuthHeader, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy
+Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneAuthHeader, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, New-IntuneAuthHeader, New-MgAuthHeader, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy

@@ -32,7 +32,7 @@
 
     if (!$header) {
         try {
-            $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+            $header = New-GraphAPIAuthHeader -ErrorAction Stop
         } catch {
             throw "Unable to retrieve authentication header for graph api. Create it using New-GraphAPIAuthHeader and pass it using header parameter"
         }

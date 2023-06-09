@@ -22,7 +22,7 @@
 
     .EXAMPLE
     Connect-AzureAD2 -asYourself
-    $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    $header = New-GraphAPIAuthHeader
 
     Get-AzureADDeviceMembership -deviceName PC-01
 
@@ -44,7 +44,7 @@
     )
 
     if (!$header) {
-        $header = New-GraphAPIAuthHeader -reuseExistingAzureADSession -ErrorAction Stop
+        $header = New-GraphAPIAuthHeader -ErrorAction Stop
     }
 
     #region get device details

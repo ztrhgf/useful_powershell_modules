@@ -7,7 +7,7 @@
     Function returns email(s) of organization technical contact(s) and privileged roles members.
 
     .EXAMPLE
-    $authHeader = New-GraphAPIAuthHeader -reuseExistingAzureADSession
+    $authHeader = New-GraphAPIAuthHeader
     Get-AzureADAssessNotificationEmail -authHeader $authHeader
 
     .NOTES

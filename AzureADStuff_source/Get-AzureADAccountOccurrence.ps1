@@ -112,7 +112,7 @@ function Get-AzureADAccountOccurrence {
 
     # connect Graph API
     Write-Verbose "Creating Graph API auth header"
-    $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
+    $header = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
 
     # connect sharepoint online
     if ($data -contains 'SharepointSiteOwner') {
@@ -381,7 +381,7 @@ function Get-AzureADAccountOccurrence {
 
             # reauthenticate just in case previous steps took too much time and the token has expired in the meantime
             Write-Verbose "Creating new auth token, just in case it expired"
-            $header = New-GraphAPIAuthHeader @tenantIdParam -reuseExistingAzureADSession -showDialogType auto -ea Stop
+            $header = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
 
             switch ($objectType) {
                 'user' { $searchLocation = "users" }

@@ -88,7 +88,7 @@ function Upload-IntuneAutopilotHash {
         }
     }
 
-    $AuthToken = New-GraphAPIAuthHeader -reuseExistingAzureADSession -useADAL -showDialogType auto
+    $AuthToken = New-GraphAPIAuthHeader -useMSAL
 
     function Get-ErrorResponseBody {
         param(

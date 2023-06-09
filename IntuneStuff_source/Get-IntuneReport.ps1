@@ -112,7 +112,7 @@
 
         if (!$header) {
             # authenticate
-            $header = New-GraphAPIAuthHeader -ErrorAction Stop
+            $header = New-GraphAPIAuthHeader -useMSAL
         }
 
         #region prepare filter for FeatureUpdateDeviceState report if not available
@@ -162,12 +162,12 @@
         if ($filter) { $body.filter = $filter }
         Write-Warning "Requesting the report $reportName"
         try {
-            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs" -Body $body -Method Post
         } catch {
             switch ($_) {
-                ($_ -like "*(400) Bad Request*") { throw "Faulty request. There has to be some mistake in this request" }
-                ($_ -like "*(401) Unauthorized*") { throw "Unauthorized request (try different credentials?)" }
-                ($_ -like "*Forbidden*") { throw "Forbidden access. Use account with correct API permissions for this request" }
+                { $_ -like "*(400) Bad Request*" } { throw "Faulty request. There has to be some mistake in this request" }
+                { $_ -like "*(401) Unauthorized*" } { throw "Unauthorized request (try different credentials?)" }
+                { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request" }
                 default { throw $_ }
             }
         }

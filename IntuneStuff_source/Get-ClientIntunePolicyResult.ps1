@@ -119,6 +119,13 @@
     # remove property validation
     (Get-Variable intuneXMLReport).Attributes.Clear()
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+    
     #region prepare
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop

@@ -54,6 +54,13 @@
         [string] $tenantId
     )
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+
     #region helper function
     function _getIntuneScript {
         param ([string] $scriptID)

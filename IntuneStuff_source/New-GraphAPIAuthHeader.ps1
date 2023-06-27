@@ -105,6 +105,7 @@ function New-GraphAPIAuthHeader {
     #>
 
     [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader", "New-MgAuthHeader")]
+    [CmdletBinding()]
     param (
         [System.Management.Automation.PSCredential] $credential,
 
@@ -122,19 +123,15 @@ function New-GraphAPIAuthHeader {
     #region checks
     if ($useMSAL) {
         Write-Verbose "Checking for MSAL.PS module..."
-        $MSALModule = Get-Module -Name "MSAL.PS" -ListAvailable
-
-        if ($MSALModule -eq $null) {
-            throw "MSAL.PS Powershell module is not installed"
+        if (!(Get-Module MSAL.PS) -and !(Get-Module MSAL.PS -ListAvailable)) {
+            throw "Module MSAL.PS is missing. Function $($MyInvocation.MyCommand) cannot continue"
         }
     }
 
     if (!$credential -and !$useMSAL) {
         Write-Verbose "Checking for Az.Accounts module..."
-        $AZModule = Get-Module -Name "Az.Accounts" -ListAvailable
-
-        if ($AZModule -eq $null) {
-            throw "Az.Accounts Powershell module is not installed"
+        if (!(Get-Module Az.Accounts) -and !(Get-Module Az.Accounts -ListAvailable)) {
+            throw "Module Az.Accounts is missing. Function $($MyInvocation.MyCommand) cannot continue"
         }
     }
 

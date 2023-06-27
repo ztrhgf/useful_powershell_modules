@@ -1381,6 +1381,13 @@ function Get-ClientIntunePolicyResult {
     # remove property validation
     (Get-Variable intuneXMLReport).Attributes.Clear()
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+    
     #region prepare
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
@@ -3837,6 +3844,13 @@ function Get-IntuneRemediationScript {
         [string] $tenantId
     )
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+
     #region helper function
     function _getRemediationScript {
         param ([string] $scriptID)
@@ -4083,6 +4097,13 @@ function Get-IntuneRemediationScriptLocally {
 
         [string] $tenantId
     )
+
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
 
     #region helper function
     function _getRemediationScript {
@@ -4674,6 +4695,13 @@ function Get-IntuneScriptLocally {
         [string] $tenantId
     )
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+
     #region helper function
     function _getIntuneScript {
         param ([string] $scriptID)
@@ -4938,6 +4966,13 @@ function Get-IntuneWin32AppLocally {
         [switch] $excludeSystemApp
     )
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+
     #region helper function
     # function translates user Azure ID or SID to its display name
     function _getTargetName {
@@ -5177,6 +5212,7 @@ function Get-IntuneWin32AppLocally {
                         2 { $complianceState = "Not compliant" }
                         3 { $complianceState = "Conflict (Not applicable for app deployment)" }
                         4 { $complianceState = "Error" }
+                        5 { $complianceState = "Compliant" }
                         default { Write-Error "Undefined compliance status $complianceState" }
                     }
                 }
@@ -5278,12 +5314,13 @@ function Get-IntuneWin32AppLocally {
         }
 
         #region warn about deployed but skip-installation apps
-        if ($logReportingData) {
-            $notProcessedApp = $logReportingData | ? { $_.Id -notin $processedWin32AppId }
-            if ($notProcessedApp) {
-                Write-Warning "Following apps didn't start installation: $($notProcessedApp.Name -join ', ')`n`nReason can be recent forced redeploy of such app or that deployment requirements are not met. For more information run 'Get-IntuneLogWin32AppReportingResultData'"
-            }
-        }
+        #TODO name is missing often
+        # if ($logReportingData) {
+        #     $notProcessedApp = $logReportingData | ? { $_.Id -notin $processedWin32AppId}
+        #     if ($notProcessedApp) {
+        #         Write-Warning "Following apps didn't start installation: $($notProcessedApp.Name -join ', ')`n`nReason can be recent forced redeploy of such app or that deployment requirements are not met. For more information run 'Get-IntuneLogWin32AppReportingResultData'"
+        #     }
+        # }
         #endregion warn about deployed but skip-installation apps
     }
 
@@ -5994,8 +6031,11 @@ function Invoke-IntuneScriptRedeploy {
         [switch] $dontWait
     )
 
-    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        throw "Run as admin"
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
     }
 
     #region helper function
@@ -6407,8 +6447,11 @@ function Invoke-IntuneWin32AppRedeploy {
         throw "Command Get-IntuneWin32AppLocally is missing"
     }
 
-    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        throw "Run as admin"
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
     }
 
     #region helper function
@@ -6846,6 +6889,7 @@ function New-GraphAPIAuthHeader {
     #>
 
     [Alias("New-IntuneAuthHeader", "Get-IntuneAuthHeader", "New-MgAuthHeader")]
+    [CmdletBinding()]
     param (
         [System.Management.Automation.PSCredential] $credential,
 
@@ -6863,19 +6907,15 @@ function New-GraphAPIAuthHeader {
     #region checks
     if ($useMSAL) {
         Write-Verbose "Checking for MSAL.PS module..."
-        $MSALModule = Get-Module -Name "MSAL.PS" -ListAvailable
-
-        if ($MSALModule -eq $null) {
-            throw "MSAL.PS Powershell module is not installed"
+        if (!(Get-Module MSAL.PS) -and !(Get-Module MSAL.PS -ListAvailable)) {
+            throw "Module MSAL.PS is missing. Function $($MyInvocation.MyCommand) cannot continue"
         }
     }
 
     if (!$credential -and !$useMSAL) {
         Write-Verbose "Checking for Az.Accounts module..."
-        $AZModule = Get-Module -Name "Az.Accounts" -ListAvailable
-
-        if ($AZModule -eq $null) {
-            throw "Az.Accounts Powershell module is not installed"
+        if (!(Get-Module Az.Accounts) -and !(Get-Module Az.Accounts -ListAvailable)) {
+            throw "Module Az.Accounts is missing. Function $($MyInvocation.MyCommand) cannot continue"
         }
     }
 

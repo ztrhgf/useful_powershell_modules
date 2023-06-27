@@ -1,5 +1,4 @@
-﻿#Requires -RunAsAdministrator
-function Invoke-IntuneWin32AppRedeploy {
+﻿function Invoke-IntuneWin32AppRedeploy {
     <#
     .SYNOPSIS
     Function for forcing redeploy of selected Win32App deployed from Intune.
@@ -58,8 +57,11 @@ function Invoke-IntuneWin32AppRedeploy {
         throw "Command Get-IntuneWin32AppLocally is missing"
     }
 
-    if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        throw "Run as admin"
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
     }
 
     #region helper function

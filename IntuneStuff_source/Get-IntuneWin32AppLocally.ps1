@@ -71,6 +71,13 @@
         [switch] $excludeSystemApp
     )
 
+    if (!$computerName) {
+        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
+        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
+        }
+    }
+
     #region helper function
     # function translates user Azure ID or SID to its display name
     function _getTargetName {
@@ -310,6 +317,7 @@
                         2 { $complianceState = "Not compliant" }
                         3 { $complianceState = "Conflict (Not applicable for app deployment)" }
                         4 { $complianceState = "Error" }
+                        5 { $complianceState = "Compliant" }
                         default { Write-Error "Undefined compliance status $complianceState" }
                     }
                 }
@@ -411,12 +419,13 @@
         }
 
         #region warn about deployed but skip-installation apps
-        if ($logReportingData) {
-            $notProcessedApp = $logReportingData | ? { $_.Id -notin $processedWin32AppId }
-            if ($notProcessedApp) {
-                Write-Warning "Following apps didn't start installation: $($notProcessedApp.Name -join ', ')`n`nReason can be recent forced redeploy of such app or that deployment requirements are not met. For more information run 'Get-IntuneLogWin32AppReportingResultData'"
-            }
-        }
+        #TODO name is missing often
+        # if ($logReportingData) {
+        #     $notProcessedApp = $logReportingData | ? { $_.Id -notin $processedWin32AppId}
+        #     if ($notProcessedApp) {
+        #         Write-Warning "Following apps didn't start installation: $($notProcessedApp.Name -join ', ')`n`nReason can be recent forced redeploy of such app or that deployment requirements are not met. For more information run 'Get-IntuneLogWin32AppReportingResultData'"
+        #     }
+        # }
         #endregion warn about deployed but skip-installation apps
     }
 

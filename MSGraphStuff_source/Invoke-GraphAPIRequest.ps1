@@ -6,7 +6,7 @@
     .DESCRIPTION
     Function for creating request against Microsoft Graph API.
 
-    It supports paging (needed in Azure).
+    It supports paging and throttling.
 
     .PARAMETER uri
     Request URI.
@@ -39,16 +39,17 @@
 
     .EXAMPLE
     $header = New-GraphAPIAuthHeader -credential $intuneCredential
-    $aadDevice = Invoke-GraphAPIRequest -Uri "https://graph.microsoft.com/v1.0/devices" -header $header
+    $aadDevice = Invoke-GraphAPIRequest -Uri "https://graph.microsoft.com/v1.0/devices" -header $header | Get-MSGraphAllPages
 
     .EXAMPLE
-    $aadDevice = Invoke-GraphAPIRequest -Uri "https://graph.microsoft.com/v1.0/devices" -credential $intuneCredential
+    $aadDevice = Invoke-GraphAPIRequest -Uri "https://graph.microsoft.com/v1.0/devices" -credential $intuneCredential | Get-MSGraphAllPages
 
     .NOTES
     https://configmgrblog.com/2017/12/05/so-what-can-we-do-with-microsoft-intune-via-microsoft-graph-api/
     #>
 
     [CmdletBinding()]
+    [Alias("Invoke-MgRequest")]
     param (
         [Parameter(Mandatory = $true)]
         [string] $uri,

@@ -3365,8 +3365,8 @@ function Get-IntunePolicy {
         Write-Verbose "Just subset of available policy properties will be gathered"
         $selectFilter = '&$select=id,displayName,lastModifiedDateTime,assignments' # these properties are common across all intune policies, so it is safe to use them
         $selectParam = @{select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments') }
-        $expandFilter = $null
-        $expandParam = @{}
+        $expandFilter = '&$expand=assignments'
+        $expandParam = @{expand = 'assignments' }
     } else {
         $selectFilter = $null
         $selectParam = @{}

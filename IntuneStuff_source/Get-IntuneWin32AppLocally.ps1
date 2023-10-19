@@ -295,6 +295,7 @@
                 }
                 if ($deploymentType) {
                     switch ($deploymentType) {
+                        0 { $deploymentType = "Dependency" }
                         1 { $deploymentType = "Available" }
                         3 { $deploymentType = "Required" }
                         4 { $deploymentType = "Uninstall" }

@@ -12,7 +12,7 @@
 RootModule = 'IntuneStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.4.5'
+ModuleVersion = '1.4.6'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -169,6 +169,7 @@ PrivateData = @{
             1.4.3
             * FIXED
                 * Get-IntunePolicy returns assignments when basicOverview is used
+
             1.4.5
             * FIXED
                 * Invoke-IntuneScriptRedeploy redeploy when getDataFromIntune is used
@@ -176,6 +177,11 @@ PrivateData = @{
             * ADDED
                 * Invoke-IntuneWin32AppAssignment
                 * Remove-IntuneWin32AppAssignment
+                
+            1.4.6
+            * ADDED
+                * Invoke-IntuneScriptRedeploy - noDetails switch
+                * Invoke-IntuneWin32AppRedeploy - noDetails switch
             '
 
         # Prerelease string of this module

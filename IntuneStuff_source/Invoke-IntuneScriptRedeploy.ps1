@@ -35,6 +35,9 @@
     .PARAMETER dontWait
     Don't wait on script execution completion.
 
+    .PARAMETER noDetails
+    Show just basic script data in the GUI.
+
     .EXAMPLE
     Invoke-IntuneScriptRedeploy -scriptType script
 
@@ -75,7 +78,9 @@
 
         [switch] $all,
 
-        [switch] $dontWait
+        [switch] $dontWait,
+
+        [switch] $noDetails
     )
 
     if (!$computerName) {
@@ -189,7 +194,7 @@
     if ($scriptType -eq 'script') {
         #region script
         $scriptBlock = {
-            param($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+            param($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $noDetails)
 
             # inherit verbose settings from host session
             $VerbosePreference = $verbosePref
@@ -247,6 +252,12 @@
                         }
                     }
 
+                    if ($noDetails) {
+                        'DownloadAndExecuteCount', 'ResultDetails' | % {
+                            $property.Remove($_)
+                        }
+                    }
+
                     New-Object -TypeName PSObject -Property $property
                 }
             }
@@ -254,7 +265,7 @@
 
         $param = @{
             scriptBlock  = $scriptBlock
-            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $noDetails)
         }
         if ($computerName) {
             $param.session = $session
@@ -267,7 +278,7 @@
     #region remediation script
     if ($scriptType -eq 'remediationScript') {
         $scriptBlock = {
-            param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+            param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs, $noDetails)
 
             # inherit verbose settings from host session
             $VerbosePreference = $verbosePref
@@ -339,6 +350,12 @@
                         }
                     }
 
+                    if ($noDetails) {
+                        'InternalVersion', 'PreRemediationDetectScriptOutput', 'PreRemediationDetectScriptError', 'RemediationScriptErrorDetails', 'PostRemediationDetectScriptOutput', 'PostRemediationDetectScriptError', 'RemediationExitCode', 'FirstDetectExitCode', 'LastDetectExitCode', 'ErrorDetails' | % {
+                            $property.Remove($_)
+                        }
+                    }
+
                     New-Object -TypeName PSObject -Property $property
                 }
             }
@@ -346,7 +363,7 @@
 
         $param = @{
             scriptBlock  = $scriptBlock
-            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs, $noDetails)
         }
         if ($computerName) {
             $param.session = $session

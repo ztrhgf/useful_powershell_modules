@@ -27,6 +27,9 @@
     .PARAMETER dontWait
     Don't wait on Win32App redeploy completion.
 
+    .PARAMETER noDetails
+    Show just basic app data in the GUI.
+
     .EXAMPLE
     Invoke-IntuneWin32AppRedeploy
 
@@ -51,7 +54,9 @@
 
         [string] $tenantId,
 
-        [switch] $dontWait
+        [switch] $dontWait,
+
+        [switch] $noDetails
     )
 
     if (!(Get-Command Get-IntuneWin32AppLocally)) {
@@ -110,6 +115,10 @@
     #endregion get deployed Win32Apps
 
     if ($win32App) {
+        if ($noDetails) {
+            $win32App = $win32App | select -Property Name, Id, Scope, ComplianceState, DesiredState, DeploymentType, ScopeId
+        }
+
         $appToRedeploy = $win32App | Out-GridView -PassThru -Title "Pick app(s) for redeploy"
 
         #region redeploy selected Win32Apps

@@ -6152,6 +6152,9 @@ function Invoke-IntuneScriptRedeploy {
     .PARAMETER dontWait
     Don't wait on script execution completion.
 
+    .PARAMETER noDetails
+    Show just basic script data in the GUI.
+
     .EXAMPLE
     Invoke-IntuneScriptRedeploy -scriptType script
 
@@ -6192,7 +6195,9 @@ function Invoke-IntuneScriptRedeploy {
 
         [switch] $all,
 
-        [switch] $dontWait
+        [switch] $dontWait,
+
+        [switch] $noDetails
     )
 
     if (!$computerName) {
@@ -6306,7 +6311,7 @@ function Invoke-IntuneScriptRedeploy {
     if ($scriptType -eq 'script') {
         #region script
         $scriptBlock = {
-            param($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+            param($verbosePref, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $noDetails)
 
             # inherit verbose settings from host session
             $VerbosePreference = $verbosePref
@@ -6364,6 +6369,12 @@ function Invoke-IntuneScriptRedeploy {
                         }
                     }
 
+                    if ($noDetails) {
+                        'DownloadAndExecuteCount', 'ResultDetails' | % {
+                            $property.Remove($_)
+                        }
+                    }
+
                     New-Object -TypeName PSObject -Property $property
                 }
             }
@@ -6371,7 +6382,7 @@ function Invoke-IntuneScriptRedeploy {
 
         $param = @{
             scriptBlock  = $scriptBlock
-            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs)
+            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneScript, $intuneUser, $allFunctionDefs, $noDetails)
         }
         if ($computerName) {
             $param.session = $session
@@ -6384,7 +6395,7 @@ function Invoke-IntuneScriptRedeploy {
     #region remediation script
     if ($scriptType -eq 'remediationScript') {
         $scriptBlock = {
-            param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+            param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs, $noDetails)
 
             # inherit verbose settings from host session
             $VerbosePreference = $verbosePref
@@ -6456,6 +6467,12 @@ function Invoke-IntuneScriptRedeploy {
                         }
                     }
 
+                    if ($noDetails) {
+                        'InternalVersion', 'PreRemediationDetectScriptOutput', 'PreRemediationDetectScriptError', 'RemediationScriptErrorDetails', 'PostRemediationDetectScriptOutput', 'PostRemediationDetectScriptError', 'RemediationExitCode', 'FirstDetectExitCode', 'LastDetectExitCode', 'ErrorDetails' | % {
+                            $property.Remove($_)
+                        }
+                    }
+
                     New-Object -TypeName PSObject -Property $property
                 }
             }
@@ -6463,7 +6480,7 @@ function Invoke-IntuneScriptRedeploy {
 
         $param = @{
             scriptBlock  = $scriptBlock
-            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
+            argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs, $noDetails)
         }
         if ($computerName) {
             $param.session = $session
@@ -6726,6 +6743,9 @@ function Invoke-IntuneWin32AppRedeploy {
     .PARAMETER dontWait
     Don't wait on Win32App redeploy completion.
 
+    .PARAMETER noDetails
+    Show just basic app data in the GUI.
+
     .EXAMPLE
     Invoke-IntuneWin32AppRedeploy
 
@@ -6750,7 +6770,9 @@ function Invoke-IntuneWin32AppRedeploy {
 
         [string] $tenantId,
 
-        [switch] $dontWait
+        [switch] $dontWait,
+
+        [switch] $noDetails
     )
 
     if (!(Get-Command Get-IntuneWin32AppLocally)) {
@@ -6809,6 +6831,10 @@ function Invoke-IntuneWin32AppRedeploy {
     #endregion get deployed Win32Apps
 
     if ($win32App) {
+        if ($noDetails) {
+            $win32App = $win32App | select -Property Name, Id, Scope, ComplianceState, DesiredState, DeploymentType, ScopeId
+        }
+
         $appToRedeploy = $win32App | Out-GridView -PassThru -Title "Pick app(s) for redeploy"
 
         #region redeploy selected Win32Apps

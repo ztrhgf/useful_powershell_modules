@@ -44,6 +44,7 @@
     param (
         [string] $computerName,
 
+        [Alias("online")]
         [switch] $getDataFromIntune,
 
         [System.Management.Automation.PSCredential] $credential,
@@ -94,7 +95,7 @@
         Write-Verbose "Unable to find App '$appId' GRS hash in any of the Intune log files. Redeploy will probably not work as expected"
     }
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} };"
+    $allFunctionDefs = "function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} }; function Invoke-FileContentWatcher { ${function:Invoke-FileContentWatcher} }"
     #endregion helper function
 
     #region get deployed Win32Apps
@@ -134,7 +135,7 @@
                     if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32AppLocally." }
                     $txt = $appName
                     if (!$txt) { $txt = $appId }
-                    Write-Warning "Preparing redeploy for Win32App '$txt' (scope $scopeId) by deleting it's registry key"
+                    Write-Warning "Preparing redeploy for Win32App '$txt' (scope $scope) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $win32AppKeys | ? { $_.PSChildName -Match "^$appId`_\d+" -and $_.PSParentPath -Match "\\$scopeId$" }
 

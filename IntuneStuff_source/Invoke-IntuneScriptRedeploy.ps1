@@ -66,6 +66,7 @@
         [ValidateSet('script', 'remediationScript')]
         [string] $scriptType,
 
+        [Alias("online")]
         [switch] $getDataFromIntune,
 
         [System.Management.Automation.PSCredential] $credential,
@@ -229,6 +230,7 @@
                             "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
                             "RunAsAccount"            = $scriptRegData.RunAsAccount
                             "ResultDetails"           = $resultDetails
+                            "ScopeId"                 = $userAzureObjectID
                         }
                     } else {
                         # no 'DisplayName' property
@@ -241,6 +243,7 @@
                             "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
                             "RunAsAccount"            = $scriptRegData.RunAsAccount
                             "ResultDetails"           = $resultDetails
+                            "ScopeId"                 = $userAzureObjectID
                         }
                     }
 
@@ -312,6 +315,7 @@
                             "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
                             "LastDetectExitCode"                = $result.Info.LastDetectExitCode
                             "ErrorDetails"                      = $result.Info.ErrorDetails
+                            "ScopeId"                           = $userAzureObjectID
                         }
                     } else {
                         # no 'DisplayName' property
@@ -331,6 +335,7 @@
                             "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
                             "LastDetectExitCode"                = $result.Info.LastDetectExitCode
                             "ErrorDetails"                      = $result.Info.ErrorDetails
+                            "ScopeId"                           = $userAzureObjectID
                         }
                     }
 
@@ -377,9 +382,8 @@
 
                 $scriptToRedeploy | % {
                     $scriptId = $_.id
-                    $scopeId = $_.scope
-                    if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
-                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId) by deleting it's registry key"
+                    $scopeId = $_.scopeId
+                    Write-Warning "Preparing redeploy for script $scriptId (scope $($_.scope)) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $scriptKeys | ? { $_.PSChildName -Match "^$scriptId(_\d+)?" -and $_.PSParentPath -Match "\\$scopeId$" }
 

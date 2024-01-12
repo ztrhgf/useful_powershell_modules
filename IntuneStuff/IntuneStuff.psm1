@@ -4615,7 +4615,7 @@ function Get-IntuneReport {
         #endregion prepare filter for FeatureUpdateDeviceState report if not available
 
         #region prepare filter for DeviceInstallStatusByApp/UserInstallStatusAggregateByApp report if not available
-        if ($reportName -in ('DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp') -and (!$filter -or $filter -notmatch "^PolicyId eq ")) {
+        if ($reportName -in ('DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp') -and (!$filter -or $filter -notmatch "^ApplicationId eq ")) {
             Write-Warning "Report $reportName requires filter in form: `"ApplicationId eq '<someApplicationId>'`""
             # get list of all available applications
             $allApps = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=(microsoft.graph.managedApp/appAvailability%20eq%20null%20or%20microsoft.graph.managedApp/appAvailability%20eq%20%27lineOfBusiness%27%20or%20isAssigned%20eq%20true)&`$orderby=displayName&" -Method Get).Value | select displayName, isAssigned, productVersion, id
@@ -6183,6 +6183,7 @@ function Invoke-IntuneScriptRedeploy {
         [ValidateSet('script', 'remediationScript')]
         [string] $scriptType,
 
+        [Alias("online")]
         [switch] $getDataFromIntune,
 
         [System.Management.Automation.PSCredential] $credential,
@@ -6346,6 +6347,7 @@ function Invoke-IntuneScriptRedeploy {
                             "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
                             "RunAsAccount"            = $scriptRegData.RunAsAccount
                             "ResultDetails"           = $resultDetails
+                            "ScopeId"                 = $userAzureObjectID
                         }
                     } else {
                         # no 'DisplayName' property
@@ -6358,6 +6360,7 @@ function Invoke-IntuneScriptRedeploy {
                             "LastUpdatedTimeUtc"      = $scriptRegData.LastUpdatedTimeUtc
                             "RunAsAccount"            = $scriptRegData.RunAsAccount
                             "ResultDetails"           = $resultDetails
+                            "ScopeId"                 = $userAzureObjectID
                         }
                     }
 
@@ -6429,6 +6432,7 @@ function Invoke-IntuneScriptRedeploy {
                             "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
                             "LastDetectExitCode"                = $result.Info.LastDetectExitCode
                             "ErrorDetails"                      = $result.Info.ErrorDetails
+                            "ScopeId"                           = $userAzureObjectID
                         }
                     } else {
                         # no 'DisplayName' property
@@ -6448,6 +6452,7 @@ function Invoke-IntuneScriptRedeploy {
                             "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
                             "LastDetectExitCode"                = $result.Info.LastDetectExitCode
                             "ErrorDetails"                      = $result.Info.ErrorDetails
+                            "ScopeId"                           = $userAzureObjectID
                         }
                     }
 
@@ -6494,9 +6499,8 @@ function Invoke-IntuneScriptRedeploy {
 
                 $scriptToRedeploy | % {
                     $scriptId = $_.id
-                    $scopeId = $_.scope
-                    if ($scopeId -eq 'device') { $scopeId = "00000000-0000-0000-0000-000000000000" }
-                    Write-Warning "Preparing redeploy for script $scriptId (scope $scopeId) by deleting it's registry key"
+                    $scopeId = $_.scopeId
+                    Write-Warning "Preparing redeploy for script $scriptId (scope $($_.scope)) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $scriptKeys | ? { $_.PSChildName -Match "^$scriptId(_\d+)?" -and $_.PSParentPath -Match "\\$scopeId$" }
 
@@ -6551,6 +6555,148 @@ function Invoke-IntuneScriptRedeploy {
     }
 }
 
+function Invoke-IntuneWin32AppAssignment {
+    <#
+    .SYNOPSIS
+    Function for assigning Intune Win32App(s).
+
+    .DESCRIPTION
+    Function for assigning Intune Win32App(s).
+
+    Assignment to all users / all devices / selected groups is supported.
+
+    .PARAMETER appId
+    ID of the app(s) to assign.
+
+    If not specified, all apps will be shown using Out-GridView, so you can pick some.
+
+    .PARAMETER intent
+    Assignment type.
+
+    Available options: 'available', 'required', 'uninstall', 'availableWithoutEnrollment'
+
+    By default 'required'.
+
+    .PARAMETER targetGroupId
+    ID of the group(s) you want to assign the app.
+
+    If not specified (and targetAllDevices nor targetAllDevices is used), all groups will be shown using Out-GridView, so you can pick some.
+
+    .PARAMETER targetAllUsers
+    Switch for assigning the app to 'all users' instead of specific group.
+
+    .PARAMETER targetAllDevices
+    Switch for assigning the app to 'all devices' instead of specific group.
+
+    .PARAMETER notification
+    What post-installation notification should be shown.
+    Available options: 'showReboot', 'showAll'
+
+    By default 'showReboot'.
+
+    .EXAMPLE
+    Invoke-IntuneWin32AppAssignment
+
+    Let you pick the app you want to assign, the group(s) you want to assign an app to and do the assignment.
+
+    .EXAMPLE
+    Invoke-IntuneWin32AppAssignment -appId d3b5581f-4342-49e5-a9ae-03c04aacccc1 -targetAllDevices
+
+    Assigns the app to all devices.
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    [Alias("Assign-IntuneWin32App")]
+    param (
+        [guid[]] $appId,
+
+        [ValidateSet('available', 'required', 'uninstall', 'availableWithoutEnrollment')]
+        [string] $intent = "required",
+
+        [Parameter(Mandatory = $false, ParameterSetName = "Default")]
+        [guid] $targetGroupId,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "AllUsers")]
+        [switch] $targetAllUsers,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "AllDevices")]
+        [switch] $targetAllDevices,
+
+        [ValidateSet('showReboot', 'showAll')]
+        [string] $notification = "showReboot"
+    )
+
+    Connect-MgGraph -NoWelcome
+
+    if ($appId) {
+        $appId | % {
+            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            if (!$app) {
+                throw "Win32App with ID $_ doesn't exist"
+            }
+        }
+    } else {
+        function _assignments {
+            param ($assignment)
+
+            $assignment | % {
+                $type = $_.Target.AdditionalProperties.'@odata.type'.split('\.')[-1]
+                $groupId = $_.Target.AdditionalProperties.groupId
+
+                if ($groupId) {
+                    return $groupId
+                } else {
+                    return $type
+                }
+            }
+        }
+
+        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -PassThru -Title "Select Win32App you want to assign" | select -ExpandProperty Id
+        if (!$appId) { throw "You haven't selected any app" }
+    }
+
+    if ($targetGroupId) {
+        if (Get-MgGroup -GroupId $targetGroupId -ea SilentlyContinue) {
+            $target = @{
+                '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
+                'groupId'     = $targetGroupId
+            }
+        } else {
+            throw "Group with ID $targetGroupId doesn't exist"
+        }
+    } elseif ($targetAllUsers) {
+        $target = @{
+            '@odata.type' = "#microsoft.graph.allLicensedUsersAssignmentTarget"
+        }
+    } elseif ($targetAllDevices) {
+        $target = @{
+            '@odata.type' = "#microsoft.graph.allDevicesAssignmentTarget"
+        }
+    } else {
+        $targetGroupId = Get-MgGroup -All -Property DisplayName, Id | Out-GridView -PassThru -Title "Select group you want to assign an app to" | select -ExpandProperty Id
+        if (!$targetGroupId) { throw "You haven't selected any group" }
+        $target = @{
+            '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
+            'groupId'     = $targetGroupId
+        }
+    }
+
+    $params = @{
+        "@odata.type" = "#microsoft.graph.mobileAppAssignment"
+        intent        = $intent
+        target        = $target
+        settings      = @{
+            '@odata.type'                  = '#microsoft.graph.win32LobAppAssignmentSettings'
+            'notifications'                = $notification
+            'deliveryOptimizationPriority' = 'notConfigured'
+        }
+    }
+
+    foreach ($id in $appId) {
+        "Assign app $id to $($target.'@odata.type'.split('\.')[-1]) (id:$($target.groupId))"
+        $null = New-MgDeviceAppManagementMobileAppAssignment -MobileAppId $id -BodyParameter $params
+    }
+}
+
 function Invoke-IntuneWin32AppRedeploy {
     <#
     .SYNOPSIS
@@ -6597,6 +6743,7 @@ function Invoke-IntuneWin32AppRedeploy {
     param (
         [string] $computerName,
 
+        [Alias("online")]
         [switch] $getDataFromIntune,
 
         [System.Management.Automation.PSCredential] $credential,
@@ -6647,7 +6794,7 @@ function Invoke-IntuneWin32AppRedeploy {
         Write-Verbose "Unable to find App '$appId' GRS hash in any of the Intune log files. Redeploy will probably not work as expected"
     }
     # create helper functions text definition for usage in remote sessions
-    $allFunctionDefs = "function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} };"
+    $allFunctionDefs = "function Get-Win32AppGRSHash { ${function:Get-Win32AppGRSHash} }; function Invoke-FileContentWatcher { ${function:Invoke-FileContentWatcher} }"
     #endregion helper function
 
     #region get deployed Win32Apps
@@ -6687,7 +6834,7 @@ function Invoke-IntuneWin32AppRedeploy {
                     if (!$scopeId) { throw "ScopeId property is missing. Problem is probably in function Get-IntuneWin32AppLocally." }
                     $txt = $appName
                     if (!$txt) { $txt = $appId }
-                    Write-Warning "Preparing redeploy for Win32App '$txt' (scope $scopeId) by deleting it's registry key"
+                    Write-Warning "Preparing redeploy for Win32App '$txt' (scope $scope) by deleting it's registry key"
 
                     $win32AppKeyToDelete = $win32AppKeys | ? { $_.PSChildName -Match "^$appId`_\d+" -and $_.PSParentPath -Match "\\$scopeId$" }
 
@@ -6944,6 +7091,85 @@ function Invoke-ReRegisterDeviceToIntune {
         "Sign out and sign in back to the device to complete the recovery"
     } else {
         "Go to Settings > Accounts > Access Work or School.`nSelect the account and select Disconnect.`nClick on '+ Connect' and register the device again by going through the sign in process."
+    }
+}
+
+function Remove-IntuneWin32AppAssignment {
+    <#
+    .SYNOPSIS
+    Function for removing Win32App assignment(s).
+
+    .DESCRIPTION
+    Function for removing Win32App assignment(s).
+
+    .PARAMETER appId
+    ID of the app(s) to remove assignments from.
+
+    If not specified, all apps with some assignment will be shown using Out-GridView, so you can pick some.
+
+    .PARAMETER removeAllAssignments
+    Switch for removing all assignments for selected app(s).
+
+    .EXAMPLE
+    Remove-IntuneWin32AppAssignment
+
+    Let you pick the app you want to remove assignment from, the assignment(s) for removal and do the removal.
+
+    .EXAMPLE
+    Remove-IntuneWin32AppAssignment -appId d3b5581f-4342-49e5-a9ae-03c04aacccc1 -removeAllAssignments
+
+    Removes all assignment of selected app.
+    #>
+    [CmdletBinding()]
+    param (
+        [guid[]] $appId,
+
+        [switch] $removeAllAssignments
+    )
+
+    Connect-MgGraph -NoWelcome
+
+    if ($appId) {
+        $appId | % {
+            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            if (!$app) {
+                throw "Win32App with ID $_ doesn't exist"
+            }
+        }
+    } else {
+        function _assignments {
+            param ($assignment)
+
+            $assignment | % {
+                $type = $_.Target.AdditionalProperties.'@odata.type'.split('\.')[-1]
+                $groupId = $_.Target.AdditionalProperties.groupId
+
+                if ($groupId) {
+                    return $groupId
+                } else {
+                    return $type
+                }
+            }
+        }
+
+        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | ? Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -Title "Select Win32App you want to de-assign" -PassThru | select -ExpandProperty Id
+        if (!$appId) { throw "You haven't selected any app" }
+    }
+
+    foreach ($id in $appId) {
+        $assignment = Get-MgDeviceAppManagementMobileAppAssignment -MobileAppId $id
+        if (!$assignment) {
+            return "No assignments available"
+        }
+
+        if (!$removeAllAssignments -and @($assignment).count -gt 1) {
+            $assignment = $assignment | Out-GridView -PassThru -Title "Select assignment you want to remove"
+        }
+
+        $assignment | % {
+            "Removing app $id assignment $($_.Target.AdditionalProperties.'@odata.type'.split('\.')[-1]) ($($_.Target.AdditionalProperties.groupId))"
+            Remove-MgDeviceAppManagementMobileAppAssignment -MobileAppId $id -MobileAppAssignmentId $_.Id
+        }
     }
 }
 
@@ -7733,6 +7959,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScript, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScript, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
-Export-ModuleMember -alias Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy
+Export-ModuleMember -alias Assign-IntuneWin32App, Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy

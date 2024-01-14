@@ -943,32 +943,6 @@ function ConvertFrom-XML {
     return $hash | ConvertTo-PsCustomObjectFromHashtable
 }
 
-function Create-BasicAuthHeader {
-    <#
-    .SYNOPSIS
-    Function returns basic authentication header that can be used for web requests.
-
-    .DESCRIPTION
-    Function returns basic authentication header that can be used for web requests.
-
-    .PARAMETER credential
-    Credentials object that will be used to create auth. header.
-
-    .EXAMPLE
-    $header = Create-BasicAuthHeader -credential (Get-Credential)
-    $response = Invoke-RestMethod -Uri "https://example.com/api" -Headers $header
-    #>
-
-    param (
-        [Parameter(Mandatory = $true)]
-        [System.Management.Automation.PSCredential] $credential
-    )
-
-    @{
-        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($Credential.UserName + ":" + [System.Runtime.InteropServices.marshal]::PtrToStringAuto([System.Runtime.InteropServices.marshal]::SecureStringToBSTR($Credential.Password)) )))
-    }
-}
-
 function Export-ScriptsToModule {
     <#
     .SYNOPSIS
@@ -4014,7 +3988,7 @@ function Invoke-MSTSC {
     .EXAMPLE
     Invoke-MSTSC pc1 -useDomainAdminAccount
 
-    Run remote connection to pc1 using adm_<username> domain account.
+    Run remote connection to pc1 using <domain>\<username> domain account.
 
     .EXAMPLE
     $credentials = Get-Credential
@@ -4343,9 +4317,9 @@ function Invoke-SQL {
     On SQL-16 server in alvao SQL database runs selected command.
 
     .EXAMPLE
-    Invoke-SQL -dataSource "ondrejs4-test2\SOLARWINDS_ORION" -database "SolarWindsOrion" -sqlCommand "SELECT * FROM pollers"
+    Invoke-SQL -dataSource "admin-test2\SOLARWINDS_ORION" -database "SolarWindsOrion" -sqlCommand "SELECT * FROM pollers"
 
-    On "ondrejs4-test2\SOLARWINDS_ORION" server\instance in SolarWindsOrion database runs selected command.
+    On "admin-test2\SOLARWINDS_ORION" server\instance in SolarWindsOrion database runs selected command.
 
     .EXAMPLE
     Invoke-SQL -dataSource ".\SQLEXPRESS" -database alvao -sqlCommand "SELECT * FROM KindRight"
@@ -4544,6 +4518,34 @@ function Invoke-WindowsUpdate {
         }
         #endregion restart system
     } -ArgumentList $allUpdates, $restartIfRequired
+}
+
+function New-BasicAuthHeader {
+    <#
+    .SYNOPSIS
+    Function returns basic authentication header that can be used for web requests.
+
+    .DESCRIPTION
+    Function returns basic authentication header that can be used for web requests.
+
+    .PARAMETER credential
+    Credentials object that will be used to create auth. header.
+
+    .EXAMPLE
+    $header = New-BasicAuthHeader -credential (Get-Credential)
+    $response = Invoke-RestMethod -Uri "https://example.com/api" -Headers $header
+    #>
+
+    [CmdletBinding()]
+    [Alias("Create-BasicAuthHeader")]
+    param (
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.PSCredential] $credential
+    )
+
+    @{
+        "Authorization" = "Basic " + [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($Credential.UserName + ":" + [System.Runtime.InteropServices.marshal]::PtrToStringAuto([System.Runtime.InteropServices.marshal]::SecureStringToBSTR($Credential.Password)) )))
+    }
 }
 
 function Publish-Module2 {
@@ -4764,6 +4766,6 @@ function Uninstall-ApplicationViaUninstallString {
     }
 }
 
-Export-ModuleMember -function Compare-Object2, ConvertFrom-HTMLTable, ConvertFrom-XML, Create-BasicAuthHeader, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-SQL, Invoke-WindowsUpdate, Publish-Module2, Uninstall-ApplicationViaUninstallString
+Export-ModuleMember -function Compare-Object2, ConvertFrom-HTMLTable, ConvertFrom-XML, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-SQL, Invoke-WindowsUpdate, New-BasicAuthHeader, Publish-Module2, Uninstall-ApplicationViaUninstallString
 
-Export-ModuleMember -alias Install-WindowsUpdate, Invoke-WU, rdp, Watch-FileContent, Watch-FileSystem
+Export-ModuleMember -alias Create-BasicAuthHeader, Install-WindowsUpdate, Invoke-WU, rdp, Watch-FileContent, Watch-FileSystem

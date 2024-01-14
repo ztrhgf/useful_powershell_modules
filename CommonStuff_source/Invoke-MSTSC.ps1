@@ -65,7 +65,7 @@ function Invoke-MSTSC {
     .EXAMPLE
     Invoke-MSTSC pc1 -useDomainAdminAccount
 
-    Run remote connection to pc1 using adm_<username> domain account.
+    Run remote connection to pc1 using <domain>\<username> domain account.
 
     .EXAMPLE
     $credentials = Get-Credential

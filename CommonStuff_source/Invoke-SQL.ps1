@@ -28,9 +28,9 @@
     On SQL-16 server in alvao SQL database runs selected command.
 
     .EXAMPLE
-    Invoke-SQL -dataSource "ondrejs4-test2\SOLARWINDS_ORION" -database "SolarWindsOrion" -sqlCommand "SELECT * FROM pollers"
+    Invoke-SQL -dataSource "admin-test2\SOLARWINDS_ORION" -database "SolarWindsOrion" -sqlCommand "SELECT * FROM pollers"
 
-    On "ondrejs4-test2\SOLARWINDS_ORION" server\instance in SolarWindsOrion database runs selected command.
+    On "admin-test2\SOLARWINDS_ORION" server\instance in SolarWindsOrion database runs selected command.
 
     .EXAMPLE
     Invoke-SQL -dataSource ".\SQLEXPRESS" -database alvao -sqlCommand "SELECT * FROM KindRight"

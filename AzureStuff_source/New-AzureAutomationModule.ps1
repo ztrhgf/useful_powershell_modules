@@ -32,10 +32,37 @@ function New-AzureAutomationModule {
 
     By default 5.1.
 
+    .PARAMETER overridePSGalleryModuleVersion
+    Hashtable of hashtables where you can specify what module version should be used for given runtime if no specific version is required.
+
+    This is needed in cases, where module newest available PSGallery version isn't compatible with your runtime because of incorrect manifest.
+
+    By default:
+
+    $overridePSGalleryModuleVersion = @{
+        # 2.x.x PnP.PowerShell versions (2.1.1, 2.2.0) requires PSH 7.2 even though manifest doesn't say it
+        # so the wrong module version would be picked up which would cause an error when trying to import
+        "PnP.PowerShell" = @{
+            "5.1" = "1.12.0"
+        }
+    }
+
     .EXAMPLE
     Connect-AzAccount -Tenant "contoso.onmicrosoft.com" -SubscriptionName "AutomationSubscription"
 
-    New-AzureAutomationModule -resourceGroupName test -automationAccountName test -moduleName Microsoft.Graph.Groups
+    New-AzureAutomationModule -resourceGroupName test -automationAccountName test -moduleName "Microsoft.Graph.Groups"
+
+    Imports newest supported version (for given Runtime) of the "Microsoft.Graph.Groups" module including all its dependencies.
+    In case module "Microsoft.Graph.Groups" (with any version) and all its dependencies are already imported, nothing will happens.
+
+    .EXAMPLE
+    Connect-AzAccount -Tenant "contoso.onmicrosoft.com" -SubscriptionName "AutomationSubscription"
+
+    New-AzureAutomationModule -resourceGroupName test -automationAccountName test -moduleName "Microsoft.Graph.Groups" -moduleVersion "2.11.1"
+
+    Imports newest supported version (for given Runtime) of the "Microsoft.Graph.Groups" module including all its dependencies.
+    In case module "Microsoft.Graph.Groups" with version "2.11.1" and all its dependencies are already imported, nothing will happens.
+    Otherwise module will be replaced (including all dependencies that are required for this specific version).
     #>
 
     [CmdletBinding()]
@@ -55,14 +82,22 @@ function New-AzureAutomationModule {
         [ValidateSet('5.1', '7.1', '7.2')]
         [string] $runtimeVersion = '5.1',
 
-        [int] $indent = 0
+        [int] $indent = 0,
+
+        [hashtable[]] $overridePSGalleryModuleVersion = @{
+            # 2.x.x PnP.PowerShell versions (2.1.1, 2.2.0) requires PSH 7.2 even though manifest doesn't say it
+            # so the wrong module version would be picked up which would cause an error when trying to import
+            "PnP.PowerShell" = @{
+                "5.1" = "1.12.0"
+            }
+        }
     )
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    $indentString = "   " * $indent
+    $indentString = "     " * $indent
 
     function _write {
         param ($string, $color)
@@ -83,7 +118,6 @@ function New-AzureAutomationModule {
         $moduleVersionString = ""
     }
 
-    ""
     _write "Processing module $moduleName $moduleVersionString" "Magenta"
 
     #region get PSGallery module data
@@ -113,11 +147,14 @@ function New-AzureAutomationModule {
         return
     }
 
-    #HACK
-    if (!$moduleVersion -and $moduleName -eq "PnP.PowerShell" -and $runtimeVersion -eq "5.1") {
-        # 2.x.x PnP.PowerShell versions (2.1.1, 2.2.0) requires PSH 7.2 even though manifest doesn't say it
-        # so the wrong module version would be picked up which would cause an error when trying to import
-        $moduleVersion = "1.12.0"
+    # override module version
+    if (!$moduleVersion -and $moduleName -in $overridePSGalleryModuleVersion.Keys -and $overridePSGalleryModuleVersion.$moduleName.$runtimeVersion) {
+        $overriddenModule = $overridePSGalleryModuleVersion.$moduleName
+        $overriddenModuleVersion = $overriddenModule.$runtimeVersion
+        if ($overriddenModuleVersion) {
+            _write " (no version specified and override for version exists, hence will be used ($overriddenModuleVersion))"
+            $moduleVersion = $overriddenModuleVersion
+        }
     }
 
     if (!$moduleVersion) {
@@ -129,7 +166,8 @@ function New-AzureAutomationModule {
     $currentAutomationModules = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop
 
     # check whether required module is present
-    $moduleExists = $currentAutomationModules | ? Name -EQ $moduleName
+    # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
+    $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and $_.SizeInBytes }
     if ($moduleVersion) {
         $moduleExists = $moduleExists | ? Version -EQ $moduleVersion
     }
@@ -139,11 +177,12 @@ function New-AzureAutomationModule {
     }
 
     _write " - Getting module $moduleName dependencies"
-    $moduleDependency = $moduleGalleryInfo.Dependencies
+    $moduleDependency = $moduleGalleryInfo.Dependencies | Sort-Object { $_.name }
 
     # dependency must be installed first
     if ($moduleDependency) {
         #TODO znacit si jake moduly jsou required (at uz tam jsou nebo musim doinstalovat) a kontrolovat, ze jeden neni required s ruznymi verzemi == konflikt protoze nainstalovana muze byt jen jedna
+        _write "  - Depends on: $($moduleDependency.Name -join ', ')"
         foreach ($module in $moduleDependency) {
             $requiredModuleName = $module.Name
             [version]$requiredModuleMinVersion = $module.MinimumVersion
@@ -151,9 +190,10 @@ function New-AzureAutomationModule {
             [version]$requiredModuleReqVersion = $module.RequiredVersion
             $notInCorrectVersion = $false
 
-            _write "  - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
+            _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
 
-            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and $_.ProvisioningState -eq "Succeeded" }
+            # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
+            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.ProvisioningState -eq "Succeeded" -or $_.SizeInBytes) }
             [version]$existingRequiredModuleVersion = $existingRequiredModule.Version
 
             # check that existing module version fits
@@ -162,22 +202,22 @@ function New-AzureAutomationModule {
                 #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
                 if ($requiredModuleReqVersion -and $requiredModuleReqVersion -ne $existingRequiredModuleVersion) {
                     $notInCorrectVersion = $true
-                    _write "    - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
+                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
                 } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ($existingRequiredModuleVersion -lt $requiredModuleMinVersion -or $existingRequiredModuleVersion -gt $requiredModuleMaxVersion)) {
                     $notInCorrectVersion = $true
-                    _write "    - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
                 } elseif ($requiredModuleMinVersion -and $existingRequiredModuleVersion -lt $requiredModuleMinVersion) {
                     $notInCorrectVersion = $true
-                    _write "    - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
+                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
                 } elseif ($requiredModuleMaxVersion -and $existingRequiredModuleVersion -gt $requiredModuleMaxVersion) {
                     $notInCorrectVersion = $true
-                    _write "    - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
                 }
             }
 
             if (!$existingRequiredModule -or $notInCorrectVersion) {
                 if (!$existingRequiredModule) {
-                    _write "    - module is missing" "Yellow"
+                    _write "     - module is missing" "Yellow"
                 }
 
                 if ($notInCorrectVersion) {
@@ -206,9 +246,9 @@ function New-AzureAutomationModule {
                 #endregion install required module first
             } else {
                 if ($existingRequiredModuleVersion) {
-                    _write "    - module (ver. $existingRequiredModuleVersion) is already present"
+                    _write "     - module (ver. $existingRequiredModuleVersion) is already present"
                 } else {
-                    _write "    - module is already present"
+                    _write "     - module is already present"
                 }
             }
         }
@@ -217,12 +257,18 @@ function New-AzureAutomationModule {
     }
 
     $uri = "https://www.powershellgallery.com/api/v2/package/$moduleName/$moduleVersion"
-    _write " - Uploading module $moduleName ($moduleVersion)"
+    _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
     $status = New-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -Name $moduleName -ContentLinkUri $uri -RuntimeVersion $runtimeVersion
 
+    $i = 0
     do {
-        Start-Sleep 20
-        _write "    Still working..."
+        if ($i % 5 -eq 0) {
+            _write "    Still working..."
+        }
+
+        Start-Sleep 5
+
+        ++$i
     } while (!($requiredModule = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop | ? { $_.Name -eq $moduleName -and $_.ProvisioningState -in "Succeeded", "Failed" }))
 
     if ($requiredModule.ProvisioningState -ne "Succeeded") {

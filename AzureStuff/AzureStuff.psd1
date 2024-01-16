@@ -12,7 +12,7 @@
 RootModule = 'AzureStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.0'
+ModuleVersion = '1.0.1'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -32,14 +32,17 @@ Copyright = '(c) 2022 @AndrewZtrhgf. All rights reserved.'
 # Description of the functionality provided by this module
 Description = 'Various Azure related functions. Some of them are explained at https://doitpsway.com/series/azure.
 Some of the interesting functions:
-- Add-AzureAppUserConsent - granting permission consent on behalf of another user
-- Set-AzureAppCertificate - add the auth. certificate (existing or created self-signed) to selected Azure application as an secret
-- Get-AzureAccountOccurrence - for getting all occurrences of specified account in your Azure environment
+- Add-AzureAppUserConsent - grant permission consent on behalf of another user
+- Get-AzureAccountOccurrence - get all occurrences of specified account in your Azure environment
 - Get-AzureAppVerificationStatus - get Azure app publisher verification status
-- Get-AzureAppConsentRequest - for getting all application admin consent requests
+- Get-AzureAppConsentRequest - get all application admin consent requests
 - Get-AzureDevOpsOrganizationOverview - list of all DevOps organizations
+- Grant-AzureServicePrincipalPermission - grant application/delegated permission(s) for selected resource to selected account
+- New-AzureAutomationModule - import/update module with dependencies to Azure Automation Account
 - Remove-AzureAccountOccurrence - remove specified account from various Azure environment sections and optionally replace it with other user and inform him. Should be used with Get-AzureAccountOccurrence.
-- Remove-AzureAppUserConsent - removes user consent
+- Remove-AzureAppUserConsent - remove user consent
+- Revoke-AzureServicePrincipalPermission - revoke granted application/delegated permissions from selected account
+- Set-AzureAppCertificate - create (or replace existing) authentication certificate for selected Application
 - ...
 '
 
@@ -108,9 +111,9 @@ FunctionsToExport = 'Add-AzureAppUserConsent', 'Add-AzureGuest', 'Disable-AzureG
                'Get-AzureAuthenticatorLastUsedDate', 'Get-AzureCompletedMFAPrompt', 
                'Get-AzureDeviceWithoutBitlockerKey', 
                'Get-AzureEnterpriseApplication', 'Get-AzureGroupMemberRecursive', 
-               'Get-AzureGroupMemberRecursively', 'Get-AzureGroupSettings', 
-               'Get-AzureManagedIdentity', 'Get-AzureResource', 
-               'Get-AzureRoleAssignments', 'Get-AzureServiceAccount', 
+               'Get-AzureGroupSettings', 'Get-AzureManagedIdentity', 
+               'Get-AzureResource', 'Get-AzureRoleAssignments', 
+               'Get-AzureServiceAccount', 
                'Get-AzureServicePrincipalBySecurityAttribute', 
                'Get-AzureServicePrincipalOverview', 
                'Get-AzureServicePrincipalPermissions', 
@@ -122,7 +125,7 @@ FunctionsToExport = 'Add-AzureAppUserConsent', 'Add-AzureGuest', 'Disable-AzureG
                'Remove-AzureUserMemberOfDirectoryRole', 
                'Revoke-AzureServicePrincipalPermission', 'Set-AzureAppCertificate', 
                'Set-AzureDeviceExtensionAttribute', 'Set-AzureRingGroup', 
-               'Start-AzureSync', 'Update-AzureAutomationModule'
+               'Start-AzureSync'
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = '*'
@@ -166,7 +169,11 @@ PrivateData = @{
         # ReleaseNotes of this module
         ReleaseNotes = '
             * 1.0.0
-                * Initial release. Migrated from now deprecated AzureADStuff module.'
+                * Initial release. Some functions are migrated from now deprecated AzureADStuff module, some are completely new.
+            * 1.0.1
+                * EDIT
+                New-AzureAutomationModule - better output, added support to override module version (overridePSGalleryModuleVersion)
+            '
 
         # Prerelease string of this module
         # Prerelease = ''

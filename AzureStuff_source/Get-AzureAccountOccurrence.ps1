@@ -1,8 +1,9 @@
-﻿#Requires -Module AzureAD
+﻿#Requires -Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications, Microsoft.Graph.DeviceManagement.Enrollment, Microsoft.Graph.DirectoryObjects, Microsoft.Graph.Users, Microsoft.Graph.Identity.SignIns, Microsoft.Graph.Identity.Governance
 #Requires -Module Az.Accounts
 #Requires -Module Pnp.PowerShell
 #Requires -Module MSAL.PS
-function Get-AzureADAccountOccurrence {
+#Requires -Module ExchangeOnlineManagement
+function Get-AzureAccountOccurrence {
     <#
     .SYNOPSIS
     Function for getting AzureAD account occurrences through various parts of Azure.
@@ -38,35 +39,34 @@ function Get-AzureADAccountOccurrence {
     'Users&GroupsRoleAssignment' - applications Users and groups tab where searched account is assigned
     'DevOps' - occurrences in DevOps organizations
     'KeyVaultAccessPolicy' - KeyVault access policies grants
+    'ExchangeRole' - Exchange Admin Roles
 
     Based on the object type you are searching occurrences for, this can be automatically trimmed. Because for example device cannot be manager etc.
 
     .PARAMETER tenantId
     Name of the tenant if different then the default one should be used.
 
-    .PARAMETER sharePointUrl
-    Your sharepoint online url ("https://contoso-admin.sharepoint.com")
-
     .EXAMPLE
-    Get-AzureADAccountOccurrence -objectId 1234-1234-1234
+    Get-AzureAccountOccurrence -objectId 1234-1234-1234
 
     Search for all occurrences of the account with id 1234-1234-1234.
 
     .EXAMPLE
-    Get-AzureADAccountOccurrence -objectId 1234-1234-1234 -data UserConsent, Manager
+    Get-AzureAccountOccurrence -objectId 1234-1234-1234 -data UserConsent, Manager
 
     Search just for user perm. consents which searched account has given and accounts where searched account is manager of.
 
     .EXAMPLE
-    Get-AzureADAccountOccurrence -userPrincipalName novak@contoso.com
+    Get-AzureAccountOccurrence -userPrincipalName novak@contoso.com
 
     Search for all occurrences of the account with UPN novak@contoso.com.
 
     .NOTES
-    In case of 'data' parameter edit, don't forget to modify _getAllowedSearchType and Remove-AzureADAccountOccurrence functions too
+    In case of 'data' parameter edit, don't forget to modify _getAllowedSearchType and Remove-AzureAccountOccurrence functions too
     #>
 
     [CmdletBinding()]
+    [Alias("Get-AzureADAccountOccurrence")]
     param (
         [ValidateNotNullOrEmpty()]
         [ValidateScript( {
@@ -78,15 +78,22 @@ function Get-AzureADAccountOccurrence {
             })]
         [string[]] $userPrincipalName,
 
+        [ValidateScript( {
+                $StringGuid = $_
+                $ObjectGuid = [System.Guid]::empty
+                if ([System.Guid]::TryParse($StringGuid, [System.Management.Automation.PSReference]$ObjectGuid)) {
+                    $true
+                } else {
+                    throw "$_ is not a valid GUID"
+                }
+            })]
         [string[]] $objectId,
 
-        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy')]
+        [ValidateSet('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy', 'ExchangeRole')]
         [ValidateNotNullOrEmpty()]
-        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy'),
+        [string[]] $data = @('IAM', 'GroupMembership', 'DirectoryRoleMembership', 'UserConsent', 'Manager', 'Owner', 'SharepointSiteOwner', 'Users&GroupsRoleAssignment', 'DevOps', 'KeyVaultAccessPolicy', 'ExchangeRole'),
 
-        [string] $tenantId,
-
-        [string] $sharePointUrl
+        [string] $tenantId
     )
 
     if (!$userPrincipalName -and !$objectId) {
@@ -103,25 +110,22 @@ function Get-AzureADAccountOccurrence {
 
     #region connect
     # connect to AzureAD
-    Write-Verbose "Connecting to Azure for use with cmdlets from the AzureAD PowerShell modules"
-
-    $null = Connect-AzureAD2 @tenantIdParam -ea Stop
-
-    # Write-Verbose "Connecting to Azure for use with cmdlets from the Az PowerShell modules"
+    $null = Connect-MgGraph -ea Stop
     $null = Connect-AzAccount2 @tenantIdParam -ea Stop
 
-    # connect Graph API
+    # create Graph API auth. header
     Write-Verbose "Creating Graph API auth header"
-    $header = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
+    $graphAuthHeader = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
 
     # connect sharepoint online
     if ($data -contains 'SharepointSiteOwner') {
         Write-Verbose "Connecting to Sharepoint"
-        if ($sharePointUrl) {
-            Connect-PnPOnline2 -url $sharePointUrl -asMFAUser -ea Stop
-        } else {
-            Connect-PnPOnline2 -asMFAUser -ea Stop
-        }
+        Connect-PnPOnline2 -asMFAUser -ea Stop
+    }
+
+    if ($data -contains 'ExchangeRole') {
+        Write-Verbose "Connecting to Exchange"
+        Connect-O365 -service exchange -ea Stop
     }
     #endregion connect
 
@@ -130,12 +134,12 @@ function Get-AzureADAccountOccurrence {
         $userPrincipalName | % {
             $UPN = $_
 
-            $AADUserobj = Get-AzureADUser -Filter "userprincipalname eq '$UPN'"
+            $AADUserobj = Get-MgUser -Filter "userPrincipalName eq '$UPN'"
             if (!$AADUserobj) {
                 Write-Error "Account $UPN was not found in AAD"
             } else {
-                Write-Verbose "Translating $UPN to $($AADUserobj.ObjectId) ObjectId"
-                $objectId += $AADUserobj.ObjectId
+                Write-Verbose "Translating $UPN to $($AADUserobj.Id) Id"
+                $objectId += $AADUserobj.Id
             }
         }
     }
@@ -186,6 +190,10 @@ function Get-AzureADAccountOccurrence {
                 $allowedObjType = 'user', 'group', 'servicePrincipal'
             }
 
+            'ExchangeRole' {
+                $allowedObjType = 'user', 'group'
+            }
+
             default { throw "Undefined data to search $searchedData (edit _getAllowedSearchType function)" }
         }
 
@@ -203,7 +211,7 @@ function Get-AzureADAccountOccurrence {
         param ([string[]] $membershipHref, [string] $organizationName)
 
         $membershipHref | % {
-            Invoke-WebRequest -Uri $_ -Method get -ContentType "application/json" -Headers $header | select -exp content | ConvertFrom-Json | select -exp value | select -exp containerDescriptor | % {
+            Invoke-WebRequest -Uri $_ -Method get -ContentType "application/json" -Headers $devOpsAuthHeader | select -exp content | ConvertFrom-Json | select -exp value | select -exp containerDescriptor | % {
                 $groupOrg = $devOpsOrganization | ? { $_.OrganizationName -eq $organizationName }
                 $group = $groupOrg.groups | ? descriptor -EQ $_
                 if ($group) {
@@ -223,7 +231,7 @@ function Get-AzureADAccountOccurrence {
     #TODO cache only in case some allowed account type for such data is searched
     if ('IAM' -in $data) {
         Write-Warning "Caching AzureAD Role Assignments. This can take several minutes!"
-        $azureADRoleAssignments = Get-AzureADRoleAssignments @tenantIdParam
+        $azureADRoleAssignments = Get-AzureRoleAssignments @tenantIdParam
     }
     if ('SharepointSiteOwner' -in $data) {
         Write-Warning "Caching Sharepoint sites ownership. This can take several minutes!"
@@ -236,13 +244,13 @@ function Get-AzureADAccountOccurrence {
 
         #TODO poresit strankovani!
         Write-Warning "Caching DevOps organizations groups."
-        $header = New-AzureDevOpsAuthHeader
+        $devOpsAuthHeader = New-AzureDevOpsAuthHeader
         $devOpsOrganization | % {
             $organizationName = $_.OrganizationName
             Write-Verbose "Getting groups for DevOps organization $organizationName"
             $groups = $null # in case of error this wouldn't be nulled
             try {
-                $groups = Invoke-WebRequest -Uri "https://vssps.dev.azure.com/$organizationName/_apis/graph/groups?api-version=7.1-preview.1" -Method get -ContentType "application/json" -Headers $header -ea Stop | select -exp content | ConvertFrom-Json | select -exp value
+                $groups = Invoke-WebRequest -Uri "https://vssps.dev.azure.com/$organizationName/_apis/graph/groups?api-version=7.1-preview.1" -Method get -ContentType "application/json" -Headers $devOpsAuthHeader -ea Stop | select -exp content | ConvertFrom-Json | select -exp value
             } catch {
                 if ($_ -match "is not authorized to access this resource|UnauthorizedRequestException") {
                     Write-Warning "You don't have rights to get groups data for DevOps organization $organizationName."
@@ -256,13 +264,13 @@ function Get-AzureADAccountOccurrence {
 
         #TODO poresit strankovani!
         Write-Warning "Caching DevOps organizations users."
-        $header = New-AzureDevOpsAuthHeader
+        $devOpsAuthHeader = New-AzureDevOpsAuthHeader
         $devOpsOrganization | % {
             $organizationName = $_.OrganizationName
             Write-Verbose "Getting users for DevOps organization $organizationName"
             $users = $null # in case of error this wouldn't be nulled
             try {
-                $users = Invoke-WebRequest -Uri "https://vssps.dev.azure.com/$organizationName/_apis/graph/users?api-version=7.1-preview.1" -Method get -ContentType "application/json" -Headers $header -ea Stop | select -exp content | ConvertFrom-Json | select -exp value
+                $users = Invoke-WebRequest -Uri "https://vssps.dev.azure.com/$organizationName/_apis/graph/users?api-version=7.1-preview.1" -Method get -ContentType "application/json" -Headers $devOpsAuthHeader -ea Stop | select -exp content | ConvertFrom-Json | select -exp value
             } catch {
                 if ($_ -match "is not authorized to access this resource|UnauthorizedRequestException") {
                     Write-Warning "You don't have rights to get users data for DevOps organization $organizationName."
@@ -290,13 +298,26 @@ function Get-AzureADAccountOccurrence {
             }
         }
     }
+
+    if ('ExchangeRole' -in $data) {
+        Write-Warning "Caching Exchange roles."
+        $exchangeRoleAssignments = @()
+
+        Get-RoleGroup | % {
+            $roleName = $_.name
+            $roleDN = $_.displayname
+            $roleCapabilities = $_.capabilities
+
+            $exchangeRoleAssignments += Get-RoleGroupMember -Identity $roleName -ResultSize unlimited | select @{n = 'Role'; e = { $roleName } }, @{name = 'RoleDisplayName'; e = { $roleDN } }, @{n = 'RoleCapabilities'; e = { $roleCapabilities } }, *
+        }
+    }
     #endregion pre-cache data
 
     # object types that are allowed for searching
     $allowedObjectType = 'user', 'group', 'servicePrincipal', 'device'
 
     foreach ($id in $objectId) {
-        $AADAccountObj = Get-AzureADObjectByObjectId -ObjectId $id
+        $AADAccountObj = Get-MgDirectoryObjectById -Ids $id | Expand-MgAdditionalProperties
         if (!$AADAccountObj) {
             Write-Error "Account $id was not found in AAD"
             continue
@@ -304,21 +325,21 @@ function Get-AzureADAccountOccurrence {
 
         # progress variables
         $i = 0
-        $progressActivity = "Account '$($AADAccountObj.DisplayName)' ($id) occurrences"
+        $progressActivity = "Account '$($AADAccountObj.displayName)' ($id) occurrences"
 
         $objectType = $AADAccountObj.ObjectType
 
         if ($objectType -notin $allowedObjectType) {
-            Write-Warning "Skipping '$($AADAccountObj.DisplayName)' ($id) because it is disallowed object type ($objectType)"
+            Write-Warning "Skipping '$($AADAccountObj.displayName)' ($id) because it is disallowed object type ($objectType)"
             continue
         } else {
-            Write-Warning "Processing '$($AADAccountObj.DisplayName)' ($id)"
+            Write-Warning "Processing '$($AADAccountObj.displayName)' ($id)"
         }
 
         # define base object
         $result = [PSCustomObject]@{
-            UPN                             = $AADAccountObj.UserPrincipalName
-            DisplayName                     = $AADAccountObj.DisplayName
+            UPN                             = $AADAccountObj.userPrincipalName
+            DisplayName                     = $AADAccountObj.displayName
             ObjectType                      = $objectType
             ObjectId                        = $id
             IAM                             = @()
@@ -332,9 +353,19 @@ function Get-AzureADAccountOccurrence {
             DevOpsOrganizationOwner         = @()
             DevOpsMemberOf                  = @()
             KeyVaultAccessPolicy            = @()
+            ExchangeRole                    = @()
         }
 
         #region get AAD account occurrences
+        #region Exchange Role assignments
+        if ('ExchangeRole' -in $data -and (_getAllowedSearchType 'ExchangeRole')) {
+            Write-Verbose "Getting Exchange role assignments"
+            Write-Progress -Activity $progressActivity -Status "Getting Exchange role assignments" -PercentComplete (($i++ / $data.Count) * 100)
+
+            $result.ExchangeRole = @($exchangeRoleAssignments | ? ExternalDirectoryObjectId -EQ $id)
+        }
+        #endregion Exchange Role assignments
+
         #region KeyVault Access Policy
         if ('KeyVaultAccessPolicy' -in $data -and (_getAllowedSearchType 'KeyVaultAccessPolicy')) {
             Write-Verbose "Getting KeyVault Access Policy assignments"
@@ -367,8 +398,8 @@ function Get-AzureADAccountOccurrence {
             Write-Verbose "Getting Directory Role Membership assignments"
             Write-Progress -Activity $progressActivity -Status "Getting Directory Role Membership assignments" -PercentComplete (($i++ / $data.Count) * 100)
 
-            Get-AzureADMSRoleAssignment -Filter "principalId eq '$id'" | % {
-                $_ | Add-Member -Name RoleName -MemberType NoteProperty -Value (Get-AzureADMSRoleDefinition -Id $_.roleDefinitionId | select -ExpandProperty DisplayName)
+            Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$id'" | % {
+                $_ | Add-Member -Name 'RoleName' -MemberType NoteProperty -Value (Get-MgRoleManagementDirectoryRoleDefinition -UnifiedRoleDefinitionId $_.RoleDefinitionId | select -ExpandProperty DisplayName)
                 $result.MemberOfDirectoryRole += $_
             }
         }
@@ -380,8 +411,10 @@ function Get-AzureADAccountOccurrence {
             Write-Progress -Activity $progressActivity -Status "Getting Group memberships" -PercentComplete (($i++ / $data.Count) * 100)
 
             # reauthenticate just in case previous steps took too much time and the token has expired in the meantime
-            Write-Verbose "Creating new auth token, just in case it expired"
-            $header = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
+            if (!$graphAuthHeader -or ($graphAuthHeader -and $graphAuthHeader.ExpiresOn -le [datetime]::Now)) {
+                Write-Verbose "Creating new auth token, just in case it expired"
+                $graphAuthHeader = New-GraphAPIAuthHeader @tenantIdParam -ea Stop
+            }
 
             switch ($objectType) {
                 'user' { $searchLocation = "users" }
@@ -391,7 +424,7 @@ function Get-AzureADAccountOccurrence {
                 default { throw "Undefined object type '$objectType'" }
             }
 
-            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/$searchLocation/$id/memberOf" -header $header | ? { $_ } | % {
+            Invoke-GraphAPIRequest -uri "https://graph.microsoft.com/v1.0/$searchLocation/$id/memberOf" -header $graphAuthHeader | ? { $_ } | % {
                 if ($_.'@odata.type' -eq '#microsoft.graph.directoryRole') {
                     # directory roles are added in different IF, moreover this query doesn't return custom roles
                 } elseif ($_.'@odata.context') {
@@ -408,8 +441,8 @@ function Get-AzureADAccountOccurrence {
             Write-Verbose "Getting permission consents"
             Write-Progress -Activity $progressActivity -Status "Getting permission consents" -PercentComplete (($i++ / $data.Count) * 100)
 
-            Get-AzureADUserOAuth2PermissionGrant -ObjectId $id -All:$true | % {
-                $result.PermissionConsent += $_ | select *, @{name = 'AppName'; expression = { (Get-AzureADServicePrincipal -ObjectId $_.ClientId).DisplayName } }, @{name = 'ResourceDisplayName'; expression = { (Get-AzureADServicePrincipal -ObjectId $_.ResourceId).DisplayName } }
+            Get-MgUserOauth2PermissionGrant -UserId $id -All | % {
+                $result.PermissionConsent += $_ | select *, @{name = 'AppName'; expression = { (Get-MgServicePrincipal -ServicePrincipalId $_.ClientId).DisplayName } }, @{name = 'ResourceDisplayName'; expression = { (Get-MgServicePrincipal -ServicePrincipalId $_.ResourceId).DisplayName } }
             }
         }
         #endregion user perm consents
@@ -420,7 +453,8 @@ function Get-AzureADAccountOccurrence {
             Write-Verbose "Just Cloud based objects are outputted"
             Write-Progress -Activity $progressActivity -Status "Getting Direct Report (managedBy)" -PercentComplete (($i++ / $data.Count) * 100)
 
-            Get-AzureADUserDirectReport -ObjectId $id | ? DirSyncEnabled -NE 'True' | % {
+            # TODO nevraci DirSyncedEnabled
+            Get-MgUserDirectReport -UserId $id -All | Expand-MgAdditionalProperties | % {
                 $result.Manager += $_
             }
         }
@@ -433,18 +467,18 @@ function Get-AzureADAccountOccurrence {
             Write-Progress -Activity $progressActivity -Status "Getting group, app and device ownership" -PercentComplete (($i++ / $data.Count) * 100)
             switch ($objectType) {
                 'user' {
-                    Get-AzureADUserOwnedObject -ObjectId $id | % {
+                    Get-MgUserOwnedObject -UserId $id -All | Expand-MgAdditionalProperties | % {
                         $result.Owner += $_
                     }
 
                     Write-Verbose "Getting device(s) ownership"
-                    Get-AzureADUserOwnedDevice -ObjectId $id | % {
+                    Get-MgUserOwnedDevice -UserId $id -All | Expand-MgAdditionalProperties | % {
                         $result.Owner += $_
                     }
                 }
 
                 'servicePrincipal' {
-                    Get-AzureADServicePrincipalOwnedObject -ObjectId $id | % {
+                    Get-MgServicePrincipalOwnedObject -ServicePrincipalId $id -All | Expand-MgAdditionalProperties | % {
                         $result.Owner += $_
                     }
                 }
@@ -459,7 +493,7 @@ function Get-AzureADAccountOccurrence {
         if ('SharepointSiteOwner' -in $data -and (_getAllowedSearchType 'SharepointSiteOwner')) {
             Write-Verbose "Getting Sharepoint sites ownership"
             Write-Progress -Activity $progressActivity -Status "Getting Sharepoint sites ownership" -PercentComplete (($i++ / $data.Count) * 100)
-            $sharepointSiteOwner | ? { $_.Owner -contains $userPrincipalName -or $_.Owner -contains $AADAccountObj.DisplayName } | % {
+            $sharepointSiteOwner | ? { ($userPrincipalName -and $_.Owner -contains $userPrincipalName) -or ($AADAccountObj.displayName -and $_.Owner -contains $AADAccountObj.displayName) } | % {
                 $result.SharepointSiteOwner += $_
             }
         }
@@ -475,20 +509,21 @@ function Get-AzureADAccountOccurrence {
                 if ($roleId -eq '00000000-0000-0000-0000-000000000000') {
                     return 'default'
                 } else {
-                    Get-AzureADServicePrincipal -ObjectId $objectId | select -ExpandProperty AppRoles | ? id -EQ $roleId | select -ExpandProperty DisplayName
+                    Get-MgServicePrincipal -ServicePrincipalId $objectId -Property AppRoles | select -ExpandProperty AppRoles | ? id -EQ $roleId | select -ExpandProperty DisplayName
                 }
             }
 
             switch ($objectType) {
                 'user' {
                     # filter out assignments based on group membership
-                    Get-AzureADUserAppRoleAssignment -ObjectId $id -All:$true | ? PrincipalDisplayName -EQ $AADAccountObj.DisplayName | select *, @{name = 'AppRoleDisplayName'; expression = { GetRoleName -objectId $_.ResourceId -roleId $_.Id } } | % {
+                    Get-MgUserAppRoleAssignment -UserId $id -All | ? PrincipalDisplayName -EQ $AADAccountObj.displayName | select *, @{name = 'AppRoleDisplayName'; expression = { GetRoleName -objectId $_.ResourceId -roleId $_.AppRoleId } } | % {
                         $result.AppUsersAndGroupsRoleAssignment += $_
                     }
                 }
 
                 'group' {
-                    Get-AzureADGroupAppRoleAssignment -ObjectId $id -All:$true | select *, @{name = 'AppRoleDisplayName'; expression = { GetRoleName -objectId $_.ResourceId -roleId $_.Id } } | % {
+
+                    Get-MgGroupAppRoleAssignment -GroupId $id -All | select *, @{name = 'AppRoleDisplayName'; expression = { GetRoleName -objectId $_.ResourceId -roleId $_.AppRoleId } } | % {
                         $result.AppUsersAndGroupsRoleAssignment += $_
                     }
                 }
@@ -506,18 +541,18 @@ function Get-AzureADAccountOccurrence {
             Write-Verbose "Getting DevOps occurrences"
             Write-Progress -Activity $progressActivity -Status "Getting DevOps occurrences" -PercentComplete (($i++ / $data.Count) * 100)
 
-            $header = New-AzureDevOpsAuthHeader # auth. token has just minutes lifetime!
+            $devOpsAuthHeader = New-AzureDevOpsAuthHeader # auth. token has just minutes lifetime!
             $devOpsOrganization | % {
                 $organization = $_
                 $organizationName = $organization.OrganizationName
                 $organizationOwner = $organization.Owner
 
-                if ($organizationOwner -eq $AADAccountObj.UserPrincipalName -or $organizationOwner -eq $AADAccountObj.DisplayName) {
+                if ($organizationOwner -eq $AADAccountObj.userPrincipalName -or $organizationOwner -eq $AADAccountObj.displayName) {
                     $result.DevOpsOrganizationOwner += $organization
                 }
 
                 if ($objectType -eq 'user') {
-                    $userInOrg = $organization.users | ? originId -EQ $AADAccountObj.ObjectId
+                    $userInOrg = $organization.users | ? originId -EQ $AADAccountObj.Id
 
                     if ($userInOrg) {
                         # user is used in this DevOps organization
@@ -535,7 +570,7 @@ function Get-AzureADAccountOccurrence {
                         }
                     }
                 } elseif ($objectType -eq 'group') {
-                    $groupInOrg = $organization.groups | ? originId -EQ $AADAccountObj.ObjectId
+                    $groupInOrg = $organization.groups | ? originId -EQ $AADAccountObj.Id
 
                     if ($groupInOrg) {
                         # group is used in this DevOps organization

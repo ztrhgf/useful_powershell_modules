@@ -1350,13 +1350,6 @@ function Get-AzureADAccountOccurrence {
                 } else {
                     throw "Undefined object type $objectType"
                 }
-
-                # # uzivatele vcetne clenstvi ve skupinach
-                # Invoke-WebRequest -Uri "https://vssps.dev.azure.com/ondrejs4/_apis/identities?searchFilter=General&filterValue=$UPN&queryMembership=Direct&api-version=7.1-preview.1" -Method get -ContentType "application/json" -Headers $header | select -exp content | ConvertFrom-Json | select -exp value
-                # # skupiny a urovne pristupu (ale jen to nejake orezane, jen 3 skupiny)
-                # Invoke-WebRequest -Uri "https://vsaex.dev.azure.com/ondrejs4/_apis/userentitlementsummary" -Method get -ContentType "application/json" -Headers $h | select -exp content | ConvertFrom-Json
-                # # ziskani podrobnych user dat vcetne lastlogin atd dle zadaneho ID uzivatele (ale projectEntitlements zase neukazuje vse)
-                # Invoke-WebRequest -Uri "https://vsaex.dev.azure.com/ondrejs4/_apis/userentitlements/24cc0ecb-fd00-6302-b3a9-03cf4a0cb8ad" -Method get -ContentType "application/json" -Headers $h | select -exp content | ConvertFrom-Json
             }
         }
         #endregion devops

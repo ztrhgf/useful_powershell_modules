@@ -12,7 +12,7 @@
 RootModule = 'AzureUserStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.0'
+ModuleVersion = '1.0.1'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -35,7 +35,6 @@ Some of the interesting functions:
 - Get-AzureAuthenticatorLastUsedDate
 - Get-AzureCompletedMFAPrompt
 - Get-AzureSkuAssignment
-- Get-AzureUserAuthMethodChanges
 - ...
 '
 
@@ -87,8 +86,7 @@ RequiredModules = @('MSGraphStuff',
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = 'Add-AzureGuest', 'Disable-AzureGuest', 
                'Get-AzureAuthenticatorLastUsedDate', 'Get-AzureCompletedMFAPrompt', 
-               'Get-AzureSkuAssignment', 'Get-AzureSkuAssignmentError', 
-               'Get-AzureUserAuthMethodChanges'
+               'Get-AzureSkuAssignment', 'Get-AzureSkuAssignmentError'
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = @()
@@ -129,6 +127,9 @@ PrivateData = @{
         ReleaseNotes = '
             * 1.0.0
                 * Initial release. Some functions are migrated from now deprecated AzureADStuff module, some are completely new.
+            * 1.0.1
+                * REMOVED
+                    * Get-AzureUserAuthMethodChanges
             '
 
         # Prerelease string of this module

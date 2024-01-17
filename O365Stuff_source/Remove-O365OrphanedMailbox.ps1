@@ -1,4 +1,4 @@
-﻿#requires -modules ActiveDirectory, ExchangeOnlineManagement, MSOnline
+﻿#requires -modules ActiveDirectory, ExchangeOnlineManagement, Microsoft.Graph.Authentication, Microsoft.Graph.Users, Microsoft.Graph.Identity.DirectoryManagement
 function Remove-O365OrphanedMailbox {
     <#
     .SYNOPSIS
@@ -25,9 +25,9 @@ function Remove-O365OrphanedMailbox {
     Distinguished name of the OU that is NOT synchronized to your AzureAD.
 
     .EXAMPLE
-    Remove-O365OrphanedMailbox -samAccountName ondrejs4 -notSyncedOUDN "OU=notSynedToAAD,DC=contoso,DC=com"
+    Remove-O365OrphanedMailbox -samAccountName JohnD -notSyncedOUDN "OU=notSynedToAAD,DC=contoso,DC=com"
 
-    Fixes orphaned mailbox problem for user ondrejs4.
+    Fixes orphaned mailbox problem for user JohnD.
 
     .NOTES
     https://www.reddit.com/r/Office365/comments/mgfh1u/office_365_removing_litigation_hold_mailboxes_in/
@@ -38,7 +38,6 @@ function Remove-O365OrphanedMailbox {
         [Parameter(Mandatory = $true)]
         [string] $samAccountName,
 
-        [Parameter(Mandatory = $true)]
         [ValidateScript( {
                 if (Get-ADOrganizationalUnit $_) {
                     $true
@@ -57,14 +56,6 @@ function Remove-O365OrphanedMailbox {
         }
     }
 
-    if (!(Get-Module ExchangeOnlineManagement -ListAvailable)) {
-        throw "Module ExchangeOnlineManagement is missing. To get it, use: Install-Module ExchangeOnlineManagement" 
-    }
-
-    if (!(Get-Module MSOnline -ListAvailable)) {
-        throw "Module MSOnline is missing. To get it, use: Install-Module MSOnline" 
-    }
-
     $userADObj = Get-ADUser $samAccountName -ErrorAction Stop
 
     $originalOU = ($userADObj.DistinguishedName -split ",")[1..1000] -join ','
@@ -76,7 +67,13 @@ function Remove-O365OrphanedMailbox {
     $UPN = $userADObj.UserPrincipalName
 
     Connect-ExchangeOnline -ErrorAction Stop
-    Connect-MsolService -ErrorAction Stop
+
+    $null = Connect-MgGraph -Scopes User.ReadWrite.All -ea Stop
+
+    $userAADObj = Get-MgUser -Filter "userPrincipalName eq '$UPN'"
+    if (!$userAADObj) {
+        throw "User $UPN doesn't exist in AAD"
+    }
 
     # move account to NOT-AzureAD-synchronized OU
     "Moving user to '$notSyncedOUDN' OU (OU that MUST NOT be synchronized to AzureAD)"
@@ -84,23 +81,23 @@ function Remove-O365OrphanedMailbox {
 
     # synchronize these changes to AzureAD >> user should be deleted there automatically
     "Starting AzureAD directory sync"
-    Start-AzureADSync
+    Start-AzureSync
 
     # wait for user deletion in AzureAD
     do {
         "..waiting for user $UPN removal in AzureAD"
         Start-Sleep 10
-    } while (Get-MsolUser -UserPrincipalName $UPN -ErrorAction SilentlyContinue)
+    } while (Get-MgUser -Filter "userPrincipalName eq '$UPN'")
 
     # restore deleted user
     "Restoring user"
-    Restore-MsolUser -UserPrincipalName $UPN | Out-Null
+    $null = Restore-MgDirectoryDeletedItem -DirectoryObjectId $userAADObj.Id
 
     # wait for user restoration in AzureAD
     do {
         "..waiting for (now not dir-synced) $UPN user restoration in AzureAD"
         Start-Sleep 10
-    } while (!(Get-MsolUser -UserPrincipalName $UPN -ErrorAction SilentlyContinue))
+    } while (!(Get-MgUser -Filter "userPrincipalName eq '$UPN'"))
 
     "Removing litigation hold settings"
     Set-mailbox -identity $UPN -removedelayholdapplied
@@ -128,9 +125,10 @@ function Remove-O365OrphanedMailbox {
         Set-user -identity $UPN -permanentlyclearpreviousmailboxinfo -confirm:$false
     }
 
-    if ((Get-MsolUser -UserPrincipalName $UPN).ImmutableId) {
+    if ((Get-MgUser -Filter "userPrincipalName eq '$UPN'" -Property OnPremisesImmutableId).OnPremisesImmutableId) {
         "Clearing ImmutableId"
-        Get-MsolUser -UserPrincipalName $UPN | Set-MsolUser -ImmutableId ""
+        $userId = (Get-MgUser -Filter "userPrincipalName eq '$UPN'" -Property Id).Id
+        Invoke-MgGraphRequest -Method PATCH -Uri "https://graph.microsoft.com/v1.0/users/$userId" -Body @{OnPremisesImmutableId = $null }
     }
     #endregion steps to make sure mailbox won't be attached/recreated to this account again
 
@@ -141,10 +139,10 @@ function Remove-O365OrphanedMailbox {
     # synchronize these changes to AzureAD >> user should be deleted there automatically
 
     "Starting AzureAD directory sync, to 'attach' on-premises account with the AzureAD account representation"
-    Start-AzureADSync -type initial
+    Start-AzureSync -type initial
 
     do {
         "..waiting for user to be attached"
         Start-Sleep 10
-    } while (!(Get-MsolUser -Synchronized -All -SearchString $UPN))
+    } while (!(Get-MgUser -Filter "userPrincipalName eq '$UPN'"))
 }

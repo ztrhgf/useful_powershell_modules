@@ -12,6 +12,10 @@ function Get-ImportModuleFromAST {
 
     Can be retrieved like: $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
+    .PARAMETER source
+    "Path" to provided AST that will be shown as a source instead of AST file path property.
+    Used by Get-CodeDependency.
+
     .EXAMPLE
     $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
@@ -21,7 +25,9 @@ function Get-ImportModuleFromAST {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [System.Management.Automation.Language.Ast] $AST
+        [System.Management.Automation.Language.Ast] $AST,
+
+        [array] $source
     )
 
     $usedCommand = $AST.FindAll( { $args[0] -is [System.Management.Automation.Language.CommandAst ] }, $true)
@@ -30,6 +36,37 @@ function Get-ImportModuleFromAST {
         Write-Verbose "No command detected in given AST"
         return
     }
+
+    #region functions
+    function ConvertTo-FlatArray {
+        # flattens input in case, that string and arrays are entered at the same time
+        param (
+            [array] $inputArray
+        )
+
+        foreach ($item in $inputArray) {
+            if ($item -ne $null) {
+                # recurse for arrays
+                if ($item.gettype().BaseType -eq [System.Array]) {
+                    ConvertTo-FlatArray $item
+                } else {
+                    # output non-arrays
+                    $item
+                }
+            }
+        }
+    }
+
+    function _source {
+        if ($source) {
+            "(source: $((ConvertTo-FlatArray $source) -join ' >> '))"
+        } else {
+            if ($importModuleCommand.extent.File) {
+                "(source: $($importModuleCommand.extent.File))"
+            }
+        }
+    }
+    #endregion functions
 
     $importModuleCommandList = $usedCommand | ? { $_.CommandElements[0].Value -in "Import-Module", "ipmo" }
 
@@ -42,7 +79,7 @@ function Get-ImportModuleFromAST {
         $importModuleCommandElement = $importModuleCommand.CommandElements
         $importModuleCommandElement = $importModuleCommandElement | select -Skip 1 # skip Import-Module command itself
 
-        Write-Verbose "Getting Import-Module parameters from: '$($importModuleCommand.extent.text)' (file: $($importModuleCommand.extent.File))"
+        Write-Verbose "Getting Import-Module parameters from: '$($importModuleCommand.extent.text)' $(_source)"
 
         #region get parameter name and value for NAMED parameters
         $param = @{}
@@ -110,7 +147,7 @@ function Get-ImportModuleFromAST {
         }
 
         if (!$param.Name -or $param.Name -eq '<unknown>') {
-            Write-Warning "Unable to detect module imported through Import-Module command: '$($importModuleCommand.extent.text)' (file: $($importModuleCommand.extent.File))"
+            Write-Warning "Unable to detect module imported through command: '$($importModuleCommand.extent.text)' $(_source)"
 
             continue
         }

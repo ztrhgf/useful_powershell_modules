@@ -34,6 +34,9 @@ function Get-CodeDependencyStatus {
     .PARAMETER asObject
     Switch for returning psobjects instead of warning messages.
 
+    .PARAMETER allOccurrences
+    Switch to output even all problems including duplicities. For example one missing module can be used by several commands, so with this switch used, warning about such module will be outputted for each command.
+
     .EXAMPLE
     $availableModules = Get-Module -ListAvailable
 
@@ -96,12 +99,14 @@ function Get-CodeDependencyStatus {
 
         [System.Collections.ArrayList] $availableModules = @(),
 
-        [switch] $asObject
+        [switch] $asObject,
+
+        [switch] $allOccurrences
     )
 
     #region get dependencies
     $param = @{
-        noReccursion                     = $true
+        noRecursion                      = $true
         checkModuleFunctionsDependencies = $true
     }
     if ($availableModules) {
@@ -123,14 +128,14 @@ function Get-CodeDependencyStatus {
     $dependency = Get-CodeDependency @param
     #endregion get dependencies
 
-    $usedModule = $dependency | ? { $_.Type -EQ "Module" -and $_.Source -NE $scriptPath }
+    $usedModule = $dependency | ? { $_.Type -EQ "Module" -and $_.DependencyPath -NE $scriptPath }
 
-    $explicitlyImportedModule = $dependency | ? { $_.Type -EQ "Module" -and $_.Command -Match "^(Import-Module|ipmo) " }
+    $explicitlyImportedModule = $dependency | ? { $_.Type -EQ "Module" -and $_.RequiredBy -Match "^(Import-Module|ipmo) " }
 
     if ($scriptPath) {
-        $explicitlyRequiredModule = $dependency | ? { $_.Type -EQ "Module" -and $_.Command -EQ "<requires statement>" }
+        $explicitlyRequiredModule = $dependency | ? { $_.Type -EQ "Module" -and $_.RequiredBy -EQ "<requires statement>" }
     } else {
-        $explicitlyRequiredModule = $dependency | ? { $_.Type -EQ "Module" -and $_.Command -EQ "<module manifest>" }
+        $explicitlyRequiredModule = $dependency | ? { $_.Type -EQ "Module" -and $_.RequiredBy -EQ "<module manifest>" }
     }
 
     if ($scriptPath) {
@@ -143,33 +148,52 @@ function Get-CodeDependencyStatus {
 
     #region missing explicit module requirement
     if ($usedModule) {
-        $usedModule | % {
-            $mName = $_.Name
-            if ($mName -notin $explicitlyImportedModule.Name -and $mName -notin $explicitlyRequiredModule.Name) {
-                $msg = "Module '$mName' (thanks to command: '$($_.Command)') is used, but not explicitly imported or required $suffixTxt"
+        $processedModule = @()
 
-                if ($asObject) {
-                    [PSCustomObject]@{
-                        Module  = $mName
-                        Problem = "ModuleUsedButNotRequired"
-                        Message = $msg
-                    }
-                } else {
-                    Write-Warning $msg
-                }
+        foreach ($module in $usedModule) {
+            $mName = $module.Name
+
+            if (!$allOccurrences -and $mName -in $processedModule) { continue }
+
+            if ($mName -in $explicitlyImportedModule.Name -and $mName -notin $explicitlyRequiredModule.Name) {
+                $msg = "Module '$mName' is explicitly imported, but not required $suffixTxt. Reason: '$($module.RequiredBy)'"
+                $problem = "ModuleImportedButMissingRequirement"
+            } elseif ($mName -notin $explicitlyImportedModule.Name -and $mName -notin $explicitlyRequiredModule.Name) {
+                $msg = "Module '$mName' is used, but not required $suffixTxt. Reason: '$($module.RequiredBy)'"
+                $problem = "ModuleUsedButMissingRequirement"
+            } else {
+                # module is required, no action needed
+                continue
             }
+
+            if ($asObject) {
+                [PSCustomObject]@{
+                    Module  = $mName
+                    Problem = $problem
+                    Message = $msg
+                }
+            } else {
+                Write-Warning $msg
+            }
+
+            $processedModule += $mName
         }
     }
     #endregion missing explicit module requirement
 
     #region version mismatch
     if ($usedModule) {
-        $usedModule | % {
-            $mName = $_.Name
-            $mVersion = $_.Version
+        $processedModule = @{}
+
+        foreach ($module in $usedModule) {
+            $mName = $module.Name
+            $mVersion = $module.Version
             $explicitlyRequiredModuleVersion = ($explicitlyRequiredModule | ? name -EQ $mName).version
+
             if ($mVersion -and $mVersion -notin $explicitlyRequiredModuleVersion) {
-                $msg = "Module '$mName' (thanks to command: '$($_.Command)') that is used, has different version ($mVersion) then explicitly required one ($($explicitlyRequiredModuleVersion -join ', ')) $suffixTxt"
+                if (!$allOccurrences -and $mVersion -eq $processedModule.$mName) { continue }
+
+                $msg = "Module '$mName' (thanks to command: '$($module.RequiredBy)') that is used, has different version ($mVersion) then explicitly required one ($($explicitlyRequiredModuleVersion -join ', ')) $suffixTxt"
 
                 if ($asObject) {
                     [PSCustomObject]@{
@@ -180,16 +204,23 @@ function Get-CodeDependencyStatus {
                 } else {
                     Write-Warning $msg
                 }
+
+                $processedModule.$mName = $mVersion
             }
         }
     }
 
     if ($explicitlyImportedModule) {
-        $explicitlyImportedModule | % {
-            $mName = $_.Name
-            $mVersion = $_.Version
+        $processedModule = @{}
+
+        foreach ($module in $explicitlyImportedModule) {
+            $mName = $module.Name
+            $mVersion = $module.Version
             $explicitlyRequiredModuleVersion = ($explicitlyRequiredModule | ? name -EQ $mName).version
+
             if ($mVersion -and $mVersion -notin $explicitlyRequiredModuleVersion) {
+                if (!$allOccurrences -and $mVersion -eq $processedModule.$mName) { continue }
+
                 $msg = "Module '$mName' that is explicitly imported, has different version ($mVersion) then explicitly required one ($($explicitlyRequiredModuleVersion -join ', ')) $suffixTxt"
 
                 if ($asObject) {
@@ -201,6 +232,8 @@ function Get-CodeDependencyStatus {
                 } else {
                     Write-Warning $msg
                 }
+
+                $processedModule.$mName = $mVersion
             }
         }
     }
@@ -208,8 +241,13 @@ function Get-CodeDependencyStatus {
 
     #region unnecessary module requirement
     if ($explicitlyImportedModule) {
-        $explicitlyImportedModule | % {
-            $mName = $_.Name
+        $processedModule = @()
+
+        foreach ($module in $explicitlyImportedModule) {
+            $mName = $module.Name
+
+            if (!$allOccurrences -and $mName -in $processedModule) { continue }
+
             if ($mName -notin $usedModule.Name) {
                 $msg = "Module '$mName' is explicitly imported, but not used"
 
@@ -222,13 +260,20 @@ function Get-CodeDependencyStatus {
                 } else {
                     Write-Warning $msg
                 }
+
+                $processedModule += $mName
             }
         }
     }
 
     if ($explicitlyRequiredModule) {
-        $explicitlyRequiredModule | % {
-            $mName = $_.Name
+        $processedModule = @()
+
+        foreach ($module in $explicitlyRequiredModule) {
+            $mName = $module.Name
+
+            if (!$allOccurrences -and $mName -in $processedModule) { continue }
+
             if ($mName -notin $usedModule.Name) {
                 $msg = "Module '$mName' is explicitly required, but not used"
 
@@ -241,6 +286,8 @@ function Get-CodeDependencyStatus {
                 } else {
                     Write-Warning $msg
                 }
+
+                $processedModule += $mName
             }
         }
     }

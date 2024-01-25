@@ -151,6 +151,26 @@ function New-AzureAutomationModule {
     Imports "2.11.1" version of the "Microsoft.Graph.Groups" module including all its dependencies.
     In case module "Microsoft.Graph.Groups" with version "2.11.1" is already imported, nothing will happens.
     Otherwise module will be imported/replaced (including all dependencies that are required for this specific version).
+
+    .NOTES
+    1. Because this function depends on Find-Module command heavily, it needs to have communication with the PSGallery enabled. To automate this, you can use following code:
+
+    "Install a package manager"
+    $null = Install-PackageProvider -Name nuget -Force -ForceBootstrap -Scope allusers
+
+    "Set PSGallery as a trusted repository"
+    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+    'PackageManagement', 'PowerShellGet', 'PSReadline', 'PSScriptAnalyzer' | % {
+        "Install module $_"
+        Install-Module $_ -Repository PSGallery -Force -AllowClobber
+    }
+
+    "Uninstall old version of PowerShellGet"
+    Get-Module PowerShellGet -ListAvailable | ? version -lt 2.0.0 | select -exp ModuleBase | % { Remove-Item -Path $_ -Recurse -Force }
+
+    2. Modules saved in Azure Automation Account have only "main" version saved and suffixes like "beta", "rc" etc are always cut off!
+    A.k.a. if you import module with version "1.0.0-rc4". Version that will be shown in the GUI will be just "1.0.0" hence if you try to import such module again, it won't be correctly detected hence will be imported once again.
     #>
 
     [CmdletBinding()]
@@ -187,6 +207,7 @@ function New-AzureAutomationModule {
 
     $indentString = "     " * $indent
 
+    #region helper functions
     function _write {
         param ($string, $color, [switch] $noNewLine, [switch] $noIndent)
 
@@ -206,6 +227,84 @@ function New-AzureAutomationModule {
         Write-Host @param
     }
 
+    function Compare-VersionString {
+        # module version can be like "1.0.0", but also like "2.0.0-preview8", "2.0.0-rc3"
+        # hence this comparison function
+        param (
+            [Parameter(Mandatory = $true)]
+            $version1,
+
+            [Parameter(Mandatory = $true)]
+            $version2,
+
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('equal', 'notEqual', 'greaterThan', 'lessThan')]
+            $operator
+        )
+
+        function _convertResultToBoolean {
+            # function that converts 0,1,-1 to true/false based on comparison operator
+            param (
+                [ValidateSet('equal', 'notEqual', 'greaterThan', 'lessThan')]
+                $operator,
+
+                $result
+            )
+
+            switch ($operator) {
+                "equal" {
+                    if ($result -eq 0) {
+                        return $true
+                    }
+                }
+
+                "notEqual" {
+                    if ($result -ne 0) {
+                        return $true
+                    }
+                }
+
+                "greaterThan" {
+                    if ($result -eq 1) {
+                        return $true
+                    }
+                }
+
+                "lessThan" {
+                    if ($result -eq -1) {
+                        return $true
+                    }
+                }
+
+                default { throw "Undefined operator" }
+            }
+
+            return $false
+        }
+
+        # Split version and suffix
+        $v1, $suffix1 = $version1 -split '-', 2
+        $v2, $suffix2 = $version2 -split '-', 2
+
+        # Compare versions
+        $versionComparison = ([version]$v1).CompareTo([version]$v2)
+        if ($versionComparison -ne 0) {
+            return (_convertResultToBoolean -operator $operator -result $versionComparison)
+        }
+
+        # If versions are equal, compare suffixes
+        if ($suffix1 -and !$suffix2) {
+            return (_convertResultToBoolean -operator $operator -result -1)
+        } elseif (!$suffix1 -and $suffix2) {
+            return (_convertResultToBoolean -operator $operator -result 1)
+        } elseif (!$suffix1 -and !$suffix2) {
+            return (_convertResultToBoolean -operator $operator -result 0)
+        } else {
+            return (_convertResultToBoolean -operator $operator -result ([string]::Compare($suffix1, $suffix2)))
+        }
+    }
+    #endregion helper functions
+
     if ($moduleVersion) {
         $moduleVersionString = "($moduleVersion)"
     } else {
@@ -222,6 +321,10 @@ function New-AzureAutomationModule {
     }
     if ($moduleVersion) {
         $param.RequiredVersion = $moduleVersion
+        if (!($moduleVersion -as [version])) {
+            # version is something like "2.2.0.rc4" a.k.a. pre-release version
+            $param.AllowPrerelease = $true
+        }
     } elseif ($runtimeVersion -eq '5.1') {
         $param.AllVersions = $true
     }
@@ -261,13 +364,19 @@ function New-AzureAutomationModule {
 
     # check whether required module is present
     # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
-    $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and $_.SizeInBytes }
-    if ($moduleVersion) {
-        $moduleExists = $moduleExists | ? Version -EQ $moduleVersion
-    }
-
+    $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.ProvisioningState -eq "Succeeded" -or $_.SizeInBytes) }
     if ($moduleExists) {
-        return ($indentString + "Module $moduleName ($($moduleExists.Version)) is already present")
+        $moduleExistsVersion = $moduleExists.Version
+        if ($moduleVersion -and $moduleVersion -ne $moduleExistsVersion) {
+            $moduleExists = $null
+        }
+
+        if ($moduleExists) {
+            return ($indentString + "Module $moduleName ($moduleExistsVersion) is already present")
+        } elseif (!$moduleExists -and $indent -eq 0) {
+            # some module with that name exists, but not in the correct version and this is not a recursive call (because of dependency processing) hence user was not yet warned about replacing the module
+            _write " - Existing module $moduleName ($moduleExistsVersion) will be replaced" "Yellow"
+        }
     }
 
     _write " - Getting module $moduleName dependencies"
@@ -279,31 +388,30 @@ function New-AzureAutomationModule {
         _write "  - Depends on: $($moduleDependency.Name -join ', ')"
         foreach ($module in $moduleDependency) {
             $requiredModuleName = $module.Name
-            [version]$requiredModuleMinVersion = $module.MinimumVersion
-            [version]$requiredModuleMaxVersion = $module.MaximumVersion
-            [version]$requiredModuleReqVersion = $module.RequiredVersion
+            $requiredModuleMinVersion = $module.MinimumVersion -replace "\[|]" # for some reason version can be like '[2.0.0-preview6]'
+            $requiredModuleMaxVersion = $module.MaximumVersion -replace "\[|]"
+            $requiredModuleReqVersion = $module.RequiredVersion -replace "\[|]"
             $notInCorrectVersion = $false
 
             _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
 
             # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
             $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.ProvisioningState -eq "Succeeded" -or $_.SizeInBytes) }
-            [version]$existingRequiredModuleVersion = $existingRequiredModule.Version
+            $existingRequiredModuleVersion = $existingRequiredModule.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
 
             # check that existing module version fits
             if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
-
                 #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
-                if ($requiredModuleReqVersion -and $requiredModuleReqVersion -ne $existingRequiredModuleVersion) {
+                if ($requiredModuleReqVersion -and (Compare-VersionString $requiredModuleReqVersion $existingRequiredModuleVersion "notEqual")) {
                     $notInCorrectVersion = $true
                     _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ($existingRequiredModuleVersion -lt $requiredModuleMinVersion -or $existingRequiredModuleVersion -gt $requiredModuleMaxVersion)) {
+                } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ((Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan") -or (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan"))) {
                     $notInCorrectVersion = $true
                     _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and $existingRequiredModuleVersion -lt $requiredModuleMinVersion) {
+                } elseif ($requiredModuleMinVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan")) {
                     $notInCorrectVersion = $true
                     _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMaxVersion -and $existingRequiredModuleVersion -gt $requiredModuleMaxVersion) {
+                } elseif ($requiredModuleMaxVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan")) {
                     $notInCorrectVersion = $true
                     _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
                 }

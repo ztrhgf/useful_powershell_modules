@@ -12,7 +12,7 @@
 RootModule = 'AzureResourceStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.1'
+ModuleVersion = '1.0.2'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -34,6 +34,7 @@ Description = 'Various Azure related functions focused on resources. More detail
 Some of the interesting functions:
 - Get-AzureResource - return resources for all or just selected Azure subscription(s)
 - New-AzureAutomationModule - import new (or update existing) Azure Automation PSH module (including its dependencies)
+- Update-AzureAutomationModule
 - ...
 '
 
@@ -76,7 +77,8 @@ RequiredModules = @('Az.Accounts',
 # NestedModules = @()
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
-FunctionsToExport = 'Get-AzureResource', 'New-AzureAutomationModule'
+FunctionsToExport = 'Get-AzureResource', 'New-AzureAutomationModule', 
+               'Update-AzureAutomationModule'
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = @()
@@ -120,6 +122,11 @@ PrivateData = @{
             * 1.0.1
                 * EDIT
                     * New-AzureAutomationModule - added support for prerelease modules
+            * 1.0.2
+                * EDIT
+                    * New-AzureAutomationModule - removed support for 7.1 runtime because official Az commands don''t support it either
+                * ADDED
+                    * Update-AzureAutomationModule
             '
 
         # Prerelease string of this module

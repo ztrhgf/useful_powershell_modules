@@ -33,7 +33,7 @@ function New-AzureAutomationModule {
     .PARAMETER runtimeVersion
     PSH runtime version.
 
-    Possible values: 5.1, 7.1, 7.2.
+    Possible values: 5.1, 7.2.
 
     By default 5.1.
 
@@ -105,7 +105,7 @@ function New-AzureAutomationModule {
         [Parameter(Mandatory = $true)]
         [string] $automationAccountName,
 
-        [ValidateSet('5.1', '7.1', '7.2')]
+        [ValidateSet('5.1', '7.2')]
         [string] $runtimeVersion = '5.1',
 
         [int] $indent = 0,

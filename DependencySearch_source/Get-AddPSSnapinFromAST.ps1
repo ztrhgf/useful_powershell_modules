@@ -11,6 +11,9 @@
 
     Can be retrieved like: $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
+    .PARAMETER source
+    For internal use only.
+
     .EXAMPLE
     $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
@@ -20,7 +23,9 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [System.Management.Automation.Language.Ast] $AST
+        [System.Management.Automation.Language.Ast] $AST,
+
+        [array] $source
     )
 
     $usedCommand = $AST.FindAll( { $args[0] -is [System.Management.Automation.Language.CommandAst ] }, $true)
@@ -95,7 +100,12 @@
         }
 
         if (!$param.Name -or $param.Name -eq '<unknown>') {
-            Write-Warning "Unable to detect PSSnapins added through Add-PSSnapin command: '$($addPSSnapinCommand.extent.text)' (file: $($addPSSnapinCommand.extent.File))"
+            if ($source) {
+                $sourceTxt = "source: " + @($source)[-1]
+            } else {
+                $sourceTxt = "file: " + $addPSSnapinCommand.extent.File
+            }
+            Write-Warning "Unable to detect PSSnapins added through Add-PSSnapin command: '$($addPSSnapinCommand.extent.text)' ($sourceTxt)"
 
             continue
         }

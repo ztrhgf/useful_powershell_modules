@@ -11,6 +11,9 @@
 
     Can be retrieved like: $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
+    .PARAMETER source
+    For internal use only.
+
     .EXAMPLE
     $AST = [System.Management.Automation.Language.Parser]::ParseFile("C:\script.ps1", [ref] $null, [ref] $null)
 
@@ -20,7 +23,9 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [System.Management.Automation.Language.Ast] $AST
+        [System.Management.Automation.Language.Ast] $AST,
+
+        [array] $source
     )
 
     $usedCommand = $AST.FindAll( { $args[0] -is [System.Management.Automation.Language.CommandAst ] }, $true)
@@ -95,7 +100,12 @@
         }
 
         if (!$param.Name -or $param.Name -eq '<unknown>') {
-            Write-Warning "Unable to detect PSSnapins added through Add-PSSnapin command: '$($addPSSnapinCommand.extent.text)' (file: $($addPSSnapinCommand.extent.File))"
+            if ($source) {
+                $sourceTxt = "source: " + @($source)[-1]
+            } else {
+                $sourceTxt = "file: " + $addPSSnapinCommand.extent.File
+            }
+            Write-Warning "Unable to detect PSSnapins added through Add-PSSnapin command: '$($addPSSnapinCommand.extent.text)' ($sourceTxt)"
 
             continue
         }
@@ -166,21 +176,36 @@ function Get-CodeDependency {
     By default just required modules defined in module manifest are used for getting module dependencies. But this information doesn't have to be 100% correct.
 
     .PARAMETER availableModules
-    To speed up repeated function runs, save all available modules into variable and use it as value for this parameter.
+    To speed up repeated function invocations, save all available modules into variable and use it as value for this parameter.
 
-    By default this function caches all available modules before each run which can take several seconds.
+    By default this function caches all locally available modules before each run which can take several seconds.
 
     .PARAMETER goDeep
     Switch to check for dependencies not just in the given code, but even in its dependencies (recursively). A.k.a. get the whole dependency tree.
 
+    To really get all dependencies and not just the ones for running analyzed code, use parameter 'getDependencyOfRequiredModule'.
+
     .PARAMETER dontSearchCommandInPSGallery
     Switch to skip searching unknown commands in PowerShell Gallery.
-    Drawback of using PowerShell Gallery is that it is just guessing. Even though some module defines our command doesn't mean it is source of it.
+    Drawback of using PowerShell Gallery is that it is just guessing. Even though some module defines our command doesn't mean it is real source of it.
     Moreover command with the same name can be defined in multiple modules.
 
+    .PARAMETER getDependencyOfRequiredModule
+    By default modules that are required (because in code #requires statement or explicitly imported using 'Import-Module') are outputted, but not searched for their dependencies. This parameter can change that.
+
+    Possible values:
+        - scriptRequires
+            - search dependencies of the module(s) from #requires statement
+        - scriptImportedModules
+            - search dependencies of explicitly imported modules
+        - scriptSourceModule
+            - search dependencies of command's source module (module where processed command is hosted)
+
+    Using this parameter you can get all dependencies, even the ones that are not necessarily needed to run the analyzed code
+
     .PARAMETER allOccurrences
-    Switch to output dependant module each time it is required in the code.
-    By default only first occurrence is outputted.
+    Switch to output dependant module each time it was found to be required in the code.
+    Useful if you want to get all commands that require some module and not just the first one found.
 
     .PARAMETER nonInteractive
     Switch to run the function without any user interruptions like if:
@@ -188,8 +213,13 @@ function Get-CodeDependency {
      - function finds command definition in multiple local modules, it won't asks which one to search and uses all of them
 
     .PARAMETER unknownDependencyAsObject
-    Switch to return dependency object with empty module 'name' property even for commands whose dependencies cannot be searched (because command is unknown etc).
+    Switch to return dependency object with empty module 'name' property for commands whose dependencies cannot be retrieved (because command is unknown etc).
     Instead of just outputting the warning message.
+
+    .PARAMETER processJustMSGraphSDK
+    Switch for skipping all non-MSGraphSDK modules/commands.
+    Used internally when called by Get-CodeGraphPermissionRequirement to speed up the processing.
+    Works only if 'goDeep' parameter is not used, because you cannot skip any module/command, because it might use some Graph commands inside.
 
     .PARAMETER installNuget
     Switch for installing NuGet package provider in case it is missing.
@@ -305,16 +335,21 @@ function Get-CodeDependency {
 
         [System.Collections.ArrayList] $availableModules = @(),
 
-        [Alias("Get-AllDependencyRecurrently")]
+        [Alias("recurse")]
         [switch] $goDeep,
 
         [switch] $dontSearchCommandInPSGallery,
+
+        [ValidateSet('scriptRequires', 'scriptImportedModules', 'scriptSourceModule')]
+        [string[]] $getDependencyOfRequiredModule,
 
         [switch] $allOccurrences,
 
         [switch] $nonInteractive,
 
         [switch] $unknownDependencyAsObject,
+
+        [switch] $processJustMSGraphSDK,
 
         [switch] $installNuget
     )
@@ -356,6 +391,8 @@ function Get-CodeDependency {
     }
     # array of already processed modules saved as psobjects where each object contains module name and (optionally) its version
     $global:processedModules = @()
+    # array of already outputted modules saved as psobjects where each object contains module name and (optionally) its version
+    $global:outputtedModules = @()
     # array of already processed commands
     $global:processedCommands = @()
     # array of already processed PSSnapins saved as psobjects where each object contains snapin name and (optionally) its version
@@ -392,7 +429,9 @@ function Get-CodeDependency {
         [CmdletBinding()]
         param (
             [Parameter(Mandatory = $true)]
-            $AST
+            $AST,
+
+            [switch] $recurse
         )
 
         $AST.FindAll( {
@@ -402,7 +441,7 @@ function Get-CodeDependency {
                 # Class methods have a FunctionDefinitionAst under them as well, but we don't want them.
                         ($PSVersionTable.PSVersion.Major -lt 5 -or
                 $AST.Parent -isnot [System.Management.Automation.Language.FunctionMemberAst])
-            }, $false)
+            }, [bool]$recurse)
     }
 
     function _getModulePrivateFunction {
@@ -535,11 +574,13 @@ function Get-CodeDependency {
 
             [int] $indent = 1,
 
-            [switch] $firstRun,
+            [switch] $dontOutputTheModuleItself,
 
             [array] $source,
 
-            [string] $command
+            [string] $command,
+
+            [switch] $dontSearchForDependencies
         )
 
         #region helper functions
@@ -567,9 +608,19 @@ function Get-CodeDependency {
                 $false
             }
         }
+
+        function _moduleIsOutputted {
+            param ($moduleName, $moduleVersion)
+
+            if (($moduleVersion -and ($global:outputtedModules | ? { $_.ModuleName -eq $moduleName -and $_.ModuleVersion -eq $moduleVersion })) -or (!$moduleVersion -and ($moduleName -in $global:outputtedModules.ModuleName))) {
+                $true
+            } else {
+                $false
+            }
+        }
         #endregion helper functions
 
-        #region checks before start of the module processing
+        #region checks & output before start of the module processing
         if ($module) {
             $mName = $module.name
             $mVersion = $module.Version
@@ -580,6 +631,10 @@ function Get-CodeDependency {
 
         Write-Verbose ("`t`t`t" * $indent + "- Processing module '$mName' (ver. $mVersion)")
 
+        if ($processJustMSGraphSDK -and !$goDeep -and $mName -notlike "Microsoft.Graph.*" ) {
+            Write-Verbose ("`t`t`t`t" * $indent + "- Module '$mName' (ver. $mVersion) isn't Graph SDK module. Skipping")
+            return
+        }
 
         if ($mName -in $ignoredModule -and !$processBuiltinModule) {
             Write-Verbose ("`t`t`t`t" * $indent + "- Module '$mName' (ver. $mVersion) is built-in. Skipping")
@@ -587,8 +642,9 @@ function Get-CodeDependency {
         }
 
         $moduleWasProcessed = _moduleIsProcessed -moduleName $mName -moduleVersion $mVersion
+        $moduleWasOutputted = _moduleIsOutputted -moduleName $mName -moduleVersion $mVersion
 
-        if ((!$firstRun -and !$moduleWasProcessed) -or (!$firstRun -and $moduleWasProcessed -and $allOccurrences)) {
+        if (!$dontOutputTheModuleItself -and ($allOccurrences -or (!$moduleWasProcessed -and !$moduleWasOutputted))) {
             # OUTPUT module that is being processed
             [PSCustomObject]@{
                 Type           = 'Module'
@@ -597,6 +653,17 @@ function Get-CodeDependency {
                 RequiredBy     = $command
                 DependencyPath = ConvertTo-FlatArray $source
             }
+
+            # make a note that module was outputted
+            $global:outputtedModules += [PSCustomObject]@{
+                ModuleName    = $mName
+                ModuleVersion = $mVersion
+            }
+        }
+
+        if ($dontSearchForDependencies) {
+            Write-Verbose ("`t`t`t`t" * $indent + "- Searching for module '$mName' dependencies is skipped")
+            return
         }
 
         # make a note that module was processed
@@ -605,7 +672,7 @@ function Get-CodeDependency {
             ModuleVersion = $mVersion
         }
 
-        if (!$firstRun -and !$goDeep) {
+        if (!$dontOutputTheModuleItself -and !$goDeep) {
             return
         }
 
@@ -613,7 +680,7 @@ function Get-CodeDependency {
             Write-Verbose ("`t`t`t`t" * $indent + "- Module '$mName' (ver. $mVersion) was already processed. Skipping")
             return
         }
-        #endregion checks before start of the module processing
+        #endregion checks & output before start of the module processing
 
         #region get module object if necessary
         if ($moduleName) {
@@ -853,7 +920,7 @@ function Get-CodeDependency {
         }
 
         # get functions defined inside the code, so I can ignore them when searching for dependencies (their content is checked though)
-        $definedFunction = Get-FunctionDefinitionFromAST $AST
+        $definedFunction = Get-FunctionDefinitionFromAST $AST -recurse
 
         $usedCommand = $AST.FindAll( { $args[0] -is [System.Management.Automation.Language.CommandAst ] }, $true)
 
@@ -897,7 +964,7 @@ function Get-CodeDependency {
         #endregion added using requires statement
 
         #region added using Add-PSSnapin
-        $addedPSSnapin = Get-AddPSSnapinFromAST $AST
+        $addedPSSnapin = Get-AddPSSnapinFromAST $AST $source
         foreach ($PSSnapin in $addedPSSnapin) {
             $PSSnapinName = $PSSnapin.AddedPSSnapin
             Write-Verbose "PSSnapin '$PSSnapinName' is required"
@@ -945,7 +1012,20 @@ function Get-CodeDependency {
                 $minimumVersion = $_.version
                 $maximumVersion = $_.MaximumVersion
                 $requiredVersion = $_.RequiredVersion
-                _getModuleDependency -moduleName $_.Name -moduleVersion $requiredVersion -indent ($indent + 1) -source $source -command "<requires statement>"
+
+                $param = @{
+                    moduleName                = $_.Name
+                    moduleVersion             = $requiredVersion
+                    indent                    = ($indent + 1)
+                    source                    = $source
+                    command                   = "<requires statement>"
+                    dontSearchForDependencies = $true
+                }
+                if ($getDependencyOfRequiredModule -contains "scriptRequires") {
+                    $param.dontSearchForDependencies = $false
+                }
+
+                _getModuleDependency @param
             }
         }
         #endregion get dependencies for every module, command in question has in requires statement
@@ -958,13 +1038,22 @@ function Get-CodeDependency {
             Write-Verbose ("`t`t`t`t`t" * $indent + "- Processing modules from Import-Module command calls")
 
             $importModuleCommandList | % {
-                $importedModule = $_.ImportedModule
-                # Write-Verbose "Module '$($importedModule -join ', ')' is imported via command: $($_.Command)"
+                # Write-Verbose "Module '$($_.ImportedModule)' is imported via command: $($_.Command)"
 
-                foreach ($module in $importedModule) {
-                    #TODO resit i minimum/maximum verzi?
-                    _getModuleDependency -moduleName $module -moduleVersion $_.RequiredVersion -indent ($indent + 1) -source $source -command $_.Command
+                #TODO resit i minimum/maximum verzi?
+                $param = @{
+                    moduleName                = $_.ImportedModule
+                    moduleVersion             = $_.RequiredVersion
+                    indent                    = ($indent + 1)
+                    source                    = $source
+                    command                   = $_.Command
+                    dontSearchForDependencies = $true
                 }
+                if ($getDependencyOfRequiredModule -contains "scriptImportedModules") {
+                    $param.dontSearchForDependencies = $false
+                }
+
+                _getModuleDependency @param
             }
         }
         #endregion get dependencies for every module imported using Import-Module (or ipmo alias)
@@ -1010,13 +1099,15 @@ function Get-CodeDependency {
 
             Write-Verbose ("`t`t`t`t`t" * $indent + "- Processing command '$cmdName'")
 
-            if ($cmdName -in $definedFunction.name) {
-                Write-Debug ("`t`t`t`t`t`t" * $indent + "- Locally defined function. Skipping")
+            if ($processJustMSGraphSDK -and !$goDeep -and $cmdName -notlike "*-Mg*") {
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Not a Graph SDK function. Skipping")
+            } elseif ($cmdName -in $definedFunction.name) {
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Locally defined function. Skipping")
             } elseif ($cmdName -in $ignoreCommand) {
-                Write-Debug ("`t`t`t`t`t`t" * $indent + "- Ignored function. Skipping")
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Ignored function. Skipping")
             } elseif ($cmdName -in $global:processedCommands) {
                 # ignore (but what about same named functions defined in different modules?!)
-                Write-Debug ("`t`t`t`t`t`t" * $indent + "- Already processed. Skipping")
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Already processed. Skipping")
             } else {
                 # it is externally defined command, hence should be processed
                 # make a note that it was processed
@@ -1091,7 +1182,7 @@ function Get-CodeDependency {
                 #region get command dependencies
                 if ($cmdData) {
                     # Get-Command found the command
-                    Write-Debug ("`t`t`t`t`t`t" * $indent + "- Command is defined locally")
+                    Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Command is available locally")
                     foreach ($data in $cmdData) {
                         # transform alias'es data to the original command's data
                         if ($data.commandType -eq "alias") {
@@ -1114,7 +1205,18 @@ function Get-CodeDependency {
 
                             # searching just using name, because I can't say for sure that specific version is needed
                             # because it was found using Get-Command
-                            _getModuleDependency -moduleName $cmdModule.Name -indent ($indent + 1) -source ($source, $cmdName) -command $cmdCommand
+                            $param = @{
+                                moduleName                = $cmdModule.Name
+                                indent                    = ($indent + 1)
+                                source                    = ($source, $cmdName)
+                                command                   = $cmdCommand
+                                dontSearchForDependencies = $true
+                            }
+                            if ($getDependencyOfRequiredModule -contains "scriptSourceModule") {
+                                $param.dontSearchForDependencies = $false
+                            }
+
+                            _getModuleDependency @param
                         }
 
                         if ($cmdDefinition -and $goDeep) {
@@ -1122,13 +1224,17 @@ function Get-CodeDependency {
                             _getScriptDependency -scriptContent $cmdDefinition.ToString() -indent ($indent + 1) -source ($source, $cmdName)
                         }
 
-                        if (!$cmdModule -and !$cmdDefinition) {
-                            Write-Warning "Command $cmdName isn't defined in any module nor its definition was found. Skip getting its dependencies"
+                        # if (!$cmdModule -and !$cmdDefinition) {
+                        #     Write-Warning "Command $cmdName isn't defined in any module nor its definition was found. Skip getting its dependencies"
+                        # }
+
+                        if (!$cmdDefinition -and $goDeep) {
+                            Write-Warning "Command's $cmdName definition is missing. Skip getting its dependencies"
                         }
                     }
                 } else {
                     # Get-Command didn't find the command, try other options
-                    Write-Debug ("`t`t`t`t`t`t" * $indent + "- Command is not defined locally")
+                    Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Command isn't available locally")
                     #region is it Microsoft Graph SDK command?
                     if ($cmdNoun -cmatch "^Mg[A-Z]") {
                         # it might be Microsoft Graph SDK command
@@ -1140,11 +1246,26 @@ function Get-CodeDependency {
                             if ($data) {
                                 $cmdModule = "Microsoft.Graph." + $data.module # module that contains/defines this command
 
-                                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Searching for dependencies in the command's source module '$cmdModule'")
+                                # Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Searching for dependencies in the command's source module '$cmdModule'")
+                                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Command was found in module '$cmdModule'")
+                                if ($goDeep) {
+                                    Write-Warning "Command's $cmdName definition is missing. Skip getting its dependencies"
+                                }
 
                                 # searching just using name, because I can't say for sure that specific version is needed
                                 # because it was found using Find-MgGraphCommand
-                                _getModuleDependency -moduleName $cmdModule -indent ($indent + 1) -source ($source, $cmdName) -command $cmdCommand
+                                $param = @{
+                                    moduleName                = $cmdModule
+                                    indent                    = ($indent + 1)
+                                    source                    = ($source, $cmdName)
+                                    command                   = $cmdCommand
+                                    dontSearchForDependencies = $true
+                                }
+                                if ($getDependencyOfRequiredModule -contains "scriptSourceModule") {
+                                    $param.dontSearchForDependencies = $false
+                                }
+
+                                _getModuleDependency @param
                             } else {
                                 # Find-MgGraphCommand didn't find the command
                                 Write-Warning "Unable to find command '$cmdName' (source: $((ConvertTo-FlatArray $source) -join ' >> ')) details using Get-Command (locally) nor Find-MgGraphCommand (in PSGallery)"
@@ -1215,12 +1336,27 @@ function Get-CodeDependency {
                                 foreach ($data in $cmdData) {
                                     $cmdModule = $data.ModuleName
 
-                                    Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Searching for dependencies in the command's PSGallery source module '$cmdModule'")
+                                    # Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Searching for dependencies in the command's PSGallery source module '$cmdModule'")
+                                    Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Command was found in PSGallery module '$cmdModule'")
+                                    if ($goDeep) {
+                                        Write-Warning "Command's $cmdName definition is missing. Skip getting its dependencies"
+                                    }
 
                                     # searching just using name, because I can't say for sure that specific version is needed
                                     # because it was found using Find-Command
                                     #TODO novy atribut, ktery rekne, ze jen hadam?
-                                    _getModuleDependency -moduleName $cmdModule -indent ($indent + 1) -source ($source, $cmdName) -command $cmdCommand
+                                    $param = @{
+                                        moduleName                = $cmdModule
+                                        indent                    = ($indent + 1)
+                                        source                    = ($source, $cmdName)
+                                        command                   = $cmdCommand
+                                        dontSearchForDependencies = $true
+                                    }
+                                    if ($getDependencyOfRequiredModule -contains "scriptSourceModule") {
+                                        $param.dontSearchForDependencies = $false
+                                    }
+
+                                    _getModuleDependency @param
                                 }
                             } else {
                                 Write-Warning "Unable to find command '$cmdName' (source: $((ConvertTo-FlatArray $source) -join ' >> ')) details using Get-Command (locally) nor Find-Command (in PSGallery). Skip getting its dependencies"
@@ -1286,9 +1422,9 @@ function Get-CodeDependency {
     } elseif ($moduleName) {
         # get module dependencies
         $param = @{
-            firstRun   = $true
-            moduleName = $moduleName
-            source     = $moduleName
+            dontOutputTheModuleItself = $true
+            moduleName                = $moduleName
+            source                    = $moduleName
         }
         if ($moduleVersion) { $param.moduleVersion = $moduleVersion }
 
@@ -1296,9 +1432,9 @@ function Get-CodeDependency {
     } elseif ($moduleBasePath) {
         # get module dependencies (by module path)
         $param = @{
-            firstRun = $true
-            module   = (Get-Module -FullyQualifiedName $moduleBasePath -ListAvailable -ErrorAction Stop)
-            source   = $moduleBasePath
+            dontOutputTheModuleItself = $true
+            module                    = (Get-Module -FullyQualifiedName $moduleBasePath -ListAvailable -ErrorAction Stop)
+            source                    = $moduleBasePath
         }
 
         _getModuleDependency @param

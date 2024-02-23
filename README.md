@@ -1,4 +1,1 @@
-Source code for modules:
-- https://www.powershellgallery.com/packages/AzureADStuff/1.0.10
-- https://www.powershellgallery.com/packages/IntuneStuff/1.0.2
-- https://www.powershellgallery.com/packages/SCCMStuff/1.0.1
+Source code for modules placed in [PowerShell Gallery](https://www.powershellgallery.com/) and on my https://doitpsway.com/ blog.

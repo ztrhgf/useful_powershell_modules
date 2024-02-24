@@ -102,7 +102,7 @@ function Get-CodeGraphPermissionRequirement {
 
     $param = @{
         scriptPath                   = $scriptPath
-        $processJustMSGraphSDK       = $true
+        processJustMSGraphSDK        = $true
         allOccurrences               = $true
         dontSearchCommandInPSGallery = $true
     }
@@ -155,11 +155,15 @@ function Get-CodeGraphPermissionRequirement {
                 '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
             }
         }
-    } else {
-        Write-Warning "No Graph commands were found"
-    }
 
-    Write-Warning "Be noted that it is impossible to tell whether found permissions for some command are all required, or just some subset of them (for least-privileged access). Consult the Microsoft Graph Permissions Reference documentation to identify the least-privileged permission for your use case :("
+        Write-Warning "Be noted that it is impossible to tell whether found permissions for some command are all required, or just some subset of them (for least-privileged access). Consult the Microsoft Graph Permissions Reference documentation to identify the least-privileged permission for your use case :("
+    } else {
+        if ($goDeep) {
+            Write-Warning "No Graph commands were found in '$scriptPath' or it's dependency tree"
+        } else {
+            Write-Warning "No Graph commands were found in '$scriptPath'"
+        }
+    }
 }
 
 function Invoke-GraphAPIRequest {

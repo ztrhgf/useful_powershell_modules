@@ -221,6 +221,12 @@ function Get-CodeDependency {
     Used internally when called by Get-CodeGraphPermissionRequirement to speed up the processing.
     Works only if 'goDeep' parameter is not used, because you cannot skip any module/command, because it might use some Graph commands inside.
 
+    .PARAMETER processEveryTime
+    List of commands that should be processed every time.
+    Used in Get-CodeGraphPermissionRequirement function to get all Invoke-MGGraphRequest etc commands to be able to process each of them.
+
+    This doesn't make sense from dependency perspective! So kind of for internal use only.
+
     .PARAMETER installNuget
     Switch for installing NuGet package provider in case it is missing.
     NuGet is required to be able to search for missing modules/commands in PSGallery (enables use of Find-Module and Find-Command)
@@ -350,6 +356,8 @@ function Get-CodeDependency {
         [switch] $unknownDependencyAsObject,
 
         [switch] $processJustMSGraphSDK,
+
+        [string[]] $processEveryTime,
 
         [switch] $installNuget
     )
@@ -1105,7 +1113,7 @@ function Get-CodeDependency {
                 Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Locally defined function. Skipping")
             } elseif ($cmdName -in $ignoreCommand) {
                 Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Ignored function. Skipping")
-            } elseif ($cmdName -in $global:processedCommands) {
+            } elseif ($cmdName -in $global:processedCommands -and $cmdName -notin $processEveryTime) {
                 # ignore (but what about same named functions defined in different modules?!)
                 Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Already processed. Skipping")
             } else {
@@ -1280,7 +1288,7 @@ function Get-CodeDependency {
                     if (!$cmdData) {
                         # it wasn't Graph SDK command either, trying to find it in registered repositories (PSGallery)
                         if ($dontSearchCommandInPSGallery) {
-                            Write-Warning "Unable to find command '$cmdName' (source: $((ConvertTo-FlatArray $source) -join ' >> ')) details using Get-Command. Skip getting its dependencies"
+                            Write-Warning "Unable to find command '$cmdName' (source: $((ConvertTo-FlatArray $source) -join ' >> ')) details. Skip getting its dependencies"
                             if ($unknownDependencyAsObject) {
                                 [PSCustomObject]@{
                                     Type           = 'Module'

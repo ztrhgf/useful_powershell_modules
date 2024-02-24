@@ -54,11 +54,16 @@
         throw "'Find-MgGraphCommand' command is missing. Install 'Microsoft.Graph.Authentication' module and run again"
     }
 
+    #TODO podpora URI skrze invoke-webrequest (curl, iwr, wget), Invoke-MsGraphRequest, invoke-restmethod (irm)
+    # commands that can be used to directly call Graph API
+    $webCommandList = "Invoke-MgGraphRequest", "Invoke-MsGraphRequest", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget"
+
     $param = @{
         scriptPath                   = $scriptPath
         processJustMSGraphSDK        = $true
         allOccurrences               = $true
         dontSearchCommandInPSGallery = $true
+        processEveryTime             = $webCommandList
     }
     if ($availableModules) {
         $param.availableModules = $availableModules
@@ -67,16 +72,21 @@
         $param.goDeep = $true
     }
 
+    $usedGraphCommand = Get-CodeDependency @param | ? { ($_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*") -or $_.DependencyPath[-1] -in $webCommandList }
+
     $processedGraphCommand = @()
 
-    $usedGraphCommand = Get-CodeDependency @param | ? { $_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*" }
 
     if ($usedGraphCommand) {
         foreach ($mgCommandData in $usedGraphCommand) {
             $mgCommand = $mgCommandData.DependencyPath[-1]
             $dependencyPath = $mgCommandData.DependencyPath
+            $invocationText = $mgCommandData.RequiredBy
 
-            if ($mgCommand -in "Connect-MgGraph", "Invoke-MgGraphRequest") {
+            Write-Verbose "Processing: $invocationText"
+
+            if ($mgCommand -eq "Connect-MgGraph") {
+                # no permission needed
                 continue
             }
 
@@ -84,29 +94,98 @@
                 continue
             }
 
-            $processedGraphCommand += $mgCommand
+            if ($mgCommand -in $webCommandList) {
+                # some web command
 
-            try {
-                $mgCommandPerm = Find-MgGraphCommand -Command $mgCommand -ErrorAction Stop | ? Permissions | select -First 1 -ExpandProperty Permissions
-            } catch {
-                Write-Warning "'Find-MgGraphCommand' was unable to find command '$mgCommand'?!"
-            }
-
-            if ($mgCommandPerm) {
-                if ($permType -eq "application") {
-                    $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $true
+                $uri = $invocationText -split " " | ? { $_ -like "*graph.microsoft.com*" -or $_ -like "*v1.0*" -or $_ -Like "*beta*" }
+                if (!$uri) {
+                    Write-Warning "Unable to obtain URI from '$invocationText' or it is not a Graph URI. Skipping."
+                    if ($invocationText -like "Invoke-MgGraphRequest *" -or $invocationText -like "Invoke-MsGraphRequest *") {
+                        # Invoke-MgGraphRequest and Invoke-MsGraphRequest commands for sure uses Graph Api, hence output empty object to highlight I was unable to extract it
+                        '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                    }
+                    continue
                 } else {
-                    $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $false
+                    # standardize found URI
+
+                    # get rid of quotes
+                    $uri = $uri -replace "`"|'"
+                    # get rid of filter section
+                    $uri = ($uri -split "\?")[0]
+                    # replace variables for {id} placeholder
+                    $uri = $uri -replace "\$[^/]+", "{id}"
+                }
+
+                $method = $invocationText -split " " | ? { $_ -in "GET", "POST", "PUT", "PATCH", "DELETE" }
+                if (!$method) {
+                    # select the default method
+                    $method = "GET"
+                }
+
+                if ($uri -like "*beta*") {
+                    $apiVersion = "beta"
+                } else {
+                    $apiVersion = "v1.0"
+                }
+
+                try {
+                    Write-Verbose "Get permissions for URI: '$uri', Method: $method, ApiVersion: $apiVersion"
+                    $mgCommandPerm = Find-MgGraphCommand -Uri $uri -Method $method -ApiVersion $apiVersion -ErrorAction Stop | ? Permissions | select -First 1 -ExpandProperty Permissions
+
+                    if (!$mgCommandPerm) {
+                        # try again with shorter uri (higher chance it will find some permission)
+                        $uriSplitted = $uri.split("/")
+                        $uri = $uriSplitted[0..($uriSplitted.count - 2)] -join "/"
+                        $mgCommandPerm = Find-MgGraphCommand -Uri $uri -Method $method -ApiVersion $apiVersion -ErrorAction Stop | ? Permissions | select -First 1 -ExpandProperty Permissions
+                    }
+                } catch {
+                    Write-Warning "'Find-MgGraphCommand' was unable to find permissions for URI: '$uri', Method: $method, ApiVersion: $apiVersion"
+                    continue
                 }
 
                 if ($mgCommandPerm) {
-                    $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                    if ($permType -eq "application") {
+                        $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $true
+                    } else {
+                        $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $false
+                    }
+
+                    if ($mgCommandPerm) {
+                        $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                    } else {
+                        Write-Warning "$mgCommand requires some permissions, but not of '$permType' type"
+                    }
                 } else {
-                    Write-Warning "$mgCommand requires some permissions, but not of '$permType' type"
+                    Write-Verbose "'$invocationText' doesn't need any permissions?!"
+                    '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
                 }
             } else {
-                Write-Verbose "$mgCommand doesn't need any permissions?!"
-                '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                # built-in graph sdk command
+                $processedGraphCommand += $mgCommand
+
+                try {
+                    $mgCommandPerm = Find-MgGraphCommand -Command $mgCommand -ErrorAction Stop | ? Permissions | select -First 1 -ExpandProperty Permissions
+                } catch {
+                    Write-Warning "'Find-MgGraphCommand' was unable to find command '$mgCommand'?!"
+                    continue
+                }
+
+                if ($mgCommandPerm) {
+                    if ($permType -eq "application") {
+                        $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $true
+                    } else {
+                        $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $false
+                    }
+
+                    if ($mgCommandPerm) {
+                        $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                    } else {
+                        Write-Warning "$mgCommand requires some permissions, but not of '$permType' type"
+                    }
+                } else {
+                    Write-Verbose "$mgCommand doesn't need any permissions?!"
+                    '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $permType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }
+                }
             }
         }
 

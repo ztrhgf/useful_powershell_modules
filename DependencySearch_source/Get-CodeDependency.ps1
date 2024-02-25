@@ -51,7 +51,7 @@ function Get-CodeDependency {
 
     This can significantly increase searching time! If command is not found in locally available modules, but in PSGallery, its source module will be downloaded from the PSGallery, to get the command text definition.
 
-    By default just required modules defined in module manifest are used for getting module dependencies. But this information doesn't have to be 100% correct.
+    By default just required modules defined in module manifest are used for getting module dependencies. This switch can help detect whether these officially defined modules match the real required ones.
 
     .PARAMETER availableModules
     To speed up repeated function invocations, save all available modules into variable and use it as value for this parameter.
@@ -69,7 +69,7 @@ function Get-CodeDependency {
     Moreover command with the same name can be defined in multiple modules.
 
     .PARAMETER getDependencyOfRequiredModule
-    By default modules that are required (because in code #requires statement or explicitly imported using 'Import-Module') are outputted, but not searched for their dependencies. This parameter can change that.
+    By default modules that are required (because in code #requires statement or explicitly imported using 'Import-Module') or source module of processed command are outputted, but not searched for their dependencies. This parameter can change that.
 
     Possible values:
         - scriptRequires
@@ -95,9 +95,11 @@ function Get-CodeDependency {
     Instead of just outputting the warning message.
 
     .PARAMETER processJustMSGraphSDK
-    Switch for skipping all non-MSGraphSDK modules/commands.
+    Switch for skipping all non-MSGraphSDK modules/commands except commands that can call Graph API directly ("Invoke-MsGraphRequest", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget").
     Used internally when called by Get-CodeGraphPermissionRequirement to speed up the processing.
     Works only if 'goDeep' parameter is not used, because you cannot skip any module/command, because it might use some Graph commands inside.
+
+    Moreover to be able to analyze the built-in commands ("Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget") by Get-CodeGraphPermissionRequirement, they will be outputted to the console instead of ignoring them.
 
     .PARAMETER processEveryTime
     List of commands that should be processed every time.
@@ -517,7 +519,7 @@ function Get-CodeDependency {
 
         Write-Verbose ("`t`t`t" * $indent + "- Processing module '$mName' (ver. $mVersion)")
 
-        if ($processJustMSGraphSDK -and !$goDeep -and $mName -notlike "Microsoft.Graph.*" ) {
+        if ($processJustMSGraphSDK -and !$goDeep -and !$checkModuleFunctionsDependencies -and $mName -notlike "Microsoft.Graph.*" ) {
             Write-Verbose ("`t`t`t`t" * $indent + "- Module '$mName' (ver. $mVersion) isn't Graph SDK module. Skipping")
             return
         }
@@ -985,8 +987,22 @@ function Get-CodeDependency {
 
             Write-Verbose ("`t`t`t`t`t" * $indent + "- Processing command '$cmdName'")
 
-            if ($processJustMSGraphSDK -and !$goDeep -and $cmdName -notlike "*-Mg*") {
-                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Not a Graph SDK function. Skipping")
+            if ($processJustMSGraphSDK -and $cmdName -in "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget") {
+                # HACK
+                # these commands are built-in so they would be skipped anyway, because I don't output dependencies for built-in commands (they are built-in == don't have dependencies)
+                # but I need to output these commands, so I can analyze them in Get-CodeGraphPermissionRequirement (thats why 'processJustMSGraphSDK' parameter was used)
+                # to be more specific, check whether requested URI was Graph API call, and if so, get required permission(s)
+                [PSCustomObject]@{
+                    Type           = 'Module'
+                    Name           = ''
+                    Version        = ''
+                    RequiredBy     = $cmdCommand
+                    DependencyPath = ConvertTo-FlatArray ($source, $cmdName)
+                }
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- HACK: Built-in command, but processJustMSGraphSDK was used. Output before skipping.")
+            } elseif ($processJustMSGraphSDK -and !$goDeep -and $cmdName -notlike "*-Mg*" -and $cmdName -ne "Invoke-MsGraphRequest") {
+                # skip to speed things up
+                Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Not a Graph SDK function nor function that can do direct Graph API calls. Skipping")
             } elseif ($cmdName -in $definedFunction.name) {
                 Write-Verbose ("`t`t`t`t`t`t" * $indent + "- Locally defined function. Skipping")
             } elseif ($cmdName -in $ignoreCommand) {

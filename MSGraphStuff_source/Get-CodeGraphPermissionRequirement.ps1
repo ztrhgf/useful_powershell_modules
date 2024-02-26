@@ -30,8 +30,22 @@
     Switch to check for dependencies not just in the given code, but even in its dependencies (recursively). A.k.a. get the whole dependency tree.
 
     .EXAMPLE
+    # cache available modules to speed up repeated 'Get-CodeGraphPermissionRequirement' function invocations
     $availableModules = @(Get-Module -ListAvailable)
-    Get-CodeGraphPermissionRequirement -scriptPath C:\temp\SensitiveAppBlock.ps1 -availableModules $availableModules | ogv
+
+    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -availableModules $availableModules | Out-GridView
+
+    Returns Graph permissions required by selected code.
+    In case there are some indirect dependencies (like there is a function that has some inner Graph calls in its code), they won't be returned!
+    Result will be showed in Out-GridView graphical window.
+
+    .EXAMPLE
+    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -goDeep | Out-GridView
+
+    Returns ALL Graph permissions required to run selected code (direct and indirect).
+
+    .NOTES
+    Requires module 'Microsoft.Graph.Authentication' because of 'Find-MgGraphCommand' command.
     #>
 
     [CmdletBinding()]
@@ -59,7 +73,10 @@
         throw "'Find-MgGraphCommand' command is missing. Install 'Microsoft.Graph.Authentication' module and run again"
     }
 
-    #TODO podpora URI skrze invoke-webrequest (curl, iwr, wget), Invoke-MsGraphRequest, invoke-restmethod (irm)
+    if (!(Get-Command "Get-CodeDependency" -ErrorAction SilentlyContinue)) {
+        throw "'Get-CodeDependency' command is missing. Install 'DependencyStuff' module and run again"
+    }
+
     # commands that can be used to directly call Graph API
     $webCommandList = "Invoke-MgGraphRequest", "Invoke-MsGraphRequest", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget"
 

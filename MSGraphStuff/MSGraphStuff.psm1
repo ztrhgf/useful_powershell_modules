@@ -140,6 +140,16 @@ function Get-CodeGraphPermissionRequirement {
     All official Graph SDK commands (*-Mg*) AND commands making direct Graph API calls (Invoke-MsGraphRequest, Invoke-RestMethod, Invoke-WebRequest and their aliases) are extracted using 'Get-CodeDependency' function (DependencySearch module).
     Permissions required to use these commands are retrieved using official 'Find-MgGraphCommand' command then.
 
+    By default not all permissions are returned! But some optimizations are made to make the output more user friendly and to prefer lesser permissive permissions. You can change that using 'dontFilterPermissions' switch.
+    - if it is READ command (GET)
+        - READWRITE permissions that have corresponding READ permission are ignored
+        - directory.* permissions are ignored if any other permission is in place
+    - if it is MODIFYING command (POST, PUT, PATCH, DELETE)
+        - READ permissions that have corresponding READWRITE permission are ignored
+        - directory.* permissions are ignored if any other permission is in place
+
+    Beware that to read some sensitive data (like encrypted OMA Settings), you really need ReadWrite permission (because of security reasons)! In such cases this default behavior will not make you happy.
+
     .PARAMETER scriptPath
     Path to ps1 script that should be analyzed.
 
@@ -157,6 +167,11 @@ function Get-CodeGraphPermissionRequirement {
 
     .PARAMETER goDeep
     Switch to check for dependencies not just in the given code, but even in its dependencies (recursively). A.k.a. get the whole dependency tree.
+
+    .PARAMETER dontFilterPermissions
+    Switch to output all found permissions.
+
+    Otherwise just some filtering is made to output the most probably needed permissions.
 
     .EXAMPLE
     # cache available modules to speed up repeated 'Get-CodeGraphPermissionRequirement' function invocations
@@ -195,7 +210,9 @@ function Get-CodeGraphPermissionRequirement {
 
         [System.Collections.ArrayList] $availableModules = @(),
 
-        [switch] $goDeep
+        [switch] $goDeep,
+
+        [switch] $dontFilterPermissions
     )
 
     if (!(Get-Command "Find-MgGraphCommand" -ErrorAction SilentlyContinue)) {
@@ -371,7 +388,67 @@ function Get-CodeGraphPermissionRequirement {
                 #endregion helper functions
 
                 if ($mgCommandPerm) {
-                    $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                    if ($dontFilterPermissions) {
+                        $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                    } else {
+                        if ((_method $mgCommand) -eq "GET") {
+                            # the command just READs data
+
+                            $mgCommandPerm = $mgCommandPerm | ? {
+                                $permission = $_.Name
+                                $isWritePermission = $permission -like "*.ReadWrite.*"
+
+                                if ($permission -like "Directory.*") {
+                                    $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.Read.*" }
+
+                                    if ($someOtherPermission) {
+                                        Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
+                                        return $false
+                                    }
+                                } elseif ($isWritePermission) {
+                                    $correspondingReadPermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.ReadWrite\.", ".Read.")
+
+                                    if ($correspondingReadPermission) {
+                                        # don't output, there is same but just READ permission in place
+                                        Write-Verbose "Skipping READWRITE permission $permission. There is some other READ permission in place ($($correspondingWritePermission.name))"
+                                        return $false
+                                    }
+                                }
+
+                                return $true
+                            }
+
+                            $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                        } else {
+                            # the command MODIFIES data
+
+                            $mgCommandPerm = $mgCommandPerm | ? {
+                                $permission = $_.Name
+                                $isReadPermission = $permission -like "*.Read.*"
+
+                                if ($permission -like "Directory.*") {
+                                    $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.ReadWrite.*" }
+
+                                    if ($someOtherPermission) {
+                                        Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
+                                        return $false
+                                    }
+                                } elseif ($isReadPermission) {
+                                    $correspondingWritePermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.Read\.", ".ReadWrite.")
+
+                                    if ($correspondingWritePermission) {
+                                        # don't output, there is same but READWRITE permission in place
+                                        Write-Verbose "Skipping READ permission $permission. There is some other READWRITE permission in place ($($correspondingWritePermission.name))"
+                                        return $false
+                                    }
+                                }
+
+                                return $true
+                            }
+
+                            $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                        }
+                    }
                 } else {
                     Write-Warning "$mgCommand requires some permissions, but not of '$permType' type"
                 }

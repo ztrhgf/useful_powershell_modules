@@ -176,9 +176,11 @@ function Get-CodeDependency {
     By default just required modules defined in module manifest are used for getting module dependencies. This switch can help detect whether these officially defined modules match the real required ones.
 
     .PARAMETER availableModules
-    To speed up repeated function invocations, save all available modules into variable and use it as value for this parameter.
+    Helpful only when 'goDeep' parameter is used!
 
-    By default this function caches all locally available modules before each run which can take several seconds.
+    To speed up repeated function invocations, save all locally available modules into variable and use it as value for this parameter.
+
+    By default this function caches all locally available modules before each run which can take several seconds. This cache is then used when searching for modules.
 
     .PARAMETER goDeep
     Switch to check for dependencies not just in the given code, but even in its dependencies (recursively). A.k.a. get the whole dependency tree.
@@ -234,12 +236,19 @@ function Get-CodeDependency {
     NuGet is required to be able to search for missing modules/commands in PSGallery (enables use of Find-Module and Find-Command)
 
     .EXAMPLE
-    # cache locally available modules to make following calls faster
-    $availableModules = @(Get-Module -ListAvailable)
+    Get-CodeDependency -scriptPath "C:\scripts\Get-AzureServicePrincipalOverview.ps1" -Verbose
 
-    Get-CodeDependency -scriptPath "C:\scripts\Get-AzureServicePrincipalOverview.ps1" -availableModules $availableModules -Verbose
+    Get dependencies just for given script. No recursion.
 
-    Get dependencies of given script.
+    .EXAMPLE
+    # cache available modules to speed up repeated 'Get-CodeDependency' function invocations
+    $availableModules = Get-Module -ListAvailable
+
+    Get-CodeDependency -scriptPath "C:\scripts\Get-AzureServicePrincipalOverview.ps1" -goDeep -availableModules $availableModules -Verbose
+
+    Get dependencies for given script and also for all its dependencies.
+
+    Next time you call 'Get-CodeDependency', you can use $availableModules to speed up the invocation.
 
     .EXAMPLE
     $code = @'
@@ -252,7 +261,7 @@ function Get-CodeDependency {
 
     Get-CodeDependency -scriptContent $code -Verbose
 
-    Get dependencies of given code.
+    Get dependencies of given code. No recursion.
 
     .EXAMPLE
     Get-CodeDependency -moduleName MyModule
@@ -364,6 +373,10 @@ function Get-CodeDependency {
         [switch] $installNuget
     )
 
+    if ($availableModules -and !$goDeep) {
+        Write-Warning "'availableModules' parameter doesn't have to be specified when 'goDeep' is being skipped"
+    }
+
     # check whether PSGallery can be used to retrieve commands/modules information
     if (!(Get-PackageProvider | ? Name -EQ "NuGet") -and $installNuget) {
         Write-Warning "Installing NuGet package manager"
@@ -395,6 +408,9 @@ function Get-CodeDependency {
         #TODO prikazy se stejne budou hledat lokalne prec get-command, tzn dava tohle vubec smysl?
         #     Write-Warning "You choose to not provide 'availableModules'. All modules will be searched directly in the PSGallery instead of searching locally first"
         #     [System.Collections.ArrayList] $global:availableModules = @()
+    } elseif (!$goDeep) {
+        # no need to cache modules, won't be needed when searching for dependencies
+        [System.Collections.ArrayList] $global:availableModules = @()
     } else {
         Write-Warning "Caching locally available modules. To skip this step, use parameter 'availableModules'"
         [System.Collections.ArrayList] $global:availableModules = @(Get-Module -ListAvailable)

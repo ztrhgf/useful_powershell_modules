@@ -568,7 +568,7 @@ function Get-AzureEnterpriseApplication {
         }
 
         # expired secret?
-        $expiredCertificate = $SPObj.PasswordCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($SPObj.PasswordCredentials.EndDate -gt (Get-Date))) }
+        $expiredSecret = $SPObj.PasswordCredentials | ? { $_.EndDateTime -and ($_.EndDateTime -le (Get-Date) -and !($SPObj.PasswordCredentials.EndDateTime -gt (Get-Date))) }
         if ($expiredSecret) {
             $expiredSecret = $true
         } else {
@@ -581,7 +581,7 @@ function Get-AzureEnterpriseApplication {
         $SPObj | Add-Member -MemberType NoteProperty ExpiredSecret -Value $expiredSecret
 
         # expired certificate?
-        $expiredCertificate = $SPObj.KeyCredentials | ? { $_.EndDate -and ($_.EndDate -le (Get-Date) -and !($SPObj.KeyCredentials.EndDate -gt (Get-Date))) }
+        $expiredCertificate = $SPObj.KeyCredentials | ? { $_.EndDateTime -and ($_.EndDateTime -le (Get-Date) -and !($SPObj.KeyCredentials.EndDateTime -gt (Get-Date))) }
         if ($expiredCertificate) {
             $expiredCertificate = $true
         } else {

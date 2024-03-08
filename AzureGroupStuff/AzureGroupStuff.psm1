@@ -50,22 +50,31 @@
         throw "$($MyInvocation.MyCommand): The context is invalid. Please login using Connect-MgGraph."
     }
 
+    # list of ids of objects that were already written out, to skip duplicities
+    $outputted = New-Object System.Collections.ArrayList
+
     foreach ($member in (Get-MgGroupMember -GroupId $id -All)) {
         $memberType = $member.AdditionalProperties["@odata.type"].split('.')[-1]
         $memberId = $member.Id
 
         if ($memberType -eq "group") {
             if ($includeNestedGroup) {
-                $member | Expand-MgAdditionalProperties
+                if ($member.Id -notin $outputted) {
+                    $null = $outputted.add($member.Id)
+                    $member | Expand-MgAdditionalProperties
+                } else {
+                    # duplicity
+                }
             }
 
             $param = @{
                 allowedMemberType = $allowedMemberType
             }
-            if ($includeDisabled) { $param.includeDisabled = $true }
+            if ($excludeDisabled) { $param.excludeDisabled = $true }
+            if ($includeNestedGroup) { $param.includeNestedGroup = $true }
 
             Write-Verbose "Expanding members of group $memberId"
-            Get-AzureGroupMemberRecursive -Id $memberId @param
+            Get-AzureGroupMemberRecursive -id $memberId @param
         } else {
             if ($allowedMemberType -ne 'All' -and $memberType -ne $allowedMemberType) {
                 Write-Verbose "Skipping $memberType member $memberId, because not of $allowedMemberType type."
@@ -79,8 +88,12 @@
                     continue
                 }
             }
-
-            $member | Expand-MgAdditionalProperties
+            if ($member.Id -notin $outputted) {
+                $null = $outputted.add($member.Id)
+                $member | Expand-MgAdditionalProperties
+            } else {
+                # duplicity
+            }
         }
     }
 }
@@ -379,7 +392,7 @@ function Set-AzureRingGroup {
     # contains users/devices that are members of the root group, but not of any ring group
     # plus users/devices that were removed from any ring group for redundancy a.k.a. should be relocate to another ring group
     $memberToRelocateList = New-Object System.Collections.ArrayList
-    ($rootGroupMember).Id | % {
+    $rootGroupMember.Id | % {
         if ($_ -notin $ringGroupsMember.Id) {
             $null = $memberToRelocateList.Add($_)
         }

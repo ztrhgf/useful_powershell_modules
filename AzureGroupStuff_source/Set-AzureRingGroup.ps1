@@ -260,7 +260,7 @@ function Set-AzureRingGroup {
     # contains users/devices that are members of the root group, but not of any ring group
     # plus users/devices that were removed from any ring group for redundancy a.k.a. should be relocate to another ring group
     $memberToRelocateList = New-Object System.Collections.ArrayList
-    ($rootGroupMember).Id | % {
+    $rootGroupMember.Id | % {
         if ($_ -notin $ringGroupsMember.Id) {
             $null = $memberToRelocateList.Add($_)
         }

@@ -16,6 +16,9 @@
 
     By default this function caches all locally available modules before each run which can take several seconds.
 
+    .PARAMETER allOccurrences
+    Switch to return all found Mg* commands and not just the first one for each PowerShell SDK module.
+
     .PARAMETER goDeep
     Switch to check for direct dependencies not just in the given code, but even indirect ones in its dependencies (recursively) == gets the whole dependency tree.
 
@@ -54,6 +57,8 @@
 
         [System.Collections.ArrayList] $availableModules = @(),
 
+        [switch] $allOccurrences,
+
         [switch] $goDeep
     )
 
@@ -68,7 +73,6 @@
     $param = @{
         scriptPath                   = $scriptPath
         processJustMSGraphSDK        = $true
-        unknownDependencyAsObject    = $true
         dontSearchCommandInPSGallery = $true
     }
     if ($availableModules) {
@@ -76,6 +80,12 @@
     }
     if ($goDeep) {
         $param.goDeep = $true
+    }
+    if ($allOccurrences) {
+        $param.allOccurrences = $true
+    }
+    if ($PSBoundParameters.Verbose) {
+        $param.Verbose = $true
     }
 
     Get-CodeDependency @param | ? { $_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*" }

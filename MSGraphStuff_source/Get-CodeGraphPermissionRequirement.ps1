@@ -45,17 +45,17 @@
     Otherwise just some filtering is made to output the most probably needed permissions.
 
     .EXAMPLE
-    # cache available modules to speed up repeated 'Get-CodeGraphPermissionRequirement' function invocations
-    $availableModules = @(Get-Module -ListAvailable)
-
-    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -availableModules $availableModules | Out-GridView
+    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 | Out-GridView
 
     Returns Graph permissions required by selected code.
     In case there are some indirect dependencies (like there is a function that has some inner Graph calls in its code), they won't be returned!
     Result will be showed in Out-GridView graphical window.
 
     .EXAMPLE
-    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -goDeep | Out-GridView
+    # cache available modules to speed up repeated 'Get-CodeGraphPermissionRequirement' function invocations
+    $availableModules = @(Get-Module -ListAvailable)
+
+    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -goDeep -availableModules $availableModules | Out-GridView
 
     Returns ALL Graph permissions required to run selected code (direct and indirect).
 
@@ -111,13 +111,14 @@
         $param.goDeep = $true
     }
 
-    $usedGraphCommand = Get-CodeDependency @param | ? { ($_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*") -or $_.DependencyPath[-1] -in $webCommandList }
+    # get all commands which belongs to Graph SDK modules or are web invocations
+    $usedGraphCommand = Get-CodeDependency @param | ? { ($_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*" -and $_.RequiredBy -notmatch "^Import-Module|^ipmo") -or $_.DependencyPath[-1] -in $webCommandList }
 
     $processedGraphCommand = @()
 
     if ($usedGraphCommand) {
         foreach ($mgCommandData in $usedGraphCommand) {
-            $mgCommand = $mgCommandData.DependencyPath[-1]
+            $mgCommand = @($mgCommandData.DependencyPath)[-1]
             $dependencyPath = $mgCommandData.DependencyPath
             $invocationText = $mgCommandData.RequiredBy
             $method = $null
@@ -281,7 +282,7 @@
 
                                     if ($correspondingReadPermission) {
                                         # don't output, there is same but just READ permission in place
-                                        Write-Verbose "Skipping READWRITE permission $permission. There is some other READ permission in place ($($correspondingWritePermission.name))"
+                                        Write-Verbose "Skipping READWRITE permission $permission. There is some other READ permission in place ($($correspondingReadPermission.name))"
                                         return $false
                                     }
                                 }

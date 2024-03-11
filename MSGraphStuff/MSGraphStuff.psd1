@@ -12,7 +12,7 @@
 RootModule = 'MSGraphStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.8'
+ModuleVersion = '1.0.9'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -142,6 +142,9 @@ PrivateData = @{
                     * Get-CodeGraphModuleDependency - ignore Import-Module results, fixed DependencyPath extraction
                 * EDIT
                     * Get-CodeGraphPermissionRequirement - added switch allOccurrences, removed unknownDependencyAsObject parameter when searching for dependencies, because there is no real reason to return such results
+            * 1.0.8
+                * EDIT
+                    * Get-CodeGraphModuleDependency - omit type property as it is useless
                 '
 
         # Prerelease string of this module

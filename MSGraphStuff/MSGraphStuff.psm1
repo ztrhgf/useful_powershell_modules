@@ -134,7 +134,7 @@ function Get-CodeGraphModuleDependency {
         $param.Verbose = $true
     }
 
-    Get-CodeDependency @param | ? { $_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*" }
+    Get-CodeDependency @param | ? { $_.Type -eq "Module" -and $_.Name -like "Microsoft.Graph.*" } | select * -ExcludeProperty Type
 }
 
 function Get-CodeGraphPermissionRequirement {

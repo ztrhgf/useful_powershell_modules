@@ -167,7 +167,7 @@ function Get-MDMClientData {
     }
 
     if ($combineDataFrom -contains "Intune") {
-        $intuneDevice = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices" -Method Get).Value | select deviceName, deviceEnrollmentType, lastSyncDateTime, aadRegistered, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
+        $intuneDevice = Invoke-GraphAPIRequest -header $header -uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices" | select deviceName, deviceEnrollmentType, lastSyncDateTime, aadRegistered, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
 
         # interactive user auth example
         # Connect-MSGraph
@@ -177,8 +177,9 @@ function Get-MDMClientData {
     if ($combineDataFrom -contains "SCCM") {
         $properties = 'Name', 'Domain', 'IsClient', 'IsActive', 'ClientCheckPass', 'ClientActiveStatus', 'LastActiveTime', 'ADLastLogonTime', 'CoManaged', 'IsMDMActive', 'PrimaryUser', 'SerialNumber', 'MachineId', 'UserName'
         $param = @{
-            source = "v1.0/Device"
-            select = $properties
+            source          = "v1.0/Device"
+            select          = $properties
+            bypassCertCheck = $true
         }
         if ($sccmAdminServiceCredential) {
             $param.credential = $sccmAdminServiceCredential
@@ -188,8 +189,9 @@ function Get-MDMClientData {
         # add more information
         $properties = 'ResourceID', 'InstallDate'
         $param = @{
-            source = "wmi/SMS_G_System_OPERATING_SYSTEM"
-            select = $properties
+            source          = "wmi/SMS_G_System_OPERATING_SYSTEM"
+            select          = $properties
+            bypassCertCheck = $true
         }
         if ($sccmAdminServiceCredential) {
             $param.credential = $sccmAdminServiceCredential
@@ -197,7 +199,7 @@ function Get-MDMClientData {
         $additionalData = Invoke-CMAdminServiceQuery @param | select $properties
 
         $sccmDevice = $sccmDevice | % {
-            $deviceAdtData = $additionalData | ?  ResourceID -EQ $_.MachineId
+            $deviceAdtData = $additionalData | ? ResourceID -EQ $_.MachineId
             $_ | select *, @{n = 'InstallDate'; e = { if ($deviceAdtData.InstallDate) { Get-Date $deviceAdtData.InstallDate } } }, @{n = 'LastBootUpTime'; e = { if ($deviceAdtData.LastBootUpTime) { Get-Date $deviceAdtData.LastBootUpTime } } }
         }
     }
@@ -303,9 +305,10 @@ function Get-MDMClientData {
                         Write-Verbose "Search for the $name with $deviceSID SID in SCCM database"
 
                         $param = @{
-                            source = "wmi/SMS_R_SYSTEM"
-                            select = 'ResourceId'
-                            filter = "SID eq '$deviceSID'"
+                            source          = "wmi/SMS_R_SYSTEM"
+                            select          = 'ResourceId'
+                            filter          = "SID eq '$deviceSID'"
+                            bypassCertCheck = $true
                         }
                         if ($sccmAdminServiceCredential) {
                             $param.credential = $sccmAdminServiceCredential

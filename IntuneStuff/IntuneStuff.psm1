@@ -3964,260 +3964,6 @@ function Get-IntunePolicy {
     }
 }
 
-function Get-IntuneRemediationScript {
-    <#
-    .SYNOPSIS
-    Function for showing Remediation scripts deployed from Intune to local/remote computer.
-
-    Scripts details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log).
-
-    .DESCRIPTION
-    Function for showing Remediation scripts deployed from Intune to local/remote computer.
-
-    Scripts details are gathered from clients registry (HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution) and Intune log file ($env:ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log).
-
-    .PARAMETER computerName
-    Name of remote computer where you want to get the data from.
-
-    .PARAMETER getDataFromIntune
-    Switch for getting Scripts and User names from Intune, so locally used IDs can be translated to them.
-
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
-    .EXAMPLE
-    Get-IntuneRemediationScript
-
-    Get and show common Remediation script(s) deployed from Intune to this computer.
-    #>
-
-    [CmdletBinding()]
-    param (
-        [string] $computerName,
-
-        [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId
-    )
-
-    if (!$computerName) {
-        # access to registry key "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension" now needs admin permission
-        if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-            throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
-        }
-    }
-
-    #region helper function
-    function _getRemediationScript {
-        param ([string] $scriptID)
-        $intuneRemediationScript | ? id -EQ $scriptID
-    }
-
-    function _getScopeName {
-        param ([string] $id)
-
-        Write-Verbose "Translating $id"
-
-        if (!$id) {
-            Write-Verbose "id was null"
-            return
-        } elseif ($id -eq 'device') {
-            # xml nodes contains 'device' instead of 'Device'
-            return 'Device'
-        }
-
-        $errPref = $ErrorActionPreference
-        $ErrorActionPreference = "Stop"
-        try {
-            if ($id -eq '00000000-0000-0000-0000-000000000000' -or $id -eq 'S-0-0-00-0000000000-0000000000-000000000-000') {
-                return 'Device'
-            } elseif ($id -match "^S-\d+-\d+-\d+") {
-                # it is local account
-                return ((New-Object System.Security.Principal.SecurityIdentifier($id)).Translate([System.Security.Principal.NTAccount])).Value
-            } else {
-                # it is AzureAD account
-                if ($getDataFromIntune) {
-                    return ($intuneUser | ? id -EQ $id).userPrincipalName
-                } else {
-                    $userSID = Get-UserSIDForUserAzureID $id
-                    if ($userSID) {
-                        _getScopeName $userSID
-                    } else {
-                        return $id
-                    }
-                }
-            }
-        } catch {
-            Write-Warning "Unable to translate $id to account name ($_)"
-            $ErrorActionPreference = $errPref
-            return $id
-        }
-    }
-
-    # create helper functions text definition for usage in remote sessions
-    if ($computerName) {
-        $allFunctionDefs = "function _getScopeName { ${function:_getScopeName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function _getRemediationScript { ${function:_getRemediationScript} }; function Get-UserSIDForUserAzureID { ${function:Get-UserSIDForUserAzureID} }; function Get-IntuneLogRemediationScriptData { ${function:Get-IntuneLogRemediationScriptData} }"
-    }
-    #endregion helper function
-
-    #region prepare
-    if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
-        }
-
-        Write-Verbose "Getting Intune data"
-        # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
-    }
-
-    if ($computerName) {
-        $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
-    }
-    #endregion prepare
-
-    #region get data
-    $scriptBlock = {
-        param($verbosePref, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
-
-        # inherit verbose settings from host session
-        $VerbosePreference = $verbosePref
-
-        # recreate functions from their text definitions
-        . ([ScriptBlock]::Create($allFunctionDefs))
-
-        # get additional script data (script content etc)
-        $scriptData = Get-IntuneLogRemediationScriptData
-
-        Get-ChildItem "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Reports" -ErrorAction SilentlyContinue | % {
-            $userAzureObjectID = Split-Path $_.Name -Leaf
-            $userRemScriptRoot = $_.PSPath
-
-            # $lastFullReportTimeUTC = Get-ItemPropertyValue $userRemScriptRoot -Name LastFullReportTimeUTC
-            $remScriptIDList = Get-ChildItem $userRemScriptRoot | select -ExpandProperty PSChildName | % { $_ -replace "_\d+$" } | select -Unique
-
-            $remScriptIDList | % {
-                $remScriptID = $_
-
-                Write-Verbose "`tID $remScriptID"
-
-                $newestRemScriptRecord = Get-ChildItem $userRemScriptRoot | ? PSChildName -Match ([regex]::escape($remScriptID)) | Sort-Object -Descending -Property PSChildName | select -First 1
-
-                try {
-                    $result = Get-ItemPropertyValue "$($newestRemScriptRecord.PSPath)\Result" -Name Result | ConvertFrom-Json
-                } catch {
-                    Write-Verbose "`tUnable to get Remediation Script Result data"
-                }
-
-                $lastExecution = Get-ItemPropertyValue "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\SideCarPolicies\Scripts\Execution\$userAzureObjectID\$($newestRemScriptRecord.PSChildName)" -Name LastExecution
-
-                $extraScriptData = $scriptData | ? PolicyId -EQ $remScriptID
-
-                if ($getDataFromIntune) {
-                    $property = [ordered]@{
-                        "Scope"                             = _getScopeName $userAzureObjectID
-                        "DisplayName"                       = (_getRemediationScript $remScriptID).DisplayName
-                        "Id"                                = $remScriptID
-                        "LastError"                         = $result.ErrorCode
-                        "LastExecution"                     = $lastExecution
-                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
-                        "InternalVersion"                   = $result.InternalVersion
-                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
-                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
-                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
-                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
-                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
-                        "RemediationExitCode"               = $result.Info.RemediationExitCode
-                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
-                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
-                        "ErrorDetails"                      = $result.Info.ErrorDetails
-                    }
-                } else {
-                    # no 'DisplayName' property
-                    $property = [ordered]@{
-                        "Scope"                             = _getScopeName $userAzureObjectID
-                        "Id"                                = $remScriptID
-                        "LastError"                         = $result.ErrorCode
-                        "LastExecution"                     = $lastExecution
-                        # LastFullReportTimeUTC               = $lastFullReportTimeUTC
-                        "InternalVersion"                   = $result.InternalVersion
-                        "PreRemediationDetectScriptOutput"  = $result.PreRemediationDetectScriptOutput
-                        "PreRemediationDetectScriptError"   = $result.PreRemediationDetectScriptError
-                        "RemediationScriptErrorDetails"     = $result.RemediationScriptErrorDetails
-                        "PostRemediationDetectScriptOutput" = $result.PostRemediationDetectScriptOutput
-                        "PostRemediationDetectScriptError"  = $result.PostRemediationDetectScriptError
-                        "RemediationExitCode"               = $result.Info.RemediationExitCode
-                        "FirstDetectExitCode"               = $result.Info.FirstDetectExitCode
-                        "LastDetectExitCode"                = $result.Info.LastDetectExitCode
-                        "ErrorDetails"                      = $result.Info.ErrorDetails
-                    }
-                }
-
-                # add additional properties when possible
-                if ($extraScriptData) {
-                    Write-Verbose "Enrich script object data with information found in Intune log files"
-
-                    $extraScriptData = $extraScriptData | select * -ExcludeProperty AccountId, PolicyId, DocumentSchemaVersion
-
-                    $newProperty = Get-Member -InputObject $extraScriptData -MemberType NoteProperty
-                    $newProperty | % {
-                        $propertyName = $_.Name
-                        $propertyValue = $extraScriptData.$propertyName
-
-                        $property.$propertyName = $propertyValue
-                    }
-                } else {
-                    Write-Verbose "For script $remScriptID there are no extra information in Intune log files"
-                }
-
-                New-Object -TypeName PSObject -Property $property
-            }
-        }
-    }
-
-    $param = @{
-        scriptBlock  = $scriptBlock
-        argumentList = ($VerbosePreference, $getDataFromIntune, $intuneRemediationScript, $intuneUser, $allFunctionDefs)
-    }
-    if ($computerName) {
-        $param.session = $session
-    }
-
-    Invoke-Command @param | select -Property * -ExcludeProperty PSComputerName, RunspaceId, PSShowComputerName
-    #endregion get data
-
-    if ($computerName) {
-        Remove-PSSession $session
-    }
-}
-
 function Get-IntuneRemediationScriptLocally {
     <#
     .SYNOPSIS
@@ -5679,7 +5425,7 @@ function Get-MDMClientData {
     }
 
     if ($combineDataFrom -contains "Intune") {
-        $intuneDevice = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices" -Method Get).Value | select deviceName, deviceEnrollmentType, lastSyncDateTime, aadRegistered, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
+        $intuneDevice = Invoke-GraphAPIRequest -header $header -uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices" | select deviceName, deviceEnrollmentType, lastSyncDateTime, aadRegistered, azureADRegistered, deviceRegistrationState, azureADDeviceId, emailAddress
 
         # interactive user auth example
         # Connect-MSGraph
@@ -5689,8 +5435,9 @@ function Get-MDMClientData {
     if ($combineDataFrom -contains "SCCM") {
         $properties = 'Name', 'Domain', 'IsClient', 'IsActive', 'ClientCheckPass', 'ClientActiveStatus', 'LastActiveTime', 'ADLastLogonTime', 'CoManaged', 'IsMDMActive', 'PrimaryUser', 'SerialNumber', 'MachineId', 'UserName'
         $param = @{
-            source = "v1.0/Device"
-            select = $properties
+            source          = "v1.0/Device"
+            select          = $properties
+            bypassCertCheck = $true
         }
         if ($sccmAdminServiceCredential) {
             $param.credential = $sccmAdminServiceCredential
@@ -5700,8 +5447,9 @@ function Get-MDMClientData {
         # add more information
         $properties = 'ResourceID', 'InstallDate'
         $param = @{
-            source = "wmi/SMS_G_System_OPERATING_SYSTEM"
-            select = $properties
+            source          = "wmi/SMS_G_System_OPERATING_SYSTEM"
+            select          = $properties
+            bypassCertCheck = $true
         }
         if ($sccmAdminServiceCredential) {
             $param.credential = $sccmAdminServiceCredential
@@ -5709,7 +5457,7 @@ function Get-MDMClientData {
         $additionalData = Invoke-CMAdminServiceQuery @param | select $properties
 
         $sccmDevice = $sccmDevice | % {
-            $deviceAdtData = $additionalData | ?  ResourceID -EQ $_.MachineId
+            $deviceAdtData = $additionalData | ? ResourceID -EQ $_.MachineId
             $_ | select *, @{n = 'InstallDate'; e = { if ($deviceAdtData.InstallDate) { Get-Date $deviceAdtData.InstallDate } } }, @{n = 'LastBootUpTime'; e = { if ($deviceAdtData.LastBootUpTime) { Get-Date $deviceAdtData.LastBootUpTime } } }
         }
     }
@@ -5815,9 +5563,10 @@ function Get-MDMClientData {
                         Write-Verbose "Search for the $name with $deviceSID SID in SCCM database"
 
                         $param = @{
-                            source = "wmi/SMS_R_SYSTEM"
-                            select = 'ResourceId'
-                            filter = "SID eq '$deviceSID'"
+                            source          = "wmi/SMS_R_SYSTEM"
+                            select          = 'ResourceId'
+                            filter          = "SID eq '$deviceSID'"
+                            bypassCertCheck = $true
                         }
                         if ($sccmAdminServiceCredential) {
                             $param.credential = $sccmAdminServiceCredential
@@ -6113,6 +5862,450 @@ function Get-UserSIDForUserAzureID {
     Write-Warning "Unable to find User '$userId' in any of the Intune log files. Unable to translate this AAD ID to local SID."
     # cache the results
     $azureUserIdList.$userId = $null
+}
+
+function Invoke-IntuneCommand {
+    <#
+    .SYNOPSIS
+    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
+    Command result is returned and in case it is a compressed JSON, also converted back using ConvertFrom-Json automatically.
+
+    .DESCRIPTION
+    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
+    Command result is returned and in case it is a compressed JSON, also converted back using ConvertFrom-Json automatically.
+
+    On-demand remediation feature is used behind the scene.
+
+    Invocation time line:
+    - create the remediation = a few seconds
+    - invoke the remediation = a few seconds per device
+    - wait for remediation to finish = 3 minutes at minimum + command itself run time
+    - delete remediation = a few seconds
+
+    .PARAMETER deviceName
+    Name of the Intune device(s) you want to run the command on.
+
+    .PARAMETER command
+    String representing the command you want to run on the devices.
+
+    .PARAMETER scriptFile
+    Path to the file with the command, you want to run on the devices.
+
+    It must be UTF8 encoded!
+
+    .PARAMETER runAs
+    System or User.
+
+    By default SYSTEM.
+
+    .PARAMETER runAs32
+    Boolean value. True if should be run in 32 bit PowerShell.
+
+    By default false == run in 64 bit PowerShell.
+
+    .PARAMETER waitTime
+    How long should this function wait for the results retrieval before termination.
+
+    Minimum is 3 minutes, because even though command invokes immediately, it takes time before results shows up in the Intune.
+
+    If the time limit expires and there are devices that have not executed the command, they will no longer be able to do so as the helper remediation will be removed.
+
+    By default 10 minutes.
+
+    .PARAMETER dontWait
+    Switch for just invoking the command but not waiting for the results.
+
+    The remediation, which operates in the background and is necessary for clients to execute the code, will not be automatically deleted. Instead, you will need to manually remove it when suitable.
+
+    .PARAMETER letCommandFinish
+    Don't automatically delete the helper remediation if there are still some devices that didn't run it.
+    Useful if you wan't make sure, the code will run on all targeted devices eventually.
+
+    Once suitable, you will have to delete the helper remediation manually!
+
+    .EXAMPLE
+    $command = @'
+        $r = get-process powershell | select processname, id
+        $r | ConvertTo-Json -Compress
+    '@
+
+    Invoke-IntuneCommand -deviceName PC-01, PC-02 -command $command -verbose
+
+    Run selected command on PC-01 and PC-02.
+
+    .EXAMPLE
+    $command = @'
+        if (Test-Path C:\temp -errorAction silentlycontinue) {
+            Write-Output "Folder exists"
+        }
+    '@
+
+    Invoke-IntuneCommand -deviceName PC-01 -command $command -verbose
+
+    Run selected command on PC-01.
+
+    If the wait time limit is reached (by default 10 minutes), the devices that missed it will no longer run the given code, because helper remediation will be deleted.
+
+    .EXAMPLE
+    Invoke-IntuneCommand -deviceName PC-01 -scriptFile C:\scripts\intunescript.ps1 -verbose -waitTime 30
+
+    Use content of the C:\scripts\intunescript.ps1 file as a command that will be run on PC-01 device.
+    Wait time is set to 30 minutes, because we expect the command to run longer than default 10 minutes.
+
+    If the wait time limit is reached, the devices that missed it will no longer run the given code, because helper remediation will be deleted.
+
+    .EXAMPLE
+    $command = @'
+        mkdir C:\temp
+    '@
+
+    Invoke-IntuneCommand -deviceName PC-01 -command $command -dontWait
+
+    Run selected command on PC-01, but don't wait on the results.
+
+    Helper remediation will not be deleted automatically, hence you will need to delete it manually when suitable.
+
+    .EXAMPLE
+    $command = @'
+        if (Test-Path C:\temp -errorAction silentlycontinue) {
+            Write-Output "Folder exists"
+        }
+    '@
+
+    Invoke-IntuneCommand -deviceName PC-01, PC-02, PC-03, PC-04 -command $command -letCommandFinish
+
+    Run selected command on specified devices.
+
+    If the wait time limit is reached (by default 10 minutes) adn there are still some devices where code wasn't run, helper remediation will not be deleted, so the devices can run it when available. You will need to delete the remediation manually when suitable.
+
+    .NOTES
+    Keep in mind that only the last line of the command output is returned!
+
+    Returned output is limited to 2048 chars!
+
+    Requirements:
+    - https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations#script-requirements
+    - https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations#prerequisites-for-running-a-remediation-script-on-demand
+
+    Don't use Write-Host, but Write-Output to get some text back.
+
+    If you wan't to convert the result back to object, make your command returns only one result and that is the compressed JSON.
+
+    If your command throws an error, the whole invocation takes more time, because dummy remediation command (exit 0) will be run too. Because the command is in fact run as "detection" script.
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    param (
+        [string[]] $deviceName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "Default")]
+        [string] $command,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "scriptFile")]
+        [ValidateScript( {
+                if (Test-Path -Path $_ -PathType Leaf) {
+                    $true
+                } else {
+                    throw "$_ is not a file."
+                }
+            })]
+        [string] $scriptFile,
+
+        [ValidateSet('system', 'user')]
+        [string] $runAs = "system",
+
+        [boolean] $runAs32 = $false,
+
+        [ValidateRange(3, 10080)]
+        [int] $waitTime = 10,
+
+        [switch] $dontWait,
+
+        [Alias("dontDeleteRemediation")]
+        [switch] $letCommandFinish
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    #region helper functions
+    function _processOutput {
+        # tries to convert the output to original object created using ConvertTo-Json
+        param ($output)
+
+        try {
+            $output | ConvertFrom-Json -ErrorAction Stop
+            return
+        } catch {
+            Write-Verbose "Not a JSON"
+        }
+
+        if ( ($output | Measure-Object -Character).Characters -ge 2048) {
+            Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data using 'ConvertTo-Json -Compress' or similar optimizations."
+        }
+
+        return
+    }
+    #endregion helper functions
+
+    #region prepare
+    #region get device ids
+    $deviceName = $deviceName | select -Unique
+
+    $deviceList = @{}
+
+    $deviceName | % {
+        $device = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id
+        if ($device) {
+            $deviceList.($device.Id) = $_
+        } else {
+            Write-Warning "Device '$_' doesn't exist"
+        }
+    }
+
+    $deviceIdList = $deviceList.Keys
+    #endregion get device ids
+
+    if (!$deviceIdList) {
+        Write-Warning " No devices to run against"
+        return
+    }
+
+    if ($scriptFile) {
+        Write-Warning "Make sure the '$scriptFile' is encoded using UTF8!"
+        $command = Get-Content -Path $scriptFile -Raw -Encoding UTF8 -ErrorAction Stop
+    }
+    #endregion prepare
+
+    #region create the remediation
+    $remediationStart = [datetime]::Now
+    $remediationScriptName = "_invCmd_" + $remediationStart.ToString('yyyy.MM.dd_HH:mm')
+
+    Write-Verbose "Creating remediation script '$remediationScriptName'"
+
+    $param = @{
+        displayName     = $remediationScriptName
+        description     = "on demand remediation script"
+        detectScript    = $command # detection is run before remediation, hence it is faster to use in our use case
+        remediateScript = "exit 0" # dummy code
+        publisher       = "on-demand"
+        runAs           = $runAs
+        runAs32         = $runAs32
+    }
+    $remediationScript = New-IntuneRemediation @param
+    #endregion create the remediation
+
+    try {
+        #region invoke the remediation
+        $deviceIdList | % {
+            Write-Verbose "Invoking command for device $_"
+            Invoke-IntuneRemediationOnDemand -remediationScriptId $remediationScript.Id -deviceId $_
+        }
+        #endregion invoke the remediation
+
+        if ($dontWait) {
+            if (!$letCommandFinish) {
+                Write-Warning "Because 'dontWait' was used, helper remediation '$remediationScriptName' ($($remediationScript.Id)) cannot be deleted, because that would cause clients not to run the defined command. Do it manually."
+            }
+
+            # go to finally block
+            return
+        }
+
+        #region wait for the remediation & output the results
+        $finishedDeviceIdList = New-Object System.Collections.ArrayList
+
+        Write-Warning "Waiting for command to finish on the $($deviceIdList.count) device(s)"
+        # 30 seconds is the absolute minimum to get some results
+        sleep 30
+
+        while ($deviceIdList.count -ne $finishedDeviceIdList.count -and [datetime]::Now -lt $remediationStart.AddMinutes($waitTime)) {
+            #TIP it takes some time before remediation result can be retrieved even though device says that remediation was finished on it
+            $remediationResult = Get-MgBetaDeviceManagementDeviceHealthScriptDeviceRunState -DeviceHealthScriptId $remediationScript.Id -All
+
+            foreach ($result in $remediationResult) {
+                $deviceId = $result.id.split(":")[1]
+
+                if ($deviceId -in $finishedDeviceIdList) { continue }
+
+                Write-Verbose "Device $deviceId has finished on-demand remediation"
+
+                $null = $finishedDeviceIdList.Add($deviceId)
+
+                [PSCustomObject]@{
+                    DeviceId         = $deviceId
+                    DeviceName       = $deviceList.$deviceId
+                    LastSyncDateTime = $result.LastStateUpdateDateTime # LastSyncDateTime doesn't show date when device contacted Intune last time, therefore I use LastStateUpdateDateTime (it doesn't matter, because I know the command was run now)
+                    ProcessedOutput  = _processOutput $result.PreRemediationDetectionScriptOutput
+                    Output           = $result.PreRemediationDetectionScriptOutput
+                    Error            = $result.PreRemediationDetectionScriptError
+                    Status           = $result.DetectionState
+                }
+            }
+
+            $unfinishedDeviceIdList = $deviceIdList | ? { $_ -notin $finishedDeviceIdList }
+            if ($unfinishedDeviceIdList) {
+                Write-Verbose "`t- unfinished device(s): $($unfinishedDeviceIdList.count), remaining time: $(($remediationStart.AddMinutes($waitTime) - [datetime]::Now).tostring("mm\:ss"))"
+                sleep 5
+            }
+        }
+
+        if ([datetime]::Now -ge $remediationStart.AddMinutes($waitTime)) {
+            Write-Warning "Invocation exceeded $waitTime minutes time out"
+        }
+        #endregion wait for the remediation & output the results
+    } catch {
+        throw $_
+    } finally {
+        #TIP finally block catches even termination through CTRL + C
+
+        if ($dontWait) {
+            # nothing to do really
+        } else {
+            #region output devices that didn't make it in time
+            $reallyUnfinishedDeviceIdList = New-Object System.Collections.ArrayList
+            $unfinishedDeviceIdList = $deviceIdList | ? { $_ -notin $finishedDeviceIdList }
+            foreach ($deviceId in $unfinishedDeviceIdList) {
+                #TIP it takes some time before remediation result can be retrieved even though device returns it is finished already
+                # get the on-demand remediation state from the device object itself
+                # just the last invoked on-demand remediation seems to be stored!
+                $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $deviceId -Property DeviceActionResults, LastSyncDateTime
+                Write-Warning "Device $deviceId has remediation in state $($deviceDetails.DeviceActionResults.actionState)"
+
+                # output devices where because of reaching the time out threshold, the results weren't retrieved
+                # that doesn't mean the code wasn't run!
+                [PSCustomObject]@{
+                    DeviceId         = $deviceId
+                    DeviceName       = $deviceList.$deviceId
+                    LastSyncDateTime = $deviceDetails.LastSyncDateTime
+                    ProcessedOutput  = $null
+                    Output           = $null
+                    Error            = $null
+                    Status           = $deviceDetails.DeviceActionResults.actionState
+                }
+
+                if ($deviceDetails.DeviceActionResults.actionState -ne "done") {
+                    # "done" state means the code was actually being run
+                    $null = $reallyUnfinishedDeviceIdList.Add($deviceId)
+                }
+            }
+            #endregion output devices that didn't make it in time
+
+            if ($reallyUnfinishedDeviceIdList -and $letCommandFinish) {
+                # command wasn't invoked on all devices, but it should be allowed to
+
+                Write-Warning "'$remediationScriptName' ($($remediationScript.Id)) helper remediation will not be deleted. Do it manually when the rest of the devices $($reallyUnfinishedDeviceIdList.count) run it."
+            } elseif ($reallyUnfinishedDeviceIdList) {
+                # command wasn't invoked on all devices
+
+                Write-Warning "Removing '$remediationScriptName' ($($remediationScript.Id)) helper remediation. Which means that your command won't be run on the following device(s):$($reallyUnfinishedDeviceIdList | % { "`n`t" + $deviceList.$_ + " ($_)" })"
+
+                # remove the remediation
+                Remove-IntuneRemediation -remediationScriptId $remediationScript.Id
+            } else {
+                # command was invoked on all devices
+
+                # remove the remediation
+                Remove-IntuneRemediation -remediationScriptId $remediationScript.Id
+            }
+        }
+    }
+}
+
+function Invoke-IntuneRemediationOnDemand {
+    <#
+    .SYNOPSIS
+    Function for invoking remediation script on demand on selected Windows device(s).
+
+    .DESCRIPTION
+    Function for invoking remediation script on demand on selected Windows device(s).
+
+    .PARAMETER deviceName
+    Intune device name(s).
+
+    .PARAMETER deviceId
+    Intune device ID(s).
+    Can be retrieved by Get-IntuneManagedDevice or Get-MgDeviceManagementManagedDevice.
+
+    .PARAMETER remediationScriptId
+    ID of the remediation script.
+    Can be retrieved by Get-MgDeviceManagementDeviceHealthScript.
+
+    .EXAMPLE
+    Invoke-IntuneRemediationOnDemand
+
+    Interactively select device and remediation script you want to run on it.
+
+    .EXAMPLE
+    Invoke-IntuneRemediationOnDemand -deviceName PC-01, PC-02 -remediationScriptId a0f00dea-a3ed-4604-b440-021daf549f93
+
+    Run remediation script on selected devices.
+
+    .EXAMPLE
+    Invoke-IntuneRemediationOnDemand -deviceId 66d714ce-d469-4fe4-af3f-7ea5f51980b8 -remediationScriptId a0f00dea-a3ed-4604-b440-021daf549f93
+
+    Run remediation script on selected device.
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'name')]
+    [Alias("Invoke-IntuneOnDemandRemediation", "Invoke-IntuneRemediationScriptOnDemand")]
+    param (
+        [Parameter(ParameterSetName = "name")]
+        [string[]] $deviceName,
+
+        [Parameter(ParameterSetName = "id")]
+        [guid[]] $deviceId,
+
+        [guid] $remediationScriptId
+    )
+
+    #region checks
+    $deviceName = $deviceName | select -Unique
+    $deviceId = $deviceId | select -Unique
+
+    if (!(Get-MgContext)) {
+        throw "Authentication needed, call Connect-MgGraph"
+    }
+    if ((Get-MgContext).scopes -notcontains "DeviceManagementManagedDevices.PrivilegedOperations.All") {
+        throw "Scope 'DeviceManagementManagedDevices.PrivilegedOperations.All' is needed"
+    }
+    #endregion checks
+
+    # ask for remediation id if missing
+    while (!$remediationScriptId) {
+        $remediationScriptId = Get-MgBetaDeviceManagementDeviceHealthScript -All | select DisplayName, Description, Id | Out-GridView -OutputMode Single -Title "Select remediation you want to invoke" | select -ExpandProperty Id
+    }
+
+    # translate device name to id
+    if ($deviceName) {
+        $deviceId = $deviceName | % {
+            $devId = (Get-MgBetaDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id).Id
+            if ($devId) {
+                $devId
+            } else {
+                Write-Warning "Device $_ doesn't exist"
+            }
+        }
+    }
+
+    # ask for device id if missing
+    while (!$deviceId) {
+        $deviceId = Get-MgBetaDeviceManagementManagedDevice -Property DeviceName, ManagedDeviceOwnerType, OperatingSystem, Id -All -Filter "OperatingSystem eq 'Windows'" | select deviceName, managedDeviceOwnerType, id | Out-GridView -OutputMode Multiple -Title "Select device(s) you want run the remediation on" | select -ExpandProperty Id
+    }
+
+    # invoke remediation on demand
+    $deviceId | % {
+        Write-Verbose "Invoking remediation $remediationScriptId on device $_"
+
+        $remediationScriptBody = @{
+            "ScriptPolicyId" = $remediationScriptId
+        }
+
+        Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices('$_')/initiateOnDemandProactiveRemediation" -Method POST -Body $remediationScriptBody
+    }
 }
 
 function Invoke-IntuneScriptRedeploy {
@@ -7120,6 +7313,135 @@ function Invoke-ReRegisterDeviceToIntune {
     }
 }
 
+function New-IntuneRemediation {
+    <#
+    .SYNOPSIS
+    Function creates Intune remediation.
+
+    .DESCRIPTION
+    Function creates Intune remediation.
+
+    .PARAMETER displayName
+    Remediation name.
+
+    .PARAMETER description
+    Remediation description.
+
+    .PARAMETER publisher
+    Remediation publisher.
+
+    .PARAMETER runAs
+    What account to use to run the remediation, SYSTEM or USER.
+
+    By default SYSTEM.
+
+    .PARAMETER runAs32
+    False to run in 64 bit PowerShell.
+
+    By default false.
+
+    .PARAMETER detectScript
+    Text of the command that should be used for detection.
+
+    .PARAMETER remediateScript
+    Text of the command that should be used for remediation.
+
+    .EXAMPLE
+    $detectScript = @'
+        if (test-path "C:\temp") {
+            exit 0
+        } else {
+            exit 1
+        }
+    '@
+
+    $remediateScript = @'
+        mkdir C:\temp
+    '@
+
+    $param = @{
+        displayName     = "TEMP folder create"
+        description     = "on demand remediation script"
+        detectScript    = $detectScript
+        remediateScript = $remediateScript
+        publisher       = "on-demand"
+    }
+
+    $remediationScript = New-IntuneRemediation @param
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $displayName,
+
+        [string] $description = "Created by New-IntuneRemediation",
+
+        [string] $publisher = "New-IntuneRemediation",
+
+        [ValidateSet('system', 'user')]
+        [string] $runAs = "system",
+
+        [boolean] $runAs32 = $false,
+
+        [Parameter(Mandatory = $true)]
+        [string] $detectScript,
+
+        [Parameter(Mandatory = $true)]
+        [string] $remediateScript
+    )
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    $body = @{
+        "@odata.type"              = "#microsoft.graph.deviceHealthScript"
+        "publisher"                = $publisher
+        "version"                  = "1.0"
+        "displayName"              = $displayName
+        "description"              = $description
+        "detectionScriptContent"   = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($detectScript))
+        "remediationScriptContent" = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($remediateScript))
+        "runAsAccount"             = $runAs
+        "runAs32Bit"               = $runAs32
+    }
+
+    Write-Verbose "Creating the remediation '$displayName'"
+    Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts" -Method POST -Body ($body | ConvertTo-Json)
+}
+
+function Remove-IntuneRemediation {
+    <#
+    .SYNOPSIS
+    Function for removing the remediation.
+
+    .DESCRIPTION
+    Function for removing the remediation.
+
+    .PARAMETER remediationScriptId
+    ID of the remediation to remove.
+
+    .EXAMPLE
+    Remove-IntuneRemediation -remediationScriptId c8f5f560-c55c-4d34-89e0-325000536b41
+
+    Removes the remediation with specified ID.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [guid] $remediationScriptId
+    )
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    Write-Verbose "Removing remediation script '$remediationScriptId'"
+    Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts/$remediationScriptId" -Method DELETE
+}
+
 function Remove-IntuneWin32AppAssignment {
     <#
     .SYNOPSIS
@@ -7985,6 +8307,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScript, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
-Export-ModuleMember -alias Assign-IntuneWin32App, Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneReenrollment, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy
+Export-ModuleMember -alias Assign-IntuneWin32App, Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy

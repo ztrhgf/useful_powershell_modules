@@ -2,18 +2,19 @@
     <#
     .SYNOPSIS
     Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
-    Command result is returned and in case it is a compressed JSON, also converted back using ConvertFrom-Json automatically.
+    Command result is returned too.
 
     .DESCRIPTION
     Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
-    Command result is returned and in case it is a compressed JSON, also converted back using ConvertFrom-Json automatically.
+    Command result is returned. Function automatically tries to decompress the output (using ConvertFrom-CompressedString) and convert back JSON (using ConvertFrom-Json) to original object. The result of this saved in special property named 'ProcessedOutput'.
 
-    On-demand remediation feature is used behind the scene.
+    On-demand remediation feature is used behind the scene!
 
     Invocation time line:
     - create the remediation = a few seconds
     - invoke the remediation = a few seconds per device
     - wait for remediation to finish = 3 minutes at minimum + command itself run time
+    - gather the results from the Intune = a few seconds
     - delete remediation = a few seconds
 
     .PARAMETER deviceName
@@ -26,6 +27,9 @@
     Path to the file with the command, you want to run on the devices.
 
     It must be UTF8 encoded!
+
+    .PARAMETER scriptBlock
+    ScriptBlock that should be invoked on the devices.
 
     .PARAMETER runAs
     System or User.
@@ -56,6 +60,10 @@
     Useful if you wan't make sure, the code will run on all targeted devices eventually.
 
     Once suitable, you will have to delete the helper remediation manually!
+
+    .PARAMETER remediationSuffix
+    String that will be added to created helper remediation name.
+    Usable for long running remediations where 'letCommandFinish' parameter is used.
 
     .EXAMPLE
     $command = @'
@@ -112,10 +120,30 @@
 
     If the wait time limit is reached (by default 10 minutes) adn there are still some devices where code wasn't run, helper remediation will not be deleted, so the devices can run it when available. You will need to delete the remediation manually when suitable.
 
+    .EXAMPLE
+    $command = @"
+        $output = Get-Process 'PowerShell' | ConvertTo-Json -Compress
+
+        # compress the string (only if necessary a.k.a. remediation output limit of 2048 chars is hit)
+        $compressedString = ConvertTo-CompressedString -string $output -compressCharThreshold 2048
+
+        return $compressedString
+    "@
+
+    Invoke-IntuneCommand -command $command -deviceName PC-01
+
+    Get the data from the client as a JSON and compress them if string is longer than 2048 chars.
+    Result will be automatically decompressed and converted back from JSON to object.
+
     .NOTES
     Keep in mind that only the last line of the command output is returned!
 
     Returned output is limited to 2048 chars!
+
+    Permission requirements:
+    - DeviceManagementConfiguration.Read.All
+    - DeviceManagementManagedDevices.Read.All
+    - DeviceManagementManagedDevices.PrivilegedOperations.All
 
     Requirements:
     - https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations#script-requirements
@@ -123,9 +151,9 @@
 
     Don't use Write-Host, but Write-Output to get some text back.
 
-    If you wan't to convert the result back to object, make your command returns only one result and that is the compressed JSON.
+    If you wish to transform the result back into an object, ensure that your command returns a single result, specifically the compressed JSON.
 
-    If your command throws an error, the whole invocation takes more time, because dummy remediation command (exit 0) will be run too. Because the command is in fact run as "detection" script.
+    If your command throws an error, the whole invocation takes more time, because a dummy remediation command (exit 0) will be run too (because we are using remediation and if the detection part fails, the remediation part takes place).
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -145,6 +173,9 @@
             })]
         [string] $scriptFile,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "scriptBlock")]
+        [scriptblock] $scriptBlock,
+
         [ValidateSet('system', 'user')]
         [string] $runAs = "system",
 
@@ -156,7 +187,10 @@
         [switch] $dontWait,
 
         [Alias("dontDeleteRemediation")]
-        [switch] $letCommandFinish
+        [switch] $letCommandFinish,
+
+        [ValidateLength(1, 64)]
+        [string] $remediationSuffix
     )
 
     $ErrorActionPreference = "Stop"
@@ -167,18 +201,33 @@
 
     #region helper functions
     function _processOutput {
-        # tries to convert the output to original object created using ConvertTo-Json
-        param ($output)
+        # tries to convert the output to original object created using ConvertTo-Json (and maybe ConvertTo-CompressedString)
+        param (
+            [string] $string
+        )
 
+        if (!$string) {
+            return
+        }
+
+        if (($string | Measure-Object -Character).Characters -gt 2048) {
+            Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
+        }
+
+        # decompress the string if it is compressed
         try {
-            $output | ConvertFrom-Json -ErrorAction Stop
+            $decompressedString = ConvertFrom-CompressedString $string -ErrorAction Stop
+            $string = $decompressedString
+        } catch {
+            Write-Verbose "Not a compressed string"
+        }
+
+        # convert to object if the string is a JSON
+        try {
+            $string | ConvertFrom-Json -ErrorAction Stop
             return
         } catch {
             Write-Verbose "Not a JSON"
-        }
-
-        if ( ($output | Measure-Object -Character).Characters -ge 2048) {
-            Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data using 'ConvertTo-Json -Compress' or similar optimizations."
         }
 
         return
@@ -212,11 +261,19 @@
         Write-Warning "Make sure the '$scriptFile' is encoded using UTF8!"
         $command = Get-Content -Path $scriptFile -Raw -Encoding UTF8 -ErrorAction Stop
     }
+
+    if ($scriptBlock) {
+        $command = $scriptBlock.ToString()
+    }
     #endregion prepare
 
     #region create the remediation
     $remediationStart = [datetime]::Now
     $remediationScriptName = "_invCmd_" + $remediationStart.ToString('yyyy.MM.dd_HH:mm')
+
+    if ($remediationSuffix) {
+        $remediationScriptName = $remediationScriptName + "_" + $remediationSuffix
+    }
 
     Write-Verbose "Creating remediation script '$remediationScriptName'"
 

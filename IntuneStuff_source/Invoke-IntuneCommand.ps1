@@ -65,6 +65,11 @@
     String that will be added to created helper remediation name.
     Usable for long running remediations where 'letCommandFinish' parameter is used.
 
+    .PARAMETER prependCommandDefinition
+    List of command names whose text definition should be added at the beginning of the invoked command.
+    Useful if you want to run some command that is not available on the remote system, but is available in your local PSH session.
+    If it is not, you will have to add its definition to the 'command' parameter yourself!
+
     .EXAMPLE
     $command = @'
         $r = get-process powershell | select processname, id
@@ -122,17 +127,14 @@
 
     .EXAMPLE
     $command = @"
-        $output = Get-Process 'PowerShell' | ConvertTo-Json -Compress
-
-        # compress the string (only if necessary a.k.a. remediation output limit of 2048 chars is hit)
-        $compressedString = ConvertTo-CompressedString -string $output -compressCharThreshold 2048
-
+        $output = Get-Process 'PowerShell' | ConvertTo-Json -Compress | ConvertTo-CompressedString
         return $compressedString
     "@
 
-    Invoke-IntuneCommand -command $command -deviceName PC-01
+    # text definition of the ConvertTo-CompressedString function will be added to the command, so it doesn't matter whether it is available on the remote system
+    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertFrom-CompressedString
 
-    Get the data from the client as a JSON and compress them if string is longer than 2048 chars.
+    Get the data from the client as a compressed JSON string (to hopefully avoid 2048 chars limit).
     Result will be automatically decompressed and converted back from JSON to object.
 
     .NOTES
@@ -190,7 +192,9 @@
         [switch] $letCommandFinish,
 
         [ValidateLength(1, 64)]
-        [string] $remediationSuffix
+        [string] $remediationSuffix,
+
+        [string[]] $prependCommandDefinition
     )
 
     $ErrorActionPreference = "Stop"
@@ -232,6 +236,22 @@
 
         return
     }
+
+    function Get-FunctionDefinition {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [string] $functionName
+        )
+
+        try {
+            $fObject = Get-ChildItem Function:\$functionName -ErrorAction Stop
+        } catch {
+            throw "Unable to get function '$functionName' definition"
+        }
+
+        return "Function $functionName {`r`n$($fObject.Definition)`r`n}"
+    }
     #endregion helper functions
 
     #region prepare
@@ -265,7 +285,29 @@
     if ($scriptBlock) {
         $command = $scriptBlock.ToString()
     }
+
+    #region add selected command definition to the beginning of the invoked code
+    if ($prependCommandDefinition) {
+        $allFunctionDefs = "#region prepended functions`n"
+
+        foreach ($fName in $prependCommandDefinition) {
+            $fDefinition = Get-FunctionDefinition $fName
+
+            if (!$fDefinition) {
+                throw "Unable to find definition of the function '$fName'"
+            }
+
+            $allFunctionDefs += "$fDefinition`n"
+        }
+
+        $allFunctionDefs += "#endregion prepended functions"
+
+        $command = $allFunctionDefs + "`n`n" + $command
+    }
+    #endregion add selected command definition to the beginning of the invoked code
     #endregion prepare
+
+    Write-Verbose "Command that will be invoked on the client(s):`n$command"
 
     #region create the remediation
     $remediationStart = [datetime]::Now

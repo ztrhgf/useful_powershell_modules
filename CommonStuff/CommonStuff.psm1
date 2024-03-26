@@ -405,7 +405,7 @@ function ConvertFrom-CompressedString {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         [string] $compressedString
     )
 
@@ -1017,6 +1017,8 @@ function ConvertTo-CompressedString {
 
         # compress the string (only if necessary a.k.a. remediation output limit of 2048 chars is hit)
         $compressedString = ConvertTo-CompressedString -string $output -compressCharThreshold 2048
+
+        return $compressedString
     "@
 
     Invoke-IntuneCommand -command $command -deviceName PC-01
@@ -1027,7 +1029,7 @@ function ConvertTo-CompressedString {
 
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         [string] $string,
 
         [int] $compressCharThreshold

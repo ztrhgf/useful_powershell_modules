@@ -1,0 +1,120 @@
+﻿function Get-AzureAuditSignInEvent {
+    <#
+    .SYNOPSIS
+    Proxy function for Get-MgBetaAuditLogSignIn that simplifies some basic filtering.
+
+    .DESCRIPTION
+    Proxy function for Get-MgBetaAuditLogSignIn that simplifies some basic filtering.
+
+    .PARAMETER userPrincipalName
+    UPN of the user you want to get sign-in logs for.
+    It is CasE SENSitivE!
+
+    .PARAMETER appId
+    AppId of the app you want to get sign-in logs for.
+
+    .PARAMETER from
+    Date when the search should start.
+
+    .PARAMETER to
+    Date when the search should end.
+
+    .PARAMETER type
+    Type of the sign-in events.
+
+    Possible values: 'any', 'interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity'
+
+    By default 'interactiveUser'.
+
+    .EXAMPLE
+    An example
+    Get-AzureAuditSignInEvent -userPrincipalName johnd4@contoso.com -from (get-date).AddDays(-3) -Verbose
+
+    .EXAMPLE
+    Get-AzureAuditSignInEvent -appId 75b6afef-74ef-42a3-ab65-c9aa08a1d38f -from (get-date).AddDays(-30) -Verbose
+
+    .EXAMPLE
+    Get-AzureAuditSignInEvent -appId 75b6afef-74ef-42a3-ab65-c9aa08a1d38f -type any
+
+    Get sign-in events of all types ('interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity') for selected enterpirse application.
+
+    .NOTES
+    Requires following scopes: AuditLog.Read.All
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $userPrincipalName,
+
+        [string] $appId,
+
+        [ValidateScript({
+                if (($_.getType().name -eq "string" -and [DateTime]::Parse($_)) -or ($_.getType().name -eq "dateTime")) {
+                    $true
+                } else {
+                    throw "Enter in format per your culture. For cs-CZ: 15.2.2019 15:00. For en-US: 2.15.2019 15:00."
+                }
+            })]
+        $from,
+
+        [ValidateScript({
+                if (($_.getType().name -eq "string" -and [DateTime]::Parse($_)) -or ($_.getType().name -eq "dateTime")) {
+                    $true
+                } else {
+                    throw "Enter in format per your culture. For cs-CZ: 15.2.2019 15:00. For en-US: 2.15.2019 15:00."
+                }
+            })]
+        $to,
+
+        [ValidateSet('any', 'interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity')]
+        [string] $type = "interactiveUser"
+    )
+
+    if ($from -and $from.getType().name -eq "string") { $from = [DateTime]::Parse($from) }
+    if ($to -and $to.getType().name -eq "string") { $to = [DateTime]::Parse($to) }
+
+    if ($from -and $to -and $from -gt $to) {
+        throw "From cannot be after To"
+    }
+
+    $filter = @()
+
+    if ($userPrincipalName) {
+        Write-Warning "Beware that filtering by UPN is case sensitive!"
+        $filter += "UserPrincipalName eq '$userPrincipalName'"
+    }
+    if ($appId) {
+        $filter += "AppId eq '$appId'"
+    }
+    if ($from) {
+        # Azure logs use UTC time
+        $from = $from.ToUniversalTime()
+        $filterDateTime = Get-Date -Date $from -Format "yyyy-MM-ddTHH:mm:ss"
+        $filter += "CreatedDateTime ge $filterDateTime`Z"
+    }
+    if ($to) {
+        # Azure logs use UTC time
+        $to = $to.ToUniversalTime()
+        $filterDateTime = Get-Date -Date $to -Format "yyyy-MM-ddTHH:mm:ss"
+        $filter += "CreatedDateTime le $filterDateTime`Z"
+    }
+    if ($type -ne "interactiveUser") {
+        if ($type -eq "any") {
+            (Get-Variable type).Attributes.Clear()
+            $type = 'interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity'
+        }
+
+        $typeFilter = ""
+        $type | % {
+            if ($typeFilter) {
+                $typeFilter += " or "
+            }
+            $typeFilter += "t eq '$_'"
+        }
+        $filter += "(signInEventTypes/any(t: $typeFilter))"
+    }
+
+    $finalFilter = $filter -join ' and '
+    Write-Verbose "filter: $finalFilter"
+    Get-MgBetaAuditLogSignIn -All -Filter $finalFilter
+}

@@ -37,6 +37,15 @@ function Get-CodeDependencyStatus {
     .PARAMETER allOccurrences
     Switch to output even all problems including duplicities. For example one missing module can be used by several commands, so with this switch used, warning about such module will be outputted for each command.
 
+    .PARAMETER dependencyParam
+    Hashtable with parameters that will be passed to Get-CodeDependency function.
+
+    By default:
+    @{
+        checkModuleFunctionsDependencies = $false
+        dontSearchCommandInPSGallery     = $true
+    }
+
     .EXAMPLE
     $availableModules = Get-Module -ListAvailable
 
@@ -101,14 +110,17 @@ function Get-CodeDependencyStatus {
 
         [switch] $asObject,
 
-        [switch] $allOccurrences
+        [switch] $allOccurrences,
+
+        [hashtable] $dependencyParam = @{
+            allOccurrences                   = $true
+            checkModuleFunctionsDependencies = $false
+            dontSearchCommandInPSGallery     = $true
+        }
     )
 
     #region get dependencies
-    $param = @{
-        noRecursion                      = $true
-        checkModuleFunctionsDependencies = $true
-    }
+    $param = $dependencyParam
     if ($availableModules) {
         $param.availableModules = $availableModules
     }
@@ -146,6 +158,18 @@ function Get-CodeDependencyStatus {
         $suffixTxt = "(through module manifest)"
     }
 
+    if ($scriptPath) {
+        # script check
+        $source = $scriptPath
+    } elseif ($moduleName) {
+        # module check
+        $source = $moduleName
+    } elseif ($moduleBasePath) {
+        $source = $moduleBasePath
+    } else {
+        throw "undefined option"
+    }
+
     #region missing explicit module requirement
     if ($usedModule) {
         $processedModule = @()
@@ -168,6 +192,7 @@ function Get-CodeDependencyStatus {
 
             if ($asObject) {
                 [PSCustomObject]@{
+                    Source  = $source
                     Module  = $mName
                     Problem = $problem
                     Message = $msg
@@ -197,6 +222,7 @@ function Get-CodeDependencyStatus {
 
                 if ($asObject) {
                     [PSCustomObject]@{
+                        Source  = $source
                         Module  = $mName
                         Problem = "ModuleVersionConflict"
                         Message = $msg
@@ -225,6 +251,7 @@ function Get-CodeDependencyStatus {
 
                 if ($asObject) {
                     [PSCustomObject]@{
+                        Source  = $source
                         Module  = $mName
                         Problem = "ModuleVersionConflict"
                         Message = $msg
@@ -253,6 +280,7 @@ function Get-CodeDependencyStatus {
 
                 if ($asObject) {
                     [PSCustomObject]@{
+                        Source  = $source
                         Module  = $mName
                         Problem = "ModuleImportedNotUsed"
                         Message = $msg
@@ -279,6 +307,7 @@ function Get-CodeDependencyStatus {
 
                 if ($asObject) {
                     [PSCustomObject]@{
+                        Source  = $source
                         Module  = $mName
                         Problem = "ModuleRequiredNotUsed"
                         Message = $msg

@@ -53,5 +53,5 @@
         $table | Export-Clixml $cacheFile -Force
     }
 
-    $table | % { $_ | select @{n = "Command"; e = { if ($_."Azure AD cmdlet") { $_."Azure AD cmdlet" } elseif ($_."MSOnline cmdlet") { $_."MSOnline cmdlet" } else { $_."Azure AD Preview cmdlet" } } }, @{n = "GraphCommand"; e = { $_."Microsoft Graph PowerShell cmdlet" } } } | select *, @{n = 'Note'; e = { if ($_.Command -like "* 1") { "This cmdlet has more than one cmdlet mapping in Microsoft Graph PowerShell" } elseif ($_.Command -like "* 2") { "Privileged Identity Management (PIM) iteration 3 APIs (https://learn.microsoft.com/en-us/graph/api/resources/privilegedidentitymanagementv3-overview?view=graph-rest-1.0) should be used. Check this guidance (https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-apis) for more details." } } } | select @{n = "Command"; e = { $_.Command -replace " \d+$" } }, GraphCommand, Note | ? Command -EQ $commandName
+    $table | % { $_ | select @{n = "Command"; e = { if ($_."Azure AD cmdlets") { $_."Azure AD cmdlets" } else { $_."MSOnline cmdlets" } } }, @{n = "GraphCommand"; e = { $_."Microsoft Graph PowerShell cmdlets" } } } | ? Command -EQ $commandName
 }

@@ -1,4 +1,4 @@
-﻿function Export-VariableToStorage {
+function Export-VariableToStorage {
     <#
     .SYNOPSIS
     Function for saving PowerShell variable as XML file in Azure Blob storage.

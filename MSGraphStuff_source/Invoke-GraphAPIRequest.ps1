@@ -89,7 +89,8 @@
         }
     }
 
-    if ($response.Value) {
+    # sometimes the results is in Value property, sometimes it is the returned object itself
+    if ($response -and ($response | Get-Member -MemberType NoteProperty -Name Value)) {
         $response.Value
     } else {
         $response
@@ -128,7 +129,8 @@
                 }
             }
 
-            if ($response.Value) {
+            # sometimes the results is in Value property, sometimes it is the returned object itself
+            if ($response -and ($response | Get-Member -MemberType NoteProperty -Name Value)) {
                 $response.Value
             } else {
                 $response

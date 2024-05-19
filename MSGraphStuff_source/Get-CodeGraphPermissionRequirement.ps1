@@ -126,7 +126,7 @@
 
             Write-Verbose "Processing: $invocationText"
 
-            if ($mgCommand -eq "Connect-MgGraph") {
+            if ($mgCommand -in "Connect-MgGraph", "Get-MgContext") {
                 # no permission needed
                 continue
             }

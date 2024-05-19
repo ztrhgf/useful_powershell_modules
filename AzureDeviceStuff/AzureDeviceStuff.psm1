@@ -1,4 +1,4 @@
-﻿function Get-AzureDeviceWithoutBitlockerKey {
+function Get-AzureDeviceWithoutBitlockerKey {
     [CmdletBinding()]
     param ()
 
@@ -6,7 +6,7 @@
 }
 
 function Get-BitlockerEscrowStatusForAzureADDevices {
-    <#
+  <#
       .SYNOPSIS
       Retrieves bitlocker key upload status for Windows Azure AD devices
 
@@ -17,39 +17,21 @@ function Get-BitlockerEscrowStatusForAzureADDevices {
     https://msendpointmgr.com/2021/01/18/get-intune-managed-devices-without-an-escrowed-bitlocker-recovery-key-using-powershell/
     #>
 
-    [cmdletbinding()]
-    param()
+  [cmdletbinding()]
+  param()
 
-    $null = Connect-MgGraph -Scopes BitLockerKey.ReadBasic.All, DeviceManagementManagedDevices.Read.All
+  $null = Connect-MgGraph -Scopes BitLockerKey.ReadBasic.All, DeviceManagementManagedDevices.Read.All
 
-    $recoveryKeys = @()
-    $uri = "beta/informationProtection/bitlocker/recoveryKeys?`$select=id,createdDateTime,deviceId"
-    do {
-        $result = Invoke-MgGraphRequest -Uri $uri -OutputType PSObject
-        $recoveryKeys += $result.value
-        if ($result.'@odata.nextLink') {
-            $uri = $result.'@odata.nextLink'
-        } else {
-            $uri = $null
-        }
-    } while ($uri)
+  $recoveryKeys = Invoke-MgGraphRequest -Uri "beta/informationProtection/bitlocker/recoveryKeys?`$select=createdDateTime,deviceId" | Get-MgGraphAllPages
 
-    $aadDevices = @()
-    $uri = "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,lastSyncDateTime,isEncrypted"
-    do {
-        $result = Invoke-MgGraphRequest -Uri $uri -OutputType PSObject
-        $aadDevices += $result.value
-        if ($result.'@odata.nextLink') {
-            $uri = $result.'@odata.nextLink'
-        } else {
-            $uri = $null
-        }
-    } while ($uri)
+  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType" | Get-MgGraphAllPages
 
-    $aadDevices | select *, @{n = 'BitlockerKeysUploadedToAzureAD'; e = {
-            $deviceId = $_.azureADDeviceId
-            if ($deviceId -in $recoveryKeys.deviceId) { $true } else { $false } }
-    }
+  $aadDevices | select *, @{n = 'ValidRecoveryBitlockerKeyInAzure'; e = {
+      $deviceId = $_.azureADDeviceId
+      $enrolledDateTime = $_.enrolledDateTime
+      $validRecoveryKey = $recoveryKeys | ? { $_.deviceId -eq $deviceId -and $_.createdDateTime -ge $enrolledDateTime }
+      if ($validRecoveryKey) { $true } else { $false } }
+  }
 }
 
 function Set-AzureDeviceExtensionAttribute {

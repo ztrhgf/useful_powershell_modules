@@ -1,4 +1,4 @@
-﻿function Connect-AzAccount2 {
+function Connect-AzAccount2 {
     <#
     .SYNOPSIS
     Function for connecting to Azure using Connect-AzAccount command (Az.Accounts module).
@@ -133,6 +133,15 @@ function Connect-PnPOnline2 {
     .PARAMETER asMFAUser
     Switch for using user with MFA enabled authentication (i.e. interactive auth)
 
+    .PARAMETER useWebLogin
+    Switch for using WebLogin instead of Interactive authentication.
+
+    - weblogin auth
+        Legacy cookie based authentication. Notice this type of authentication is limited in its functionality. We will for instance not be able to acquire an access token for the Graph, and as a result none of the Graph related cmdlets will work. Also some of the functionality of the provisioning engine (Get-PnPSiteTemplate, Get-PnPTenantTemplate, Invoke-PnPSiteTemplate, Invoke-PnPTenantTemplate) will not work because of this reason. The cookies will in general expire within a few days and if you use -UseWebLogin within that time popup window will appear that will disappear immediately, this is expected. Use -ForceAuthentication to reset the authentication cookies and force a new login.
+
+    - interactive auth
+        Connects to the Azure AD, acquires an access token and allows PnP PowerShell to access both SharePoint and the Microsoft Graph. By default it will use the PnP Management Shell multi-tenant application behind the scenes, so make sure to run `Register-PnPManagementShellAccess` first.
+
     .PARAMETER url
     Your sharepoint online url ("https://contoso-admin.sharepoint.com")
 
@@ -173,12 +182,14 @@ function Connect-PnPOnline2 {
 
         [switch] $asMFAUser,
 
+        [switch] $useWebLogin,
+
         [ValidateNotNullOrEmpty()]
         [string] $url = $_SPOConnectionUri
     )
 
     if (!$url) {
-        throw "Url parameter is not defined. It should contain your sharepoint URL (for example https://contoso-admin.sharepoint.com)"
+        throw "Parameter 'url' cannot be empty."
     }
 
     if ($appAuth -and $asMFAUser) {
@@ -192,9 +203,12 @@ function Connect-PnPOnline2 {
     }
 
     try {
-        Write-Verbose "Already connected to Sharepoint"
-        $null = Get-PnPConnection -ea Stop
+        $existingConnection = Get-PnPConnection -ea Stop
     } catch {
+        Write-Verbose "There isn't any PNP connection"
+    }
+
+    if (!$existingConnection -or !($existingConnection | ? { $_.URL -like "$url*" }) -or ($useWebLogin -and $existingConnection.ConnectionType -ne "O365") -or (!$useWebLogin -and $existingConnection.ConnectionType -ne "TenantAdmin")) {
         Write-Verbose "Connecting to Sharepoint"
         if ($credential -and !$appAuth) {
             try {
@@ -212,7 +226,13 @@ function Connect-PnPOnline2 {
         } else {
             # credential is missing
             if ($asMFAUser) {
-                Connect-PnPOnline -Url $url -Interactive -ForceAuthentication
+                if ($useWebLogin) {
+                    # weblogin acquires ACS generated token, which will not work for things like exporting the site header and footer as it won't be able to acquire an access token for Graph
+                    Connect-PnPOnline -Url $url -UseWebLogin -ForceAuthentication
+                } else {
+                    # interactive uses PnP Management Shell Azure app registration to connect as delegated permissions
+                    Connect-PnPOnline -Url $url -Interactive -ForceAuthentication
+                }
             } elseif ($appAuth) {
                 $credential = Get-Credential -Message "Using App auth. Enter ClientId and ClientSecret."
                 Connect-PnPOnline -Url $url -ClientId $credential.UserName -ClientSecret $credential.GetNetworkCredential().password
@@ -220,6 +240,8 @@ function Connect-PnPOnline2 {
                 Connect-PnPOnline -Url $url
             }
         }
+    } else {
+        Write-Verbose "Already connected to Sharepoint"
     }
 }
 

@@ -1,4 +1,4 @@
-﻿function Get-AzureRoleAssignments {
+function Get-AzureRoleAssignments {
     <#
     .SYNOPSIS
     Returns RBAC role assignments (IAM tab for root, subscriptions, management groups, resource groups, resources) from all or just selected Azure subscription(s). It is possible to filter just roles assigned to user, group or service principal.

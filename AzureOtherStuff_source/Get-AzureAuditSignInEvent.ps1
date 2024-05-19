@@ -20,23 +20,23 @@
     Date when the search should end.
 
     .PARAMETER type
-    Type of the sign-in events.
+    Type of the sign-in events you want to search for.
 
     Possible values: 'any', 'interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity'
 
-    By default 'interactiveUser'.
+    By default 'any'.
 
     .EXAMPLE
     An example
-    Get-AzureAuditSignInEvent -userPrincipalName johnd4@contoso.com -from (get-date).AddDays(-3) -Verbose
+    Get-AzureAuditSignInEvent -userPrincipalName johnd@contoso.com -from (get-date).AddDays(-3) -Verbose
 
     .EXAMPLE
-    Get-AzureAuditSignInEvent -appId 75b6afef-74ef-42a3-ab65-c9aa08a1d38f -from (get-date).AddDays(-30) -Verbose
+    Get-AzureAuditSignInEvent -appId 75b6afef-74ef-42a3-ab65-c9aa08a1d38b -from (get-date).AddDays(-7) -Verbose
 
     .EXAMPLE
-    Get-AzureAuditSignInEvent -appId 75b6afef-74ef-42a3-ab65-c9aa08a1d38f -type any
+    Get-AzureAuditSignInEvent -type managedIdentity
 
-    Get sign-in events of all types ('interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity') for selected enterpirse application.
+    Get all managed identity sign-in events.
 
     .NOTES
     Requires following scopes: AuditLog.Read.All
@@ -67,7 +67,7 @@
         $to,
 
         [ValidateSet('any', 'interactiveUser', 'nonInteractiveUser', 'servicePrincipal', 'managedIdentity')]
-        [string] $type = "interactiveUser"
+        [string] $type = "any"
     )
 
     if ($from -and $from.getType().name -eq "string") { $from = [DateTime]::Parse($from) }
@@ -75,6 +75,10 @@
 
     if ($from -and $to -and $from -gt $to) {
         throw "From cannot be after To"
+    }
+
+    if ([datetime]::Now.AddDays(-30) -gt $from) {
+        Write-Warning "By default Azure logs are only 30 days old"
     }
 
     $filter = @()

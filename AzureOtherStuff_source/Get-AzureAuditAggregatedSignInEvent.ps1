@@ -1,4 +1,4 @@
-﻿#requires -modules Microsoft.Graph.Intune
+﻿#requires -modules Az.Accounts
 function Get-AzureAuditAggregatedSignInEvent {
     <#
     .SYNOPSIS
@@ -84,11 +84,19 @@ function Get-AzureAuditAggregatedSignInEvent {
         [string] $aggregationWindow = '1d'
     )
 
-    if (!$tenantId) {
-        throw "TenantId cannot be empty"
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    Connect-MSGraph -ErrorAction Stop
+    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -ErrorAction Stop
+
+    if (!$tenantId) {
+        $tenantId = $accessToken.TenantId
+
+        if (!$tenantId) {
+            throw "TenantId cannot be empty"
+        }
+    }
 
     (Get-Variable type).Attributes.Clear()
     switch ($type) {
@@ -135,14 +143,10 @@ function Get-AzureAuditAggregatedSignInEvent {
     $url = $url -replace " ", "%20" -replace "'", "%27"
     Write-Verbose "escaped url: $url"
 
-    $response = Invoke-MSGraphRequest -Url $url
-    $response.value
-
-    $nextLink = $response."@odata.nextLink"
-
-    while ($nextLink -ne $null) {
-        $response = Invoke-MSGraphRequest -Url $nextLink
-        $nextLink = $response."@odata.nextLink"
-        $response.value
+    $header = @{
+        "Content-Type" = "application/json"
+        Authorization  = "Bearer $($accessToken.token)"
     }
+
+    Invoke-GraphAPIRequest -uri $url -header $header
 }

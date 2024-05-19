@@ -1,4 +1,4 @@
-﻿function Get-AzureGroupMemberRecursive {
+function Get-AzureGroupMemberRecursive {
     <#
     .SYNOPSIS
     Function for getting Azure group members recursively.

@@ -1,4 +1,4 @@
-﻿function Get-SharepointSiteOwner {
+function Get-SharepointSiteOwner {
     <#
     .SYNOPSIS
     Get all Sharepoint sites and their owners.
@@ -137,7 +137,7 @@ function Remove-O365OrphanedMailbox {
     )
 
     if (!(Get-Module ActiveDirectory -ListAvailable)) {
-        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+        if ((Get-CimInstance win32_operatingsystem -Property caption).caption -match "server") {
             throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools" 
         } else {
             throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"

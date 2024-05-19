@@ -1,4 +1,4 @@
-﻿function Add-AzureAppUserConsent {
+function Add-AzureAppUserConsent {
     <#
     .SYNOPSIS
     Function for granting consent on behalf of a user to chosen application over selected resource(s) (enterprise app(s)) and permission(s) and assign the user default app role to be able to see the app in his 'My Apps'.
@@ -541,7 +541,7 @@ function Get-AzureEnterpriseApplication {
         Write-Verbose "Processing '$($SPObj.DisplayName)' ($($SPObj.Id))"
 
         # fill CustomSecurityAttributes attribute (easier this way then explicitly specifying SELECT)
-        # membership in role "Attribute Assignment Reader" is needed!
+        # membership in role "Attribute Assignment Reader" or CustomSecAttributeAssignment.Read.All permission is needed!
         $SPObj.CustomSecurityAttributes = Get-MgBetaServicePrincipal -ServicePrincipalId $SPObj.Id -Select CustomSecurityAttributes | select -ExpandProperty CustomSecurityAttributes #| Expand-MgAdditionalProperties
 
         if ($data -contains 'owner') {
@@ -1782,10 +1782,10 @@ function Set-AzureAppCertificate {
     .DESCRIPTION
     Function for creating (or replacing existing) authentication certificate for selected AzureAD Application.
 
-    Use this function with cerPath parameter (if you already have existing certificate you want to add) or rest of the parameters (if you want to create it first). If new certificate will be create, it will be named using application ObjectID of the corresponding enterprise app.
+    Use this function with cerPath parameter (if you already have existing certificate you want to add) or rest of the parameters (if you want to create it first). If new certificate will be create, it will be named '<appId>.cer'.
 
-    .PARAMETER appObjectId
-    ObjectId of the Azure application registration, to which you want to assign certificate.
+    .PARAMETER appId
+    Application ID of the Azure application registration, to which you want to assign certificate.
 
     .PARAMETER cerPath
     Path to existing '.cer' certificate which should be added to the application.
@@ -1803,21 +1803,23 @@ function Set-AzureAppCertificate {
     .PARAMETER Password
     Secure string with password that will protect certificate private key.
 
-    Choose strong one!
+    Choose a strong one!
 
     .PARAMETER directory
     Path to folder where pfx (cert. with private key) certificate will be exported.
+
+    By default current working directory.
 
     .PARAMETER dontRemoveFromCertStore
     Switch to NOT remove certificate from the local cert. store after it is created&exported to pfx.
 
     .EXAMPLE
-    Set-AzureAppCertificate -appObjectId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -cerPath C:\cert\appCert.cer
+    Set-AzureAppCertificate -appId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -cerPath C:\cert\appCert.cer
 
     Adds certificate 'appCert' to the Azure application cc210920-4c75-48ad-868b-6aa2dbcd1d51.
 
     .EXAMPLE
-    Set-AzureAppCertificate -appObjectId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -password (Read-Host -AsSecureString)
+    Set-AzureAppCertificate -appId cc210920-4c75-48ad-868b-6aa2dbcd1d51 -password (Read-Host -AsSecureString)
 
     Creates new self signed certificate, export it as pfx (cert with private key) into working directory and adds its public counterpart (.cer) to the Azure application cc210920-4c75-48ad-868b-6aa2dbcd1d51.
     Certificate private key will be protected by entered password and it will be valid 2 years from now.
@@ -1827,7 +1829,7 @@ function Set-AzureAppCertificate {
     param (
         [Parameter(Mandatory = $true, ParameterSetName = "cerExists")]
         [Parameter(Mandatory = $true, ParameterSetName = "createCert")]
-        [string] $appObjectId,
+        [string] $appId,
 
         [Parameter(Mandatory = $true, ParameterSetName = "cerExists")]
         [ValidateScript( {
@@ -1872,9 +1874,9 @@ function Set-AzureAppCertificate {
 
     # test that app exists
     try {
-        $application = Get-MgApplication -ApplicationId $appObjectId -ErrorAction Stop
+        $application = Get-MgApplication -Filter "AppId eq '$appId'" -ErrorAction Stop
     } catch {
-        throw "Application registration with ObjectId $appObjectId doesn't exist"
+        throw "Application registration with AppId $appId doesn't exist"
     }
 
     $appCert = $application | select -exp KeyCredentials
@@ -1891,11 +1893,11 @@ function Set-AzureAppCertificate {
     if ($cerPath) {
         $cert = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2($cerPath)
     } else {
-        Write-Warning "Creating self signed certificate named '$appObjectId'"
-        $cert = New-SelfSignedCertificate -CertStoreLocation 'cert:\currentuser\my' -Subject "CN=$appObjectId" -NotBefore $startDate -NotAfter $endDate -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256
+        Write-Warning "Creating self signed certificate named '$appId'"
+        $cert = New-SelfSignedCertificate -CertStoreLocation 'cert:\currentuser\my' -Subject "CN=$appId" -NotBefore $startDate -NotAfter $endDate -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256
 
-        Write-Warning "Exporting '$appObjectId.pfx' to '$directory'"
-        $pfxFile = Join-Path $directory "$appObjectId.pfx"
+        Write-Warning "Exporting '$appId.pfx' to '$directory'"
+        $pfxFile = Join-Path $directory "$appId.pfx"
         $path = 'cert:\currentuser\my\' + $cert.Thumbprint
         $null = Export-PfxCertificate -Cert $path -FilePath $pfxFile -Password $password
 
@@ -1910,7 +1912,7 @@ function Set-AzureAppCertificate {
     # $endDateTime = ($cert.NotAfter).ToUniversalTime().ToString( "yyyy-MM-ddTHH:mm:ssZ" )
     # $startDateTime = ($cert.NotBefore).ToUniversalTime().ToString( "yyyy-MM-ddTHH:mm:ssZ" )
 
-    Write-Warning "Adding certificate to the application $($application.DisplayName)"
+    Write-Warning "Adding certificate secret to the application $($application.DisplayName)"
 
     # toto funguje s update-mgaaplication
     $keyCredentialParams = @{
@@ -1922,7 +1924,9 @@ function Set-AzureAppCertificate {
         # EndDateTime         = ($cert.NotAfter).ToUniversalTime().ToString( "yyyy-MM-ddTHH:mm:ssZ" )
     }
 
-    Update-MgApplication -ApplicationId $appObjectId -KeyCredential $keyCredentialParams
+    Update-MgApplication -ApplicationId $application.Id -KeyCredential $keyCredentialParams
+
+    Write-Warning "Don't fortget that account hat will use this certificate needs to have permission to read it's private key!"
 }
 
 Export-ModuleMember -function Add-AzureAppUserConsent, Get-AzureAppConsentRequest, Get-AzureAppRegistration, Get-AzureAppVerificationStatus, Get-AzureEnterpriseApplication, Get-AzureManagedIdentity, Get-AzureServiceAccount, Get-AzureServicePrincipalBySecurityAttribute, Get-AzureServicePrincipalOverview, Get-AzureServicePrincipalPermissions, Get-AzureServicePrincipalUsersAndGroups, Grant-AzureServicePrincipalPermission, Remove-AzureAppUserConsent, Revoke-AzureServicePrincipalPermission, Set-AzureAppCertificate

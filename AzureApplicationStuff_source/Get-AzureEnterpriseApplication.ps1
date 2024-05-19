@@ -118,7 +118,7 @@ function Get-AzureEnterpriseApplication {
         Write-Verbose "Processing '$($SPObj.DisplayName)' ($($SPObj.Id))"
 
         # fill CustomSecurityAttributes attribute (easier this way then explicitly specifying SELECT)
-        # membership in role "Attribute Assignment Reader" is needed!
+        # membership in role "Attribute Assignment Reader" or CustomSecAttributeAssignment.Read.All permission is needed!
         $SPObj.CustomSecurityAttributes = Get-MgBetaServicePrincipal -ServicePrincipalId $SPObj.Id -Select CustomSecurityAttributes | select -ExpandProperty CustomSecurityAttributes #| Expand-MgAdditionalProperties
 
         if ($data -contains 'owner') {

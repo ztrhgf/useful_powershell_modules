@@ -1,4 +1,4 @@
-﻿function Add-AzureGuest {
+function Add-AzureGuest {
     <#
     .SYNOPSIS
     Function for inviting guest user to Azure AD.
@@ -242,12 +242,20 @@ function Get-AzureCompletedMFAPrompt {
 
         Write-Warning "Processing $upn"
 
+        try {
+            $userId = (Get-MgUser -UserId $upn -Property Id).Id
+        } catch {
+            Write-Warning "User $upn doesn't exist. Skipping"
+            continue
+        }
+
         $mfaMethod = Get-MgBetaUserAuthenticationMethod -UserId $upn | Expand-MgAdditionalProperties
 
         # get all successfully completed MFA prompts
         # 0 = Success
         # 50140 = "This occurred due to 'Keep me signed in' interrupt when the user was signing in."
-        $successfulMFAPrompt = Get-MgBetaAuditLogSignIn -all -Filter "UserPrincipalName eq '$upn' and AuthenticationRequirement eq 'multiFactorAuthentication' and conditionalAccessStatus eq 'success'" -Property * | ? { $_.Status.ErrorCode -in 0, 50140 -and ($_.AuthenticationDetails.AuthenticationStepResultDetail | % { if ($_ -in 'MFA successfully completed', 'MFA completed in Azure AD', 'User approved', 'MFA required in Azure AD', 'MFA requirement satisfied by strong authentication') { $true } }) }
+        # TIP: guest sign-ins cannot be searched using UPN
+        $successfulMFAPrompt = Get-MgBetaAuditLogSignIn -All -Filter "userId eq '$userId' and AuthenticationRequirement eq 'multiFactorAuthentication' and conditionalAccessStatus eq 'success'" -Property * | ? { $_.Status.ErrorCode -in 0, 50140 -and ($_.AuthenticationDetails.AuthenticationStepResultDetail | % { if ($_ -in 'MFA successfully completed', 'MFA completed in Azure AD', 'User approved', 'MFA required in Azure AD', 'MFA requirement satisfied by strong authentication') { $true } }) }
 
         if (!$successfulMFAPrompt) {
             Write-Warning "No completed MFA prompts found"
@@ -372,16 +380,16 @@ function Get-AzureSkuAssignment {
     } elseif ($assignmentType -contains 'direct') {
         # direct assignment
         if ($sku) {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $_.AssignedByGroup -eq $null }) }
+            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $null -eq $_.AssignedByGroup }) }
         } else {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates.AssignedByGroup -eq $null).count -ge 1 }
+            $whereFilter = { $_.assignedLicenses -and ($null -eq $_.LicenseAssignmentStates.AssignedByGroup).count -ge 1 }
         }
     } else {
         # inherited assignment
         if ($sku) {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $_.AssignedByGroup -ne $null }) }
+            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $null -eq $_.AssignedByGroup }) }
         } else {
-            $whereFilter = { $_.assignedLicenses -and $_.LicenseAssignmentStates.AssignedByGroup -ne $null }
+            $whereFilter = { $_.assignedLicenses -and $null -eq $_.LicenseAssignmentStates.AssignedByGroup }
         }
     }
 

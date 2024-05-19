@@ -88,16 +88,16 @@ function Get-AzureSkuAssignment {
     } elseif ($assignmentType -contains 'direct') {
         # direct assignment
         if ($sku) {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $_.AssignedByGroup -eq $null }) }
+            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $null -eq $_.AssignedByGroup }) }
         } else {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates.AssignedByGroup -eq $null).count -ge 1 }
+            $whereFilter = { $_.assignedLicenses -and ($null -eq $_.LicenseAssignmentStates.AssignedByGroup).count -ge 1 }
         }
     } else {
         # inherited assignment
         if ($sku) {
-            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $_.AssignedByGroup -ne $null }) }
+            $whereFilter = { $_.assignedLicenses -and ($_.LicenseAssignmentStates | ? { $_.SkuId -eq $skuId -and $null -eq $_.AssignedByGroup }) }
         } else {
-            $whereFilter = { $_.assignedLicenses -and $_.LicenseAssignmentStates.AssignedByGroup -ne $null }
+            $whereFilter = { $_.assignedLicenses -and $null -eq $_.LicenseAssignmentStates.AssignedByGroup }
         }
     }
 

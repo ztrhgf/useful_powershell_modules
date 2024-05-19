@@ -51,23 +51,25 @@
         [int] $compressCharThreshold
     )
 
-    if ($compressCharThreshold) {
-        if (($string | Measure-Object -Character).Characters -le $compressCharThreshold) {
-            Write-Verbose "Threshold wasn't reached. Returning original string."
-            return $string
+    process {
+        if ($compressCharThreshold) {
+            if (($string | Measure-Object -Character).Characters -le $compressCharThreshold) {
+                Write-Verbose "Threshold wasn't reached. Returning original string."
+                return $string
+            }
         }
-    }
 
-    try {
-        $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($string)
-        $outputBytes = New-Object byte[] ($inputBytes.Length)
-        $memoryStream = New-Object IO.MemoryStream
-        $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Compress)
-        $gzipStream.Write($inputBytes, 0, $inputBytes.Length)
-        $gzipStream.Close()
+        try {
+            $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($string)
+            $outputBytes = New-Object byte[] ($inputBytes.Length)
+            $memoryStream = New-Object IO.MemoryStream
+            $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Compress)
+            $gzipStream.Write($inputBytes, 0, $inputBytes.Length)
+            $gzipStream.Close()
 
-        return [Convert]::ToBase64String($memoryStream.ToArray())
-    } catch {
-        Write-Error "Unable to compress the given string"
+            return [Convert]::ToBase64String($memoryStream.ToArray())
+        } catch {
+            Write-Error "Unable to compress the given string"
+        }
     }
 }

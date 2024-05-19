@@ -1,4 +1,4 @@
-﻿function Compare-Object2 {
+function Compare-Object2 {
     <#
     .SYNOPSIS
     Function for detection if two inputs are the same.
@@ -409,14 +409,16 @@ function ConvertFrom-CompressedString {
         [string] $compressedString
     )
 
-    try {
-        $inputBytes = [Convert]::FromBase64String($compressedString)
-        $memoryStream = New-Object IO.MemoryStream($inputBytes, 0, $inputBytes.Length)
-        $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Decompress)
-        $reader = New-Object IO.StreamReader($gzipStream)
-        return $reader.ReadToEnd()
-    } catch {
-        Write-Error "Unable to decompress the given string. Was it really created using ConvertTo-CompressedString?"
+    process {
+        try {
+            $inputBytes = [Convert]::FromBase64String($compressedString)
+            $memoryStream = New-Object IO.MemoryStream($inputBytes, 0, $inputBytes.Length)
+            $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Decompress)
+            $reader = New-Object IO.StreamReader($gzipStream)
+            return $reader.ReadToEnd()
+        } catch {
+            Write-Error "Unable to decompress the given string. Was it really created using ConvertTo-CompressedString?"
+        }
     }
 }
 
@@ -1035,24 +1037,26 @@ function ConvertTo-CompressedString {
         [int] $compressCharThreshold
     )
 
-    if ($compressCharThreshold) {
-        if (($string | Measure-Object -Character).Characters -le $compressCharThreshold) {
-            Write-Verbose "Threshold wasn't reached. Returning original string."
-            return $string
+    process {
+        if ($compressCharThreshold) {
+            if (($string | Measure-Object -Character).Characters -le $compressCharThreshold) {
+                Write-Verbose "Threshold wasn't reached. Returning original string."
+                return $string
+            }
         }
-    }
 
-    try {
-        $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($string)
-        $outputBytes = New-Object byte[] ($inputBytes.Length)
-        $memoryStream = New-Object IO.MemoryStream
-        $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Compress)
-        $gzipStream.Write($inputBytes, 0, $inputBytes.Length)
-        $gzipStream.Close()
+        try {
+            $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($string)
+            $outputBytes = New-Object byte[] ($inputBytes.Length)
+            $memoryStream = New-Object IO.MemoryStream
+            $gzipStream = New-Object IO.Compression.GZipStream($memoryStream, [IO.Compression.CompressionMode]::Compress)
+            $gzipStream.Write($inputBytes, 0, $inputBytes.Length)
+            $gzipStream.Close()
 
-        return [Convert]::ToBase64String($memoryStream.ToArray())
-    } catch {
-        Write-Error "Unable to compress the given string"
+            return [Convert]::ToBase64String($memoryStream.ToArray())
+        } catch {
+            Write-Error "Unable to compress the given string"
+        }
     }
 }
 
@@ -4111,7 +4115,7 @@ function Invoke-MSTSC {
 
     .NOTES
     Automatic filling is working only on english operating systems.
-    Author: OndĹ™ej Ĺ ebela - ztrhgf@seznam.cz
+    Author: Ondřej Šebela - ztrhgf@seznam.cz
     #>
 
     [CmdletBinding()]
@@ -4171,12 +4175,12 @@ function Invoke-MSTSC {
 
             if ($domainNetbiosName -eq $env:computername) {
                 # function is running under local account therefore $env:userdomain cannot be used
-                $domainNetbiosName = (Get-WmiObject Win32_NTDomain).DomainName # slow but gets the correct value
+                $domainNetbiosName = (Get-CimInstance Win32_NTDomain).DomainName # slow but gets the correct value
             }
         }
         Write-Verbose "Get domain name"
         if (!$domainName) {
-            $domainName = (Get-WmiObject Win32_ComputerSystem).Domain
+            $domainName = (Get-CimInstance Win32_ComputerSystem).Domain
         }
 
         $defaultRDP = Join-Path $env:USERPROFILE "Documents\Default.rdp"

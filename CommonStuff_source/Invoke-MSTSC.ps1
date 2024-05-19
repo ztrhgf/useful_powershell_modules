@@ -1,4 +1,4 @@
-#requires -modules AdmPwd.PS
+﻿#requires -modules AdmPwd.PS
 function Invoke-MSTSC {
     <#
     .SYNOPSIS
@@ -135,12 +135,12 @@ function Invoke-MSTSC {
 
             if ($domainNetbiosName -eq $env:computername) {
                 # function is running under local account therefore $env:userdomain cannot be used
-                $domainNetbiosName = (Get-WmiObject Win32_NTDomain).DomainName # slow but gets the correct value
+                $domainNetbiosName = (Get-CimInstance Win32_NTDomain).DomainName # slow but gets the correct value
             }
         }
         Write-Verbose "Get domain name"
         if (!$domainName) {
-            $domainName = (Get-WmiObject Win32_ComputerSystem).Domain
+            $domainName = (Get-CimInstance Win32_ComputerSystem).Domain
         }
 
         $defaultRDP = Join-Path $env:USERPROFILE "Documents\Default.rdp"

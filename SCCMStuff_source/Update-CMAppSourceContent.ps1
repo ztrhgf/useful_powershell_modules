@@ -44,15 +44,15 @@
         # Get-CMApplication nejde pouzit s OGV (fce se ukonci), proto skrze WMI
         $application = @()
         if (!$appName) {
-            $appName = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
+            $appName = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
             select LocalizedDisplayName | sort LocalizedDisplayName | Out-GridView -OutputMode Multiple | select -exp LocalizedDisplayName
         }
 
         $appName | % {
             "Ziskavam informace o $_"
             $name = $_
-            $app = Get-WmiObject -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ApplicationLatest -ComputerName $sccmServer -Filter "LocalizedDisplayName='$name'"
-            $packageID = Get-WmiObject -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ContentPackage -ComputerName $sccmServer -Filter "SecurityKey='$($app.ModelName)'" | select -exp PackageID
+            $app = Get-CimInstance -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ApplicationLatest -ComputerName $sccmServer -Filter "LocalizedDisplayName='$name'"
+            $packageID = Get-CimInstance -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ContentPackage -ComputerName $sccmServer -Filter "SecurityKey='$($app.ModelName)'" | select -exp PackageID
             if ($packageID) {
                 $application += New-Object PSObject -Property @{ LocalizedDisplayName = $name; PackageId = $packageID }
             } else {
@@ -69,7 +69,7 @@
                 'computername' = $sccmServer;
                 'Filter'       = "PackageID='$($app.PackageId)'";
             }
-            (Get-WmiObject @WmiObjectParam).Commit() | Out-Null
+            (Get-CimInstance @WmiObjectParam).Commit() | Out-Null
         }
     }
 }

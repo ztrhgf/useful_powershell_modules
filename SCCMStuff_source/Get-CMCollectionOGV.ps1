@@ -24,7 +24,7 @@
     } else {
         $collectionType = 1, 2
     }
-    $collection = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Collection' | ? { $_.CollectionType -in $collectionType } | select Name, Comment, MemberCount, RefreshType, CollectionID | sort Name | ogv -OutputMode $outputMode -Title $title
+    $collection = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Collection' | ? { $_.CollectionType -in $collectionType } | select Name, Comment, MemberCount, RefreshType, CollectionID | sort Name | ogv -OutputMode $outputMode -Title $title
     if ($returnAsObject) {
         $collection
     } else {

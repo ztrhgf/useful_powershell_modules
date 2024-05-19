@@ -29,5 +29,5 @@
 
     if (!$SCCMServer) { throw "Undefined SCCMServer" }
 
-    (Get-WmiObject -ComputerName $SCCMServer -Namespace root/SMS/site_$_SCCMSiteCode -Query "SELECT SMS_Collection.* FROM SMS_FullCollectionMembership, SMS_Collection where name = '$computerName' and SMS_FullCollectionMembership.CollectionID = SMS_Collection.CollectionID").Name
+    (Get-CimInstance -ComputerName $SCCMServer -Namespace root/SMS/site_$_SCCMSiteCode -Query "SELECT SMS_Collection.* FROM SMS_FullCollectionMembership, SMS_Collection where name = '$computerName' and SMS_FullCollectionMembership.CollectionID = SMS_Collection.CollectionID").Name
 }

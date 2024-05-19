@@ -50,7 +50,7 @@
                     $ApplicationClass = [WmiClass]"\\$Computer\root\ccm\clientSDK:CCM_Application"
                     # EvaluationState 1 je Required
                     # EvaluationState 3 je Available
-                    Get-WmiObject @Params | Where-Object { $_.FullName -like $appName -and $_.InstallState -notlike "installed" -and $_.ApplicabilityState -eq "Applicable" -and $_.EvaluationState -eq 1 -and $_.RebootOutsideServiceWindow -eq $false } | % {
+                    Get-CimInstance @Params | Where-Object { $_.FullName -like $appName -and $_.InstallState -notlike "installed" -and $_.ApplicabilityState -eq "Applicable" -and $_.EvaluationState -eq 1 -and $_.RebootOutsideServiceWindow -eq $false } | % {
                         $Application = $_
                         $ApplicationID = $Application.Id
                         $ApplicationRevision = $Application.Revision
@@ -62,7 +62,7 @@
                         Write-Output "Na $computer instaluji $($application.fullname)"
                         $null = $ApplicationClass.Install($ApplicationID, $ApplicationRevision, $ApplicationIsMachineTarget, 0, $Priority, $IsRebootIfNeeded)
                         # spravne poradi parametru ziskam pomoci $ApplicationClass.GetMethodParameters("install") | select -first 1 | select -exp properties
-                        #Invoke-WmiMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
+                        #Invoke-CimMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
                     }
                 }
             } catch {

@@ -106,9 +106,9 @@
             }
 
             if ($ApplicationName) {
-                $Applications = Get-WmiObject @Params | Where-Object { $_.FullName -like "*$ApplicationName*" -and $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
+                $Applications = Get-CimInstance @Params | Where-Object { $_.FullName -like "*$ApplicationName*" -and $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
             } else {
-                $Applications = Get-WmiObject @Params | Where-Object { $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
+                $Applications = Get-CimInstance @Params | Where-Object { $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
             }
 
             if ($Applications) {
@@ -132,7 +132,7 @@
                     Write-Verbose "Starting installation of $($application.fullname)"
                     $null = $ApplicationClass.Install($ApplicationID, $ApplicationRevision, $ApplicationIsMachineTarget, 0, $Priority, $IsRebootIfNeeded)
                     # spravne poradi parametru ziskam pomoci $ApplicationClass.GetMethodParameters("install") | select -first 1 | select -exp properties
-                    #Invoke-WmiMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
+                    #Invoke-CimMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
                 }
             }
         }

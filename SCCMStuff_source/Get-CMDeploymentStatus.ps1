@@ -45,5 +45,5 @@
         $nameFilter = "where SoftwareName = '$name'"
     }
 
-    Get-WmiObject -ComputerName $SCCMServer -Namespace "root\SMS\site_$SCCMSiteCode" -Query "SELECT SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown FROM SMS_DeploymentSummary $nameFilter" | select SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown
+    Get-CimInstance -ComputerName $SCCMServer -Namespace "root\SMS\site_$SCCMSiteCode" -Query "SELECT SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown FROM SMS_DeploymentSummary $nameFilter" | select SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown
 }

@@ -4,13 +4,13 @@ function Get-CMCollectionComplianceStatus {
     param (
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
-                Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -like "*$WordToComplete*" } | % { '"' + $_.LocalizedDisplayName + '"' }
+                Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -like "*$WordToComplete*" } | % { '"' + $_.LocalizedDisplayName + '"' }
             })]
         [string[]] $confBaseline
         ,
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
-                Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -like "*$WordToComplete*" } | % { '"' + $_.Name + '"' }
+                Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -like "*$WordToComplete*" } | % { '"' + $_.Name + '"' }
             })]
         [string[]] $collection
         ,
@@ -30,7 +30,7 @@ function Get-CMCollectionComplianceStatus {
         $list = @()
         $confBaseline | % {
             $name = $_
-            $list += Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName, CI_ID from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -eq $name } | select -exp CI_ID
+            $list += Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName, CI_ID from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -eq $name } | select -exp CI_ID
         }
 
         if ($filter) {
@@ -52,7 +52,7 @@ function Get-CMCollectionComplianceStatus {
         $list = @()
         $collection | % {
             $name = $_
-            $list += Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name, CollectionID from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -eq $name } | select -exp CollectionID
+            $list += Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name, CollectionID from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -eq $name } | select -exp CollectionID
         }
 
         if ($filter) {

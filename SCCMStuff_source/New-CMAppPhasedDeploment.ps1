@@ -80,8 +80,8 @@
 
     foreach ($App in $AppName) {
         # distribute app to DP if necessary
-        $AppID = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
-        $distributed = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
+        $AppID = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
+        $distributed = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
         if (!$distributed) {
             Write-Warning "Application $App isn't on any DP, distributing to DP group '$DPGroupName'"
             Start-CMContentDistribution -ApplicationName $App -DistributionPointGroupName $DPGroupName

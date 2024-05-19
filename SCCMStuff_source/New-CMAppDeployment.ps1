@@ -114,8 +114,8 @@
     # distribuce na DP pokud tam uz neni
     #
     foreach ($App in $AppName) {
-        $AppID = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
-        $distributed = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
+        $AppID = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
+        $distributed = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
         if (!$distributed) {
             Write-Verbose "Application $App isn't on any DP, distributing"
             Start-CMContentDistribution -ApplicationName $App -DistributionPointGroupName $DPGroupName
@@ -127,7 +127,7 @@
     #
     foreach ($collection in $CollectionName) {
         # zjistim jestli je tato kolekce typu user collection
-        $isUserCollection = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT * FROM SMS_Collection where name=`"$collection`" and collectiontype = 1"
+        $isUserCollection = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT * FROM SMS_Collection where name=`"$collection`" and collectiontype = 1"
 
         try {
             foreach ($App in $AppName) {
@@ -139,7 +139,7 @@
                 }
 
                 if (!$isUserCollection) {
-                    [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                    [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
                 }
 
                 Write-Output "Deploy: $App to: $collection as: $Purpose"
@@ -175,12 +175,12 @@
                     # nazev kategorie urcujici, ze jde o placeny SW
                     $licensedCategory = 'Licensed SW'
                     # aktualne nastaven SW kategorie
-                    [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                    [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
 
                     # zjistim jestli jde o placeny SW
                     $licensedApp = ''
                     if ($appCategory -contains $licensedCategory) {
-                        $licensedApp = 'Y' #Get-WmiObject -computername $sccmServer -Namespace "root\sms\site_$siteCode" -query "SELECT LocalizedDisplayName FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND LocalizedCategoryInstanceNames = `'$licensedCategory`'"
+                        $licensedApp = 'Y' #Get-CimInstance -computername $sccmServer -Namespace "root\sms\site_$siteCode" -query "SELECT LocalizedDisplayName FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND LocalizedCategoryInstanceNames = `'$licensedCategory`'"
                     }
 
                     $usedToBeFreeApp = 0
@@ -222,7 +222,7 @@
                         # nastavim kategorii 'Licencovany SW'
                         if ($usedToBeFreeApp) {
                             Write-Verbose "Set SW category to mark $App as paid/licensed"
-                            [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                            [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
 
                             $appCategory.Add($licensedCategory) | Out-Null
 
@@ -244,7 +244,7 @@
 
                 # umozneni instalace SW mimo maintenance windows. Skrze -OverrideServiceWindow nefunguje.
                 Write-Verbose "allow installation outside the maintenance window"
-                $apps = Get-WmiObject -Namespace "root\sms\site_$siteCode" -ComputerName $sccmServer -Query "SELECT * FROM SMS_ApplicationAssignment WHERE CollectionName = `'$collection`' and ApplicationName = `'$App`'"
+                $apps = Get-CimInstance -Namespace "root\sms\site_$siteCode" -ComputerName $sccmServer -Query "SELECT * FROM SMS_ApplicationAssignment WHERE CollectionName = `'$collection`' and ApplicationName = `'$App`'"
                 $apps.OverrideServiceWindows = $true
                 $null = $apps.put()
             } # konec foreach cyklu resiciho instalace jednotlivych aplikaci

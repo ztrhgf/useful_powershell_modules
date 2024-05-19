@@ -1,4 +1,4 @@
-﻿function Add-CMDeviceToCollection {
+function Add-CMDeviceToCollection {
     <#
     .SYNOPSIS
     Function for easy adding of device(s) to SCCM collection.
@@ -339,9 +339,9 @@ function Get-CMAppDeploymentStatus {
             }
 
             if ($ApplicationName) {
-                $Applications = Get-WmiObject @Params | Where-Object { $_.FullName -like "*$ApplicationName*" -and $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
+                $Applications = Get-CimInstance @Params | Where-Object { $_.FullName -like "*$ApplicationName*" -and $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
             } else {
-                $Applications = Get-WmiObject @Params | Where-Object { $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
+                $Applications = Get-CimInstance @Params | Where-Object { $_.InstallState -notlike $status -and $_.EvaluationState -in $wantedEvalState }
             }
 
             if ($Applications) {
@@ -365,7 +365,7 @@ function Get-CMAppDeploymentStatus {
                     Write-Verbose "Starting installation of $($application.fullname)"
                     $null = $ApplicationClass.Install($ApplicationID, $ApplicationRevision, $ApplicationIsMachineTarget, 0, $Priority, $IsRebootIfNeeded)
                     # spravne poradi parametru ziskam pomoci $ApplicationClass.GetMethodParameters("install") | select -first 1 | select -exp properties
-                    #Invoke-WmiMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
+                    #Invoke-CimMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
                 }
             }
         }
@@ -383,7 +383,7 @@ function Get-CMApplicationOGV {
         $title = "Vyber aplikaci"
     )
 
-    Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
+    Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
     select LocalizedDisplayName, LocalizedDescription, SoftwareVersion, NumberOfDeployments, NumberOfDevicesWithApp, NumberOfDevicesWithFailure |
     sort LocalizedDisplayName | ogv -OutputMode Multiple -Title $title | select -exp LocalizedDisplayName
 }
@@ -458,13 +458,13 @@ function Get-CMCollectionComplianceStatus {
     param (
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
-                Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -like "*$WordToComplete*" } | % { '"' + $_.LocalizedDisplayName + '"' }
+                Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -like "*$WordToComplete*" } | % { '"' + $_.LocalizedDisplayName + '"' }
             })]
         [string[]] $confBaseline
         ,
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
-                Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -like "*$WordToComplete*" } | % { '"' + $_.Name + '"' }
+                Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -like "*$WordToComplete*" } | % { '"' + $_.Name + '"' }
             })]
         [string[]] $collection
         ,
@@ -484,7 +484,7 @@ function Get-CMCollectionComplianceStatus {
         $list = @()
         $confBaseline | % {
             $name = $_
-            $list += Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName, CI_ID from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -eq $name } | select -exp CI_ID
+            $list += Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select LocalizedDisplayName, CI_ID from SMS_ConfigurationBaselineInfo" -ComputerName $_SCCMServer | ? { $_.LocalizedDisplayName -eq $name } | select -exp CI_ID
         }
 
         if ($filter) {
@@ -506,7 +506,7 @@ function Get-CMCollectionComplianceStatus {
         $list = @()
         $collection | % {
             $name = $_
-            $list += Get-WmiObject -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name, CollectionID from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -eq $name } | select -exp CollectionID
+            $list += Get-CimInstance -Namespace "root\SMS\Site_$_SCCMSiteCode" -Query "select Name, CollectionID from SMS_Collection" -ComputerName $_SCCMServer | ? { $_.Name -eq $name } | select -exp CollectionID
         }
 
         if ($filter) {
@@ -554,7 +554,7 @@ function Get-CMCollectionOGV {
     } else {
         $collectionType = 1, 2
     }
-    $collection = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Collection' | ? { $_.CollectionType -in $collectionType } | select Name, Comment, MemberCount, RefreshType, CollectionID | sort Name | ogv -OutputMode $outputMode -Title $title
+    $collection = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Collection' | ? { $_.CollectionType -in $collectionType } | select Name, Comment, MemberCount, RefreshType, CollectionID | sort Name | ogv -OutputMode $outputMode -Title $title
     if ($returnAsObject) {
         $collection
     } else {
@@ -593,7 +593,7 @@ function Get-CMComputerCollection {
 
     if (!$SCCMServer) { throw "Undefined SCCMServer" }
 
-    (Get-WmiObject -ComputerName $SCCMServer -Namespace root/SMS/site_$_SCCMSiteCode -Query "SELECT SMS_Collection.* FROM SMS_FullCollectionMembership, SMS_Collection where name = '$computerName' and SMS_FullCollectionMembership.CollectionID = SMS_Collection.CollectionID").Name
+    (Get-CimInstance -ComputerName $SCCMServer -Namespace root/SMS/site_$_SCCMSiteCode -Query "SELECT SMS_Collection.* FROM SMS_FullCollectionMembership, SMS_Collection where name = '$computerName' and SMS_FullCollectionMembership.CollectionID = SMS_Collection.CollectionID").Name
 }
 
 function Get-CMComputerComplianceStatus {
@@ -752,7 +752,7 @@ function Get-CMDeploymentStatus {
         $nameFilter = "where SoftwareName = '$name'"
     }
 
-    Get-WmiObject -ComputerName $SCCMServer -Namespace "root\SMS\site_$SCCMSiteCode" -Query "SELECT SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown FROM SMS_DeploymentSummary $nameFilter" | select SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown
+    Get-CimInstance -ComputerName $SCCMServer -Namespace "root\SMS\site_$SCCMSiteCode" -Query "SELECT SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown FROM SMS_DeploymentSummary $nameFilter" | select SoftwareName, CollectionName, NumberTargeted, NumberSuccess, NumberErrors, NumberInprogress, NumberOther, NumberUnknown
 }
 
 function Get-CMLog {
@@ -1899,7 +1899,7 @@ function Invoke-CMAppInstall {
                     $ApplicationClass = [WmiClass]"\\$Computer\root\ccm\clientSDK:CCM_Application"
                     # EvaluationState 1 je Required
                     # EvaluationState 3 je Available
-                    Get-WmiObject @Params | Where-Object { $_.FullName -like $appName -and $_.InstallState -notlike "installed" -and $_.ApplicabilityState -eq "Applicable" -and $_.EvaluationState -eq 1 -and $_.RebootOutsideServiceWindow -eq $false } | % {
+                    Get-CimInstance @Params | Where-Object { $_.FullName -like $appName -and $_.InstallState -notlike "installed" -and $_.ApplicabilityState -eq "Applicable" -and $_.EvaluationState -eq 1 -and $_.RebootOutsideServiceWindow -eq $false } | % {
                         $Application = $_
                         $ApplicationID = $Application.Id
                         $ApplicationRevision = $Application.Revision
@@ -1911,7 +1911,7 @@ function Invoke-CMAppInstall {
                         Write-Output "Na $computer instaluji $($application.fullname)"
                         $null = $ApplicationClass.Install($ApplicationID, $ApplicationRevision, $ApplicationIsMachineTarget, 0, $Priority, $IsRebootIfNeeded)
                         # spravne poradi parametru ziskam pomoci $ApplicationClass.GetMethodParameters("install") | select -first 1 | select -exp properties
-                        #Invoke-WmiMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
+                        #Invoke-CimMethod -ComputerName titan02 -Class $Params.Class -Namespace $Params.Namespace -Name install -ArgumentList 0,$ApplicationID,$ApplicationIsMachineTarget,$IsRebootIfNeeded,$Priority,$ApplicationRevision
                     }
                 }
             } catch {
@@ -2156,8 +2156,8 @@ function New-CMAppDeployment {
     # distribuce na DP pokud tam uz neni
     #
     foreach ($App in $AppName) {
-        $AppID = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
-        $distributed = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
+        $AppID = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
+        $distributed = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
         if (!$distributed) {
             Write-Verbose "Application $App isn't on any DP, distributing"
             Start-CMContentDistribution -ApplicationName $App -DistributionPointGroupName $DPGroupName
@@ -2169,7 +2169,7 @@ function New-CMAppDeployment {
     #
     foreach ($collection in $CollectionName) {
         # zjistim jestli je tato kolekce typu user collection
-        $isUserCollection = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT * FROM SMS_Collection where name=`"$collection`" and collectiontype = 1"
+        $isUserCollection = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT * FROM SMS_Collection where name=`"$collection`" and collectiontype = 1"
 
         try {
             foreach ($App in $AppName) {
@@ -2181,7 +2181,7 @@ function New-CMAppDeployment {
                 }
 
                 if (!$isUserCollection) {
-                    [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                    [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
                 }
 
                 Write-Output "Deploy: $App to: $collection as: $Purpose"
@@ -2217,12 +2217,12 @@ function New-CMAppDeployment {
                     # nazev kategorie urcujici, ze jde o placeny SW
                     $licensedCategory = 'Licensed SW'
                     # aktualne nastaven SW kategorie
-                    [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                    [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
 
                     # zjistim jestli jde o placeny SW
                     $licensedApp = ''
                     if ($appCategory -contains $licensedCategory) {
-                        $licensedApp = 'Y' #Get-WmiObject -computername $sccmServer -Namespace "root\sms\site_$siteCode" -query "SELECT LocalizedDisplayName FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND LocalizedCategoryInstanceNames = `'$licensedCategory`'"
+                        $licensedApp = 'Y' #Get-CimInstance -computername $sccmServer -Namespace "root\sms\site_$siteCode" -query "SELECT LocalizedDisplayName FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND LocalizedCategoryInstanceNames = `'$licensedCategory`'"
                     }
 
                     $usedToBeFreeApp = 0
@@ -2264,7 +2264,7 @@ function New-CMAppDeployment {
                         # nastavim kategorii 'Licencovany SW'
                         if ($usedToBeFreeApp) {
                             Write-Verbose "Set SW category to mark $App as paid/licensed"
-                            [System.Collections.ArrayList] $appCategory = @(Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
+                            [System.Collections.ArrayList] $appCategory = @(Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query "SELECT LocalizedCategoryInstanceNames FROM SMS_Application WHERE LocalizedDisplayName = `'$App`' AND IsLatest = 1" | select -exp LocalizedCategoryInstanceNames)
 
                             $appCategory.Add($licensedCategory) | Out-Null
 
@@ -2286,7 +2286,7 @@ function New-CMAppDeployment {
 
                 # umozneni instalace SW mimo maintenance windows. Skrze -OverrideServiceWindow nefunguje.
                 Write-Verbose "allow installation outside the maintenance window"
-                $apps = Get-WmiObject -Namespace "root\sms\site_$siteCode" -ComputerName $sccmServer -Query "SELECT * FROM SMS_ApplicationAssignment WHERE CollectionName = `'$collection`' and ApplicationName = `'$App`'"
+                $apps = Get-CimInstance -Namespace "root\sms\site_$siteCode" -ComputerName $sccmServer -Query "SELECT * FROM SMS_ApplicationAssignment WHERE CollectionName = `'$collection`' and ApplicationName = `'$App`'"
                 $apps.OverrideServiceWindows = $true
                 $null = $apps.put()
             } # konec foreach cyklu resiciho instalace jednotlivych aplikaci
@@ -2392,8 +2392,8 @@ function New-CMAppPhasedDeploment {
 
     foreach ($App in $AppName) {
         # distribute app to DP if necessary
-        $AppID = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
-        $distributed = Get-WmiObject -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
+        $AppID = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_PackageBaseclass -Filter "Name='$App'" | select -exp PackageID
+        $distributed = Get-CimInstance -ComputerName $sccmServer -Namespace root\SMS\Site_$siteCode -Class SMS_DistributionStatus | where { $_.packageid -eq $AppID }
         if (!$distributed) {
             Write-Warning "Application $App isn't on any DP, distributing to DP group '$DPGroupName'"
             Start-CMContentDistribution -ApplicationName $App -DistributionPointGroupName $DPGroupName
@@ -2521,8 +2521,6 @@ function Refresh-CMCollection {
     }
 }
 
-#Requires -Modules ActiveDirectory
-
 function Set-CMDeviceDJoinBlobVariable {
     <#
     .SYNOPSIS
@@ -2586,7 +2584,7 @@ function Set-CMDeviceDJoinBlobVariable {
 
     begin {
         if (!(Get-Module ActiveDirectory -ListAvailable)) {
-            if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+            if ((Get-CimInstance win32_operatingsystem -Property caption).caption -match "server") {
                 throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools" 
             } else {
                 throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
@@ -2775,15 +2773,15 @@ Function Update-CMAppSourceContent {
         # Get-CMApplication nejde pouzit s OGV (fce se ukonci), proto skrze WMI
         $application = @()
         if (!$appName) {
-            $appName = Get-WmiObject -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
+            $appName = Get-CimInstance -ComputerName $sccmServer -Namespace "root\sms\site_$siteCode" -Query 'SELECT * FROM SMS_Application WHERE isexpired="false" AND isenabled="true"' |
             select LocalizedDisplayName | sort LocalizedDisplayName | Out-GridView -OutputMode Multiple | select -exp LocalizedDisplayName
         }
 
         $appName | % {
             "Ziskavam informace o $_"
             $name = $_
-            $app = Get-WmiObject -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ApplicationLatest -ComputerName $sccmServer -Filter "LocalizedDisplayName='$name'"
-            $packageID = Get-WmiObject -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ContentPackage -ComputerName $sccmServer -Filter "SecurityKey='$($app.ModelName)'" | select -exp PackageID
+            $app = Get-CimInstance -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ApplicationLatest -ComputerName $sccmServer -Filter "LocalizedDisplayName='$name'"
+            $packageID = Get-CimInstance -Namespace "Root\SMS\Site_$siteCode" -Class SMS_ContentPackage -ComputerName $sccmServer -Filter "SecurityKey='$($app.ModelName)'" | select -exp PackageID
             if ($packageID) {
                 $application += New-Object PSObject -Property @{ LocalizedDisplayName = $name; PackageId = $packageID }
             } else {
@@ -2800,7 +2798,7 @@ Function Update-CMAppSourceContent {
                 'computername' = $sccmServer;
                 'Filter'       = "PackageID='$($app.PackageId)'";
             }
-            (Get-WmiObject @WmiObjectParam).Commit() | Out-Null
+            (Get-CimInstance @WmiObjectParam).Commit() | Out-Null
         }
     }
 }
@@ -2824,7 +2822,7 @@ function Update-CMClientPolicy {
     #>
 
     [cmdletbinding()]
-    [Alias("Invoke-CMClientPolicyUpdate")]
+    [Alias('Invoke-CMClientPolicyUpdate')]
     Param (
         [Parameter(Mandatory = $false, ValueFromPipeline = $True, Position = 0)]
         [ValidateNotNullOrEmpty()]
@@ -2837,8 +2835,8 @@ function Update-CMClientPolicy {
 
     BEGIN {
         if ($env:COMPUTERNAME -in $computerName) {
-            if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-                throw "Run with administrator rights!"
+            if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator')) {
+                throw 'Run with administrator rights!'
             }
         }
 
@@ -2848,7 +2846,7 @@ function Update-CMClientPolicy {
     PROCESS {
 
         $param = @{
-            scriptBlock  = {
+            scriptBlock = {
                 param ($resetPolicy, $evaluateBaseline, $allFunctionDefs)
 
                 $ErrorActionPreference = 'stop'
@@ -2861,19 +2859,19 @@ function Update-CMClientPolicy {
                     if ($resetPolicy) {
                         $null = ([wmiclass]'ROOT\ccm:SMS_Client').ResetPolicy(1)
                         # invoking Machine Policy Agent Cleanup
-                        $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000040}"
+                        $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000040}'
                         Start-Sleep -Seconds 5
                     }
                     # invoking receive of computer policies
-                    $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000021}"
+                    $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000021}'
                     Start-Sleep -Seconds 1
                     # invoking Machine Policy Evaluation Cycle
-                    $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000022}"
+                    $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000022}'
                     if (!$resetPolicy) {
                         # after hard reset I have to wait a little bit before this method can be used again
                         Start-Sleep -Seconds 5
                         # invoking Application Deployment Evaluation Cycle
-                        $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000121}"
+                        $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000121}'
                     }
 
                     # invoke evaluation of compliance policies
@@ -2889,7 +2887,7 @@ function Update-CMClientPolicy {
 
             ArgumentList = $resetPolicy, $evaluateBaseline, $allFunctionDefs
         }
-        if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        if ($computerName -and $computerName -notin 'localhost', $env:COMPUTERNAME) {
             $param.computerName = $computerName
         }
 
@@ -2898,7 +2896,7 @@ function Update-CMClientPolicy {
 
     END {
         if ($resetPolicy) {
-            Write-Warning "Is is desirable to run Update-CMClientPolicy again after a few minutes to get new policies ASAP"
+            Write-Warning 'Is is desirable to run Update-CMClientPolicy again after a few minutes to get new policies ASAP'
         }
     }
 }

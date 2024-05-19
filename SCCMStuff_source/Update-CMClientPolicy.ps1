@@ -17,7 +17,7 @@
     #>
 
     [cmdletbinding()]
-    [Alias("Invoke-CMClientPolicyUpdate")]
+    [Alias('Invoke-CMClientPolicyUpdate')]
     Param (
         [Parameter(Mandatory = $false, ValueFromPipeline = $True, Position = 0)]
         [ValidateNotNullOrEmpty()]
@@ -30,8 +30,8 @@
 
     BEGIN {
         if ($env:COMPUTERNAME -in $computerName) {
-            if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-                throw "Run with administrator rights!"
+            if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator')) {
+                throw 'Run with administrator rights!'
             }
         }
 
@@ -41,7 +41,7 @@
     PROCESS {
 
         $param = @{
-            scriptBlock  = {
+            scriptBlock = {
                 param ($resetPolicy, $evaluateBaseline, $allFunctionDefs)
 
                 $ErrorActionPreference = 'stop'
@@ -54,19 +54,19 @@
                     if ($resetPolicy) {
                         $null = ([wmiclass]'ROOT\ccm:SMS_Client').ResetPolicy(1)
                         # invoking Machine Policy Agent Cleanup
-                        $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000040}"
+                        $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000040}'
                         Start-Sleep -Seconds 5
                     }
                     # invoking receive of computer policies
-                    $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000021}"
+                    $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000021}'
                     Start-Sleep -Seconds 1
                     # invoking Machine Policy Evaluation Cycle
-                    $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000022}"
+                    $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000022}'
                     if (!$resetPolicy) {
                         # after hard reset I have to wait a little bit before this method can be used again
                         Start-Sleep -Seconds 5
                         # invoking Application Deployment Evaluation Cycle
-                        $null = Invoke-WmiMethod -Class SMS_client -Namespace "root\ccm" -Name TriggerSchedule -ArgumentList "{00000000-0000-0000-0000-000000000121}"
+                        $null = Invoke-CimMethod -Class SMS_client -Namespace 'root\ccm' -Name TriggerSchedule -Arguments '{00000000-0000-0000-0000-000000000121}'
                     }
 
                     # invoke evaluation of compliance policies
@@ -82,7 +82,7 @@
 
             ArgumentList = $resetPolicy, $evaluateBaseline, $allFunctionDefs
         }
-        if ($computerName -and $computerName -notin "localhost", $env:COMPUTERNAME) {
+        if ($computerName -and $computerName -notin 'localhost', $env:COMPUTERNAME) {
             $param.computerName = $computerName
         }
 
@@ -91,7 +91,7 @@
 
     END {
         if ($resetPolicy) {
-            Write-Warning "Is is desirable to run Update-CMClientPolicy again after a few minutes to get new policies ASAP"
+            Write-Warning 'Is is desirable to run Update-CMClientPolicy again after a few minutes to get new policies ASAP'
         }
     }
 }

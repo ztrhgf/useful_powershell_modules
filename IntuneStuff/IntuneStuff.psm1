@@ -1,138 +1,3 @@
-function Connect-MSGraph2 {
-    <#
-    .SYNOPSIS
-    Function for connecting to Microsoft Graph.
-
-    .DESCRIPTION
-    Function for connecting to Microsoft Graph.
-    Support (interactive) user or application authentication
-    Without specifying any parameters, interactive user auth. will be used.
-
-    To use app. auth. tenantId, appId and appSecret parameters have to be specified!
-    TIP: you can use credential parameter to pass appId and appSecret securely
-
-    .PARAMETER TenantId
-    ID of your tenant.
-
-    Default is $_tenantId.
-
-    .PARAMETER AppId
-    Azure AD app ID (GUID) for the application that will be used to authenticate
-
-    .PARAMETER AppSecret
-    Specifies the Azure AD app secret corresponding to the app ID that will be used to authenticate.
-    Can be generated in Azure > 'App Registrations' > SomeApp > 'Certificates & secrets > 'Client secrets'.
-
-    .PARAMETER Credential
-    Credential object that can be used both for user and app authentication.
-
-    .PARAMETER Beta
-    Set schema to beta.
-
-    .PARAMETER returnConnection
-    Switch for returning connection info (like original Connect-AzureAD command do).
-
-    .EXAMPLE
-    Connect-MSGraph2
-
-    Connect to MS Graph interactively using user authentication.
-
-    .EXAMPLE
-    Connect-MSGraph2 -TenantId 1111 -AppId 1234 -AppSecret 'pass'
-
-    Connect to MS Graph using app. authentication.
-
-    .EXAMPLE
-    Connect-MSGraph2 -TenantId 1111 -credential (Get-Credential)
-
-    Connect to MS Graph using app. authentication. AppId and AppSecret will be extracted from credential object.
-
-    .EXAMPLE
-    Connect-MSGraph2 -credential (Get-Credential)
-
-    Connect to MS Graph using user authentication.
-
-    .NOTES
-    Requires module Microsoft.Graph.Intune
-    #>
-
-    [CmdletBinding(DefaultParameterSetName = 'Default')]
-    [Alias("Connect-MSGraphApp2")]
-    param (
-        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
-        [Parameter(Mandatory = $true, ParameterSetName = "App2Auth")]
-        [string] $tenantId = $_tenantId
-        ,
-        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
-        [string] $appId
-        ,
-        [Parameter(Mandatory = $true, ParameterSetName = "AppAuth")]
-        [string] $appSecret
-        ,
-        [Parameter(Mandatory = $true, ParameterSetName = "App2Auth")]
-        [Parameter(Mandatory = $true, ParameterSetName = "UserAuth")]
-        [System.Management.Automation.PSCredential] $credential,
-
-        [switch] $beta,
-
-        [switch] $returnConnection
-    )
-
-    if (!(Get-Command Connect-MSGraph -ea silent)) {
-        throw "Module Microsoft.Graph.Intune is missing"
-    }
-    if (!(Get-Command Connect-MSGraphApp -ea silent)) {
-        throw "Module WindowsAutoPilotIntune is missing"
-    }
-
-    if ($beta) {
-        if ((Get-MSGraphEnvironment).SchemaVersion -ne "beta") {
-            $null = Update-MSGraphEnvironment -SchemaVersion beta
-        }
-    }
-
-    if ($tenantId -and (($appId -and $appSecret) -or $credential)) {
-        Write-Verbose "Authenticating using app auth."
-
-        if (!$appId -and $credential) {
-            $appId = $credential.UserName
-        }
-        if (!$appSecret -and $credential) {
-            $appSecret = $credential.GetNetworkCredential().password
-        }
-
-        $param = @{
-            Tenant      = $tenantId
-            AppId       = $appId
-            AppSecret   = $appSecret
-            ErrorAction = 'Stop'
-        }
-
-        if ($returnConnection) {
-            Connect-MSGraphApp @param
-        } else {
-            $null = Connect-MSGraphApp @param
-        }
-        Write-Verbose "Connected to Intune tenant $tenantId"
-    } else {
-        Write-Verbose "Authenticating using user auth."
-
-        $param = @{
-            ErrorAction = 'Stop'
-        }
-        if ($credential) {
-            $param.Credential = $credential
-        }
-
-        if ($returnConnection) {
-            Connect-MSGraph @param
-        } else {
-            $null = Connect-MSGraph @param
-        }
-        Write-Verbose "Connected to Intune tenant using user authentication"
-    }
-}
-
 function ConvertFrom-MDMDiagReport {
     <#
     .SYNOPSIS
@@ -392,7 +257,7 @@ function ConvertFrom-MDMDiagReportXML {
 
         [switch] $showConnectionData
     )
-
+    
     if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
         throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
     }
@@ -440,12 +305,28 @@ function ConvertFrom-MDMDiagReportXML {
             }
         } else {
             Write-Verbose "Generating '$MDMDiagReport'..."
-            Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow
+            try {
+                Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow -ErrorAction Stop
+            } catch {
+                if ($_ -like "*The directory name is invalid*") {
+                    throw "Unable to generate report using MdmDiagnosticsTool.exe. This seems to be bug, try to run this function again in a new PowerShell console"
+                } else {
+                    throw $_
+                }
+            }
         }
     }
     if (!(Test-Path $MDMDiagReport -PathType Leaf)) {
         Write-Verbose "'$MDMDiagReport' doesn't exist, generating..."
-        Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow
+        try {
+            Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow -ErrorAction Stop
+        } catch {
+            if ($_ -like "*The directory name is invalid*") {
+                throw "Unable to generate report using MdmDiagnosticsTool.exe. This seems to be bug, try to run this function again in a new PowerShell console"
+            } else {
+                throw $_
+            }
+        }
     }
 
     Write-Verbose "Converting '$MDMDiagReport' to XML object"
@@ -525,7 +406,7 @@ function ConvertFrom-MDMDiagReportXML {
             } else {
                 # it is AzureAD account
                 if ($getDataFromIntune) {
-                    return (Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$id").userPrincipalName
+                    return (Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/users/$id").userPrincipalName
                 } else {
                     # unable to translate ID to name because there is no connection to the Intune Graph API
                     return $id
@@ -1141,123 +1022,32 @@ function ConvertFrom-MDMDiagReportXML {
 }
 
 function Get-BitlockerEscrowStatusForAzureADDevices {
-    <#
+  <#
       .SYNOPSIS
-      Retrieves bitlocker key upload status for all azure ad devices
+      Retrieves bitlocker key upload status for Windows Azure AD devices
 
       .DESCRIPTION
       Use this report to determine which of your devices have backed up their bitlocker key to AzureAD (and find those that haven't and are at risk of data loss!).
-      Report will be stored in current folder.
-
-      .PARAMETER Credential
-      Optional, pass a credential object to automatically sign in to Azure AD. Global Admin permissions required
-
-      .PARAMETER showBitlockerKeysInReport
-      Switch, is supplied, will show the actual recovery keys in the report. Be careful where you distribute the report to if you use this
-
-      .PARAMETER showAllOSTypesInReport
-      By default, only the Windows OS is reported on, if for some reason you like the additional information this report gives you about devices in general, you can add this switch to show all OS types
-
-      .EXAMPLE
-      Get-BitlockerEscrowStatusForAzureADDevices | ? {$_.DeviceAccountEnabled -and $_.'OS Drive encrypted' -and $_.OS -eq "Windows" -and !$_.lastKeyUploadDate}
-
-      Returns devices with enabled Bitlocker but no recovery key in Azure
 
       .NOTES
-      filename: get-bitlockerEscrowStatusForAzureADDevices.ps1
-      author: Jos Lieben
-      blog: www.lieben.nu
-      created: 9/4/2019
+    https://msendpointmgr.com/2021/01/18/get-intune-managed-devices-without-an-escrowed-bitlocker-recovery-key-using-powershell/
     #>
 
-    [cmdletbinding()]
-    Param(
-        $Credential,
+  [cmdletbinding()]
+  param()
 
-        [Switch]$showBitlockerKeysInReport,
+  $null = Connect-MgGraph -Scopes BitLockerKey.ReadBasic.All, DeviceManagementManagedDevices.Read.All
 
-        [Switch]$showAllOSTypesInReport
-    )
+  $recoveryKeys = Invoke-MgGraphRequest -Uri "beta/informationProtection/bitlocker/recoveryKeys?`$select=createdDateTime,deviceId" | Get-MgGraphAllPages
 
-    Import-Module AzureRM.Profile -ErrorAction Stop
-    if (!(Get-Module -Name "AzureADPreview", "AzureAD" -ListAvailable)) {
-        throw "AzureADPreview nor AzureAD module is available"
-    }
-    if (Get-Module -Name "AzureADPreview" -ListAvailable) {
-        Import-Module AzureADPreview
-    } elseif (Get-Module -Name "AzureAD" -ListAvailable) {
-        Import-Module AzureAD
-    }
+  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType" | Get-MgGraphAllPages
 
-    if ($Credential) {
-        Try {
-            Connect-AzureAD -Credential $Credential -ErrorAction Stop | Out-Null
-        } Catch {
-            Write-Warning "Couldn't connect to Azure AD non-interactively, trying interactively."
-            Connect-AzureAD -TenantId $(($Credential.UserName.Split("@"))[1]) -ErrorAction Stop | Out-Null
-        }
-
-        Try {
-            Login-AzureRmAccount -Credential $Credential -ErrorAction Stop | Out-Null
-        } Catch {
-            Write-Warning "Couldn't connect to Azure RM non-interactively, trying interactively."
-            Login-AzureRmAccount -TenantId $(($Credential.UserName.Split("@"))[1]) -ErrorAction Stop | Out-Null
-        }
-    } else {
-        Login-AzureRmAccount -ErrorAction Stop | Out-Null
-    }
-    $context = Get-AzureRmContext
-    $tenantId = $context.Tenant.Id
-    $refreshToken = @($context.TokenCache.ReadItems() | where { $_.tenantId -eq $tenantId -and $_.ExpiresOn -gt (Get-Date) })[0].RefreshToken
-    $body = "grant_type=refresh_token&refresh_token=$($refreshToken)&resource=74658136-14ec-4630-ad9b-26e160ff0fc6"
-    $apiToken = Invoke-RestMethod "https://login.windows.net/$tenantId/oauth2/token" -Method POST -Body $body -ContentType 'application/x-www-form-urlencoded'
-    $restHeader = @{
-        'Authorization'          = 'Bearer ' + $apiToken.access_token
-        'X-Requested-With'       = 'XMLHttpRequest'
-        'x-ms-client-request-id' = [guid]::NewGuid()
-        'x-ms-correlation-id'    = [guid]::NewGuid()
-    }
-    Write-Verbose "Connected, retrieving devices..."
-    $restResult = Invoke-RestMethod -Method GET -UseBasicParsing -Uri "https://main.iam.ad.ext.azure.com/api/Devices?nextLink=&queryParams=%7B%22searchText%22%3A%22%22%7D&top=15" -Headers $restHeader
-    $allDevices = @()
-    $allDevices += $restResult.value
-    while ($restResult.nextLink) {
-        $restResult = Invoke-RestMethod -Method GET -UseBasicParsing -Uri "https://main.iam.ad.ext.azure.com/api/Devices?nextLink=$([System.Web.HttpUtility]::UrlEncode($restResult.nextLink))&queryParams=%7B%22searchText%22%3A%22%22%7D&top=15" -Headers $restHeader
-        $allDevices += $restResult.value
-    }
-
-    Write-Verbose "Retrieved $($allDevices.Count) devices from AzureAD, processing information..."
-
-    $csvEntries = @()
-    foreach ($device in $allDevices) {
-        if (!$showAllOSTypesInReport -and $device.deviceOSType -notlike "Windows*") {
-            Continue
-        }
-        $keysKnownToAzure = $False
-        $osDriveEncrypted = $False
-        $lastKeyUploadDate = $Null
-        if ($device.deviceOSType -eq "Windows" -and $device.bitLockerKey.Count -gt 0) {
-            $keysKnownToAzure = $True
-            $keys = $device.bitLockerKey | Sort-Object -Property creationTime -Descending
-            if ($keys.driveType -contains "Operating system drive") {
-                $osDriveEncrypted = $True
-            }
-            $lastKeyUploadDate = $keys[0].creationTime
-            if ($showBitlockerKeysInReport) {
-                $bitlockerKeys = ""
-                foreach ($key in $device.bitlockerKey) {
-                    $bitlockerKeys += "$($key.creationTime)|$($key.driveType)|$($key.recoveryKey)|"
-                }
-            } else {
-                $bitlockerKeys = "HIDDEN FROM REPORT: READ INSTRUCTIONS TO REVEAL KEYS"
-            }
-        } else {
-            $bitlockerKeys = "NOT UPLOADED YET OR N/A"
-        }
-
-        $csvEntries += [PSCustomObject]@{"Name" = $device.displayName; "BitlockerKeysUploadedToAzureAD" = $keysKnownToAzure; "OS Drive encrypted" = $osDriveEncrypted; "lastKeyUploadDate" = $lastKeyUploadDate; "DeviceAccountEnabled" = $device.accountEnabled; "managed" = $device.isManaged; "ManagedBy" = $device.managedBy; "lastLogon" = $device.approximateLastLogonTimeStamp; "Owner" = $device.Owner.userPrincipalName; "bitlockerKeys" = $bitlockerKeys; "OS" = $device.deviceOSType; "OSVersion" = $device.deviceOSVersion; "Trust Type" = $device.deviceTrustType; "dirSynced" = $device.dirSyncEnabled; "Compliant" = $device.isCompliant; "trustTypeDisplayValue" = $device.trustTypeDisplayValue; "creationTimeStamp" = $device.creationTimeStamp }
-    }
-    $csvEntries
+  $aadDevices | select *, @{n = 'ValidRecoveryBitlockerKeyInAzure'; e = {
+      $deviceId = $_.azureADDeviceId
+      $enrolledDateTime = $_.enrolledDateTime
+      $validRecoveryKey = $recoveryKeys | ? { $_.deviceId -eq $deviceId -and $_.createdDateTime -ge $enrolledDateTime }
+      if ($validRecoveryKey) { $true } else { $false } }
+  }
 }
 
 function Get-ClientIntunePolicyResult {
@@ -1295,22 +1085,13 @@ function Get-ClientIntunePolicyResult {
 
         .PARAMETER getDataFromIntune
         Switch for getting additional data (policy names and account names instead of IDs) from Intune itself.
-        Microsoft.Graph.Intune module is required!
+        Microsoft.Graph.Authentication module is required!
 
         Account with READ permission for: Applications, Scripts, RemediationScripts, Users will be needed i.e.:
         - DeviceManagementApps.Read.All
         - DeviceManagementManagedDevices.Read.All
         - DeviceManagementConfiguration.Read.All
         - User.Read.All
-
-        .PARAMETER credential
-        Credentials for connecting to Intune.
-        Account that has at least READ permissions has to be used.
-
-        .PARAMETER tenantId
-        String with your TenantID.
-        Use only if you want use application authentication (instead of user authentication).
-        You can get your TenantID at https://portal.azure.com/#blade/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/Overview.
 
         .PARAMETER showEnrollmentIDs
         Switch for showing EnrollmentIDs in the result.
@@ -1334,19 +1115,12 @@ function Get-ClientIntunePolicyResult {
         URLs to policies/settings will be included.
 
         .EXAMPLE
-        $intuneREADCred = Get-Credential
-        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -showConnectionData -credential $intuneREADCred
+        Connect-MgGraph
+
+        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -showConnectionData
 
         Will return HTML page containing Intune policy processing report data and connection data.
         URLs to policies/settings and Intune policies names (if available) will be included.
-
-        .EXAMPLE
-        $intuneREADAppCred = Get-Credential
-        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -credential $intuneREADAppCred -tenantId 123456789
-
-        Will return HTML page containing Intune policy processing report data.
-        URLs to policies/settings will be included same as Intune policies names (if available).
-        For authentication to Intune registered application secret will be used (AppID and secret stored in credentials object).
         #>
 
     [Alias("ipresult", "Get-IntunePolicyResult", "Get-IntuneClientPolicyResult")]
@@ -1367,10 +1141,6 @@ function Get-ClientIntunePolicyResult {
 
         [switch] $getDataFromIntune,
 
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
-
         [switch] $showEnrollmentIDs,
 
         [switch] $showURLs,
@@ -1387,7 +1157,7 @@ function Get-ClientIntunePolicyResult {
             throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
         }
     }
-    
+
     #region prepare
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
@@ -1401,36 +1171,16 @@ function Get-ClientIntunePolicyResult {
     }
 
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneApp = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneRemediationScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneApp = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     # get the core Intune data
@@ -2139,8 +1889,7 @@ function Get-IntuneDeviceComplianceStatus {
         $deviceId = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$select=id" -Method Get).value | select -ExpandProperty Id
     } elseif ($deviceName) {
         $deviceName | % {
-            #TODO limit returned properties using select filter
-            $id = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$_'" -Method Get).value | select -ExpandProperty Id
+            $id = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$_'&`$select=DeviceName,Id" -Method Get).value | select -ExpandProperty Id
             if ($id) {
                 Write-Verbose "$_ was translated to $id"
                 $deviceId += $id
@@ -2238,22 +1987,24 @@ function Get-IntuneEnrollmentStatus {
         $ErrActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Stop"
 
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+        }
+
         try {
             if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
                 $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
             } else {
-                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID. Install RSAT to fix this."
+                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID"
             }
-
-            Connect-MSGraph2
 
             $intuneObj = @()
 
-            $intuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+            $intuneObj += Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$computerName'"
 
             if ($ADObj.ObjectGUID) {
                 # because of bug? computer can be listed under guid_date name in cloud
-                $intuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+                $intuneObj += Get-MgDeviceManagementManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
             }
         } catch {
             Write-Warning "Unable to get information from Intune. $_"
@@ -2446,7 +2197,16 @@ function Get-IntuneLog {
                     Start-Process $viewer -ArgumentList "`"$log`""
                 } else {
                     # use associated viewer
-                    & $log
+
+                    $association = cmd /c assoc .log
+                    $associatedProgram = ($association -split "=")[-1]
+                    $associatedProgramPath = ((cmd /c ftype $associatedProgram) -split '"')[1]
+                    if (Test-Path $associatedProgramPath) {
+                        & $log
+                    } else {
+                        Write-Verbose "Associated program '$associatedProgram' doesn't exist, use notepad instead"
+                        notepad.exe $log
+                    }
                 }
             }
         }
@@ -2458,7 +2218,8 @@ function Get-IntuneLog {
         $log = "\\$computerName\" + ($log -replace ":", "$")
     }
     "opening logs in '$log'"
-    _openLog (Get-ChildItem $log -File | select -exp fullname)
+    # filter out "old" file version (contains '-')
+    _openLog (Get-ChildItem $log -File | ? BaseName -NotLike "*-*" | select -exp fullname)
 
     # When a PowerShell script is run on the client from Intune, the scripts and the script output will be stored here, but only until execution is complete
     $log = "C:\Program files (x86)\Microsoft Intune Management Extension\Policies\Scripts"
@@ -2487,7 +2248,7 @@ function Get-IntuneLog {
     # generate & open MDMDiagReport
     "generating & opening MDMDiagReport"
     if ($computerName) {
-        Write-Warning "TODO (zatim delej tak, ze spustis tuto fci lokalne pod uzivatelem, jehoz vysledky chces zjistit"
+        Write-Warning "TODO (run this function on the remote computer manually"
     } else {
         Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out $env:TEMP\MDMDiag" -NoNewWindow
         & "$env:TEMP\MDMDiag\MDMDiagReport.html"
@@ -3511,8 +3272,8 @@ function Get-IntunePolicy {
         [switch] $flatOutput
     )
 
-    if (!(Get-Module Microsoft.Graph.Intune) -and !(Get-Module Microsoft.Graph.Intune -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing"
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     if ($policyType -contains 'ALL') {
@@ -3526,14 +3287,18 @@ function Get-IntunePolicy {
     if ($basicOverview) {
         Write-Verbose "Just subset of available policy properties will be gathered"
         $selectFilter = '&$select=id,displayName,lastModifiedDateTime,assignments' # these properties are common across all intune policies, so it is safe to use them
-        $selectParam = @{select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments') }
         $expandFilter = '&$expand=assignments'
-        $expandParam = @{expand = 'assignments' }
     } else {
         $selectFilter = $null
-        $selectParam = @{}
         $expandFilter = '&$expand=assignments'
-        $expandParam = @{expand = 'assignments' }
+    }
+    $sharedParam = @{
+        all    = $true
+        expand = "assignments"
+    }
+    if ($basicOverview) {
+        Write-Verbose "Just subset of available policy properties will be gathered"
+        $param.select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments')
     }
 
     # progress variables
@@ -3554,8 +3319,9 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Apps"
         Write-Progress -Activity $progressActivity -Status "Processing Apps" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = ("https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=(microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true)$expandFilter$selectFilter" -replace "\s+", "%20")
-        $app = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true"
+        $app = Get-MgBetaDeviceAppManagementMobileApp @param
 
         $resultProperty.App = $app
     }
@@ -3569,14 +3335,14 @@ function Get-IntunePolicy {
 
         # targetedManagedAppConfigurations
         Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
         $targetedManagedAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
 
         # mobileAppConfigurations
         Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $uri = "https://graph.microsoft.com//beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false)$expandFilter$selectFilter" -replace "\s+", "%20"
-        $mobileAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false"
+        $mobileAppConfigurations = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
         $mobileAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
 
         if ($appConfigurationPolicy) {
@@ -3595,32 +3361,29 @@ function Get-IntunePolicy {
 
         # iosManagedAppProtections
         Write-Verbose "`t- processing 'iosManagedAppProtections'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections?$expandFilter$selectFilter"
-        $iosManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $iosManagedAppProtections = Get-MgBetaDeviceAppManagementiOSManagedAppProtection @sharedParam
         $iosManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # androidManagedAppProtections
         Write-Verbose "`t- processing 'androidManagedAppProtections'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections?$expandFilter$selectFilter"
-        $androidManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $androidManagedAppProtections = Get-MgBetaDeviceAppManagementAndroidManagedAppProtection @sharedParam
         $androidManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # targetedManagedAppConfigurations
         Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
         $targetedManagedAppConfigurations | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # windowsInformationProtectionPolicies
         Write-Verbose "`t- processing 'windowsInformationProtectionPolicies'"
+        # unable to use cmdlet because of error: Get-MgBetaDeviceAppManagementWindowsInformationProtectionPolicy_List: Object reference not set to an instance of an object.
         $uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $windowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsInformationProtectionPolicies = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
         $windowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # mdmWindowsInformationProtectionPolicies
         Write-Verbose "`t- processing 'mdmWindowsInformationProtectionPolicies'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mdmWindowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $mdmWindowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $mdmWindowsInformationProtectionPolicies = Get-MgBetaDeviceAppManagementMdmWindowsInformationProtectionPolicy @sharedParam
         $mdmWindowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         if ($appProtectionPolicy) {
@@ -3635,8 +3398,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Compliance policies"
         Write-Progress -Activity $progressActivity -Status "Processing Compliance policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/v1.0/deviceManagement/deviceCompliancePolicies?$expandFilter$selectFilter"
-        $compliancePolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $compliancePolicy = Get-MgBetaDeviceManagementDeviceCompliancePolicy @sharedParam
 
         $resultProperty.CompliancePolicy = $compliancePolicy
     }
@@ -3652,30 +3414,32 @@ function Get-IntunePolicy {
         # Templates profile type
         # api returns also Windows Update Ring policies, but they are filtered, so just policies as in GUI are returned
         Write-Verbose "`t- processing 'deviceConfigurations'"
-        $dcTemplate = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=(not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration'))$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration')"
+        $dcTemplate = Get-MgBetaDeviceManagementDeviceConfiguration @param
         $dcTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Administrative Templates
         Write-Verbose "`t- processing 'groupPolicyConfigurations'"
-        $dcAdmTemplate = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/groupPolicyConfigurations?$expandFilter$selectFilter" | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $dcAdmTemplate = Get-MgBetaDeviceManagementGroupPolicyConfiguration @sharedParam
         $dcAdmTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # mobileAppConfigurations
         Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $dcMobileAppConf = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true)$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true"
+        $dcMobileAppConf = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
         $dcMobileAppConf | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Settings Catalog profile type
         # api returns also Attack Surface Reduction Rules and Account protection policies (from Endpoint Security section), but they are filtered, so just policies as in GUI are returned
         # configurationPolicies objects have property Name instead of DisplayName
         Write-Verbose "`t- processing 'configurationPolicies'"
-        $custSelectFilter = $selectFilter -replace "displayname", "name"
-        if ($basicOverview) {
-            $custExpandFilter = $expandFilter
-        } else {
-            $custExpandFilter = "$expandFilter,settings"
-        }
-        $dcSettingCatalog = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')$custExpandFilter$custSelectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select @{n = 'Displayname'; e = { $_.Name } }, * -ExcludeProperty 'Name', 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.select = $param.select -replace "displayname", "name"
+        $param.expand += ",settings"
+        $param.filter = "(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')"
+        $dcSettingCatalog = Get-MgBetaDeviceManagementConfigurationPolicy @param
         $dcSettingCatalog | ? { $_ } | % { $configurationPolicy += $_ }
 
         if ($configurationPolicy) {
@@ -3691,7 +3455,7 @@ function Get-IntunePolicy {
         Write-Progress -Activity $progressActivity -Status "Processing Custom Attribute Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
         $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCustomAttributeShellScripts?$expandFilter$selectFilter"
-        $customAttributeShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $customAttributeShellScript = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
 
         $resultProperty.CustomAttributeShellScript = $customAttributeShellScript
     }
@@ -3701,8 +3465,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions"
         Write-Progress -Activity $progressActivity -Status "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations?$expandFilter$selectFilter"
-        $deviceEnrollmentConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceEnrollmentConfiguration = Get-MgBetaDeviceManagementDeviceEnrollmentConfiguration @sharedParam
 
         $resultProperty.DeviceEnrollmentConfiguration = $deviceEnrollmentConfiguration
     }
@@ -3712,8 +3475,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing PowerShell scripts"
         Write-Progress -Activity $progressActivity -Status "Processing PowerShell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?$expandFilter$selectFilter"
-        $deviceConfigPSHScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceConfigPSHScript = Get-MgBetaDeviceManagementScript @sharedParam
 
         $resultProperty.DeviceManagementPSHScript = $deviceConfigPSHScript
     }
@@ -3723,8 +3485,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Shell scripts"
         Write-Progress -Activity $progressActivity -Status "Processing Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceShellScripts?$expandFilter$selectFilter"
-        $deviceConfigShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceConfigShellScript = Get-MgBetaDeviceManagementDeviceShellScript @sharedParam
 
         $resultProperty.DeviceManagementShellScript = $deviceConfigShellScript
     }
@@ -3738,21 +3499,22 @@ function Get-IntunePolicy {
 
         #region process: Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies (not 'Local User Group Membership')
         if ($basicOverview) {
-            $endpointSecPol = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents?$selectFilter" | Get-MSGraphAllPages
+            $endpointSecPol = Get-MgBetaDeviceManagementIntent @sharedParam
         } else {
-            $templates = (Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents" -ErrorAction Stop).Value
+            $templates = Get-MgBetaDeviceManagementIntent @sharedParam
             $endpointSecPol = @()
             foreach ($template in $templates) {
                 Write-Verbose "`t- processing intent $($template.id), template $($template.templateId)"
 
-                $settings = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents/$($template.id)/settings"
-                $templateDetail = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/templates/$($template.templateId)"
+                $settings = Get-MgBetaDeviceManagementIntentSetting -DeviceManagementIntentId $template.id | Expand-MgAdditionalProperties
+                $templateDetail = Get-MgBetaDeviceManagementTemplate -DeviceManagementTemplateId $template.templateId
+                $assignments = Get-MgBetaDeviceManagementIntentAssignment -DeviceManagementIntentId $template.id
 
                 $template | Add-Member Noteproperty -Name 'platforms' -Value $templateDetail.platformType -Force # to match properties of second function region objects
                 $template | Add-Member Noteproperty -Name 'type' -Value "$($templateDetail.templateType)-$($templateDetail.templateSubtype)" -Force
 
                 $templSettings = @()
-                foreach ($setting in $settings.value) {
+                foreach ($setting in $settings) {
                     $displayName = $setting.definitionId -replace "deviceConfiguration--", "" -replace "admx--", "" -replace "_", " "
                     if ($null -eq $setting.value) {
                         if ($setting.definitionId -eq "deviceConfiguration--windows10EndpointProtectionConfiguration_firewallRules") {
@@ -3775,8 +3537,7 @@ function Get-IntunePolicy {
 
                 $template | Add-Member Noteproperty -Name Settings -Value $templSettings -Force
                 $template | Add-Member Noteproperty -Name 'settingCount' -Value $templSettings.count -Force # to match properties of second function region objects
-                $assignments = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents/$($template.id)/assignments"
-                $template | Add-Member Noteproperty -Name Assignments -Value $assignments.Value -Force
+                $template | Add-Member Noteproperty -Name Assignments -Value $assignments -Force
                 $endpointSecPol += $template | select -Property * -ExcludeProperty templateId
             }
         }
@@ -3785,10 +3546,20 @@ function Get-IntunePolicy {
 
         #region process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
         if ($basicOverview) {
+            $param = $sharedParam.clone()
+            $param.select = $param.select -replace "displayname", "name"
+            $param.select += ",templateReference"
+            $param.expand += ",settings"
+            $param.filter = "templateReference/templateFamily ne 'none'"
+
             $custSelectFilter = $selectFilter -replace "displayname", "name"
-            $endpointSecPol2 = Invoke-MSGraphRequest -HttpMethod GET -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(templateReference/templateFamily ne 'none')$expandFilter$custSelectFilter,templateReference" -replace "\s+", "%20") | Get-MSGraphAllPages | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select @{ n = 'id'; e = { $_.id } }, @{ n = 'displayName'; e = { $_.name } }, * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context' # id as calculated property to have it first and still be able to use *
+            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select @{ n = 'id'; e = { $_.id } }, @{ n = 'displayName'; e = { $_.name } }, * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context' # id as calculated property to have it first and still be able to use *
         } else {
-            $endpointSecPol2 = Invoke-MSGraphRequest -HttpMethod GET -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$select=id,name,description,isAssigned,platforms,lastModifiedDateTime,settingCount,roleScopeTagIds,templateReference&`$expand=Assignments,Settings&`$filter=(templateReference/templateFamily ne 'none')" -replace "\s+", "%20") | Get-MSGraphAllPages | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select -Property id, @{n = 'displayName'; e = { $_.name } }, description, isAssigned, lastModifiedDateTime, roleScopeTagIds, platforms, @{n = 'type'; e = { $_.templateReference.templateFamily } }, templateReference, @{n = 'settings'; e = { $_.settings | % { [PSCustomObject]@{
+            $param = $sharedParam.clone()
+            $param.select = ('id', 'name', 'description', 'isAssigned', 'platforms', 'lastModifiedDateTime', 'settingCount', 'roleScopeTagIds', 'templateReference')
+            $param.expand += ",settings"
+            $param.filter = "templateReference/templateFamily ne 'none'"
+            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | select -Property id, @{n = 'displayName'; e = { $_.name } }, description, isAssigned, lastModifiedDateTime, roleScopeTagIds, platforms, @{n = 'type'; e = { $_.templateReference.templateFamily } }, templateReference, @{n = 'settings'; e = { $_.settings | % { [PSCustomObject]@{
                             # trying to have same settings format a.k.a. name/value as in previous function region
                             Name  = $_.settinginstance.settingDefinitionId
                             Value = $(
@@ -3820,8 +3591,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing iOS App Provisioning profiles"
         Write-Progress -Activity $progressActivity -Status "Processing iOS App Provisioning profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosLobAppProvisioningConfigurations?$expandFilter$selectFilter"
-        $iosAppProvisioningProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $iosAppProvisioningProfile = Get-MgBetaDeviceAppManagementiOSLobAppProvisioningConfiguration @sharedParam
 
         $resultProperty.IOSAppProvisioningProfile = $iosAppProvisioningProfile
     }
@@ -3831,8 +3601,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing iOS Update configurations"
         Write-Progress -Activity $progressActivity -Status "Processing iOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.iosUpdateConfiguration')$expandFilter$selectFilter"
-        $iosUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.iosUpdateConfiguration')"
+
+        $iosUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.IOSUpdateConfiguration = $iosUpdateConfiguration
     }
@@ -3842,8 +3614,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing macOS Update configurations"
         Write-Progress -Activity $progressActivity -Status "Processing macOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.macOSSoftwareUpdateConfiguration')$expandFilter$selectFilter"
-        $macosSoftwareUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.macOSSoftwareUpdateConfiguration')"
+
+        $macosSoftwareUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.MacOSSoftwareUpdateConfiguration = $macosSoftwareUpdateConfiguration
     }
@@ -3855,17 +3629,19 @@ function Get-IntunePolicy {
 
         $policySet = @()
 
-        $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/policySets'
-        $policySetList = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages
+        $param = $sharedParam.clone()
+        $param.Remove('expand')
 
-        if ($basicOverview) {
-            $custExpandFilter = $expandFilter
-        } else {
-            $custExpandFilter = "$expandFilter,items"
+        $policySetList = Get-MgBetaDeviceAppManagementPolicySet @param
+
+        $param = $sharedParam.clone()
+        $param.Remove('all')
+        if (!$basicOverview) {
+            $param.expand += ",items"
         }
+
         foreach ($policy in $policySetList) {
-            $uri = "https://graph.microsoft.com/beta/deviceAppManagement/policySets/$($policy.id)/?$custExpandFilter$selectFilter"
-            $policyContent = Invoke-MSGraphRequest -Url $uri | select -Property * -ExcludeProperty '@odata.context', 'assignments@odata.context', 'items@odata.context'
+            $policyContent = Get-MgBetaDeviceAppManagementPolicySet -PolicySetId $policy.id @param
 
             $policySet += $policyContent
         }
@@ -3882,9 +3658,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Remediation (Health) scripts"
         Write-Progress -Activity $progressActivity -Status "Processing Remediation (Health) scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?$expandFilter$selectFilter"
-        $remediationScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
+        $remediationScript = Get-MgBetaDeviceManagementDeviceHealthScript @sharedParam
         $resultProperty.RemediationScript = $remediationScript
     }
 
@@ -3893,8 +3667,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing S Mode Supplemental policies"
         Write-Progress -Activity $progressActivity -Status "Processing S mode supplemental policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/wdacSupplementalPolicies?$expandFilter$selectFilter"
-        $sModeSupplementalPolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $sModeSupplementalPolicy = Get-MgBetaDeviceAppManagementWdacSupplementalPolicy @sharedParam
 
         $resultProperty.SModeSupplementalPolicy = $sModeSupplementalPolicy
     }
@@ -3904,8 +3677,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Autopilot Deployment profile"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Autopilot Deployment profile" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsAutopilotDeploymentProfiles?$expandFilter$selectFilter"
-        $windowsAutopilotDeploymentProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsAutopilotDeploymentProfile = Get-MgBetaDeviceManagementWindowsAutopilotDeploymentProfile @sharedParam
 
         $resultProperty.WindowsAutopilotDeploymentProfile = $windowsAutopilotDeploymentProfile
     }
@@ -3915,8 +3687,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Feature Update profiles"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Feature Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsFeatureUpdateProfiles?$expandFilter$selectFilter"
-        $windowsFeatureUpdateProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsFeatureUpdateProfile = Get-MgBetaDeviceManagementWindowsFeatureUpdateProfile @sharedParam
 
         $resultProperty.WindowsFeatureUpdateProfile = $windowsFeatureUpdateProfile
     }
@@ -3926,8 +3697,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Quality Update profiles"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Quality Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsQualityUpdateProfiles?$expandFilter$selectFilter"
-        $windowsQualityUpdateProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsQualityUpdateProfile = Get-MgBetaDeviceManagementWindowsQualityUpdateProfile @sharedParam
 
         $resultProperty.WindowsQualityUpdateProfile = $windowsQualityUpdateProfile
     }
@@ -3937,8 +3707,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Update rings"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Update rings" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = ("https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.windowsUpdateForBusinessConfiguration')$expandFilter$selectFilter" -replace "\s+", "%20")
-        $windowsUpdateRing = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.windowsUpdateForBusinessConfiguration')"
+
+        $windowsUpdateRing = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.WindowsUpdateRing = $windowsUpdateRing
     }
@@ -3949,7 +3721,7 @@ function Get-IntunePolicy {
 
     if ($flatOutput) {
         # extract main object properties (policy types) and output the data as array of policies instead of one big object
-        $result | Get-Member -MemberType NoteProperty | select -exp name | % {
+        $result | Get-Member -MemberType NoteProperty | select -ExpandProperty name | % {
             $polType = $_
 
             $result.$polType | ? { $_ } | % {
@@ -3982,13 +3754,6 @@ function Get-IntuneRemediationScriptLocally {
     .PARAMETER getDataFromIntune
     Switch for getting Scripts and User names from Intune, so locally used IDs can be translated to them.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .EXAMPLE
     Get-IntuneRemediationScriptLocally
 
@@ -3999,11 +3764,7 @@ function Get-IntuneRemediationScriptLocally {
     param (
         [string] $computerName,
 
-        [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId
+        [switch] $getDataFromIntune
     )
 
     if (!$computerName) {
@@ -4068,34 +3829,15 @@ function Get-IntuneRemediationScriptLocally {
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
         # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneRemediationScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {
@@ -4382,7 +4124,7 @@ function Get-IntuneReport {
         if ($filter) { $body.filter = $filter }
         Write-Warning "Requesting the report $reportName"
         try {
-            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs" -Body $body -Method Post
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
         } catch {
             switch ($_) {
                 { $_ -like "*(400) Bad Request*" } { throw "Faulty request. There has to be some mistake in this request" }
@@ -4570,13 +4312,6 @@ function Get-IntuneScriptLocally {
     .PARAMETER force
     Switch for skipping script redeploy confirmation.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .EXAMPLE
     Get-IntuneScriptLocally
 
@@ -4596,11 +4331,7 @@ function Get-IntuneScriptLocally {
 
         [switch] $force,
 
-        [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId
+        [switch] $getDataFromIntune
     )
 
     if (!$computerName) {
@@ -4666,40 +4397,20 @@ function Get-IntuneScriptLocally {
 
     # create helper functions text definition for usage in remote sessions
     if ($computerName) {
-        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function Get-IntuneScriptContentLocally { ${function:Get-IntuneScriptContentLocally} }; function Invoke-IntuneScriptRedeploy { ${function:Invoke-IntuneScriptRedeploy} }"
+        $allFunctionDefs = "function _getTargetName { ${function:_getTargetName} }; function _getIntuneScript { ${function:_getIntuneScript} }; function Get-IntuneScriptContentLocally { ${function:Get-IntuneScriptContentLocally} }"
     }
     #endregion helper function
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {
@@ -4820,13 +4531,6 @@ function Get-IntuneWin32AppLocally {
     Switch for getting Apps and User names from Intune, so locally used IDs can be translated.
     If you omit this switch, local Intune logs will be searched for such information instead.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER excludeSystemApp
     Switch for excluding Apps targeted to SYSTEM.
 
@@ -4837,7 +4541,7 @@ function Get-IntuneWin32AppLocally {
     IDs of targeted users and apps will be translated using information from local Intune log files.
 
     .EXAMPLE
-    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune credential (Get-Credential)
+    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names.
 
@@ -4866,10 +4570,6 @@ function Get-IntuneWin32AppLocally {
         [string] $computerName,
 
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $excludeSystemApp
     )
@@ -5010,34 +4710,15 @@ function Get-IntuneWin32AppLocally {
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
         # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneApp = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneApp = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {
@@ -5327,7 +5008,7 @@ function Get-MDMClientData {
 
     # it needs originally installed ActiveDirectory module, NOT copied/hacked one!
     if (!(Get-Module ActiveDirectory -ListAvailable)) {
-        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+        if ((Get-CimInstance win32_operatingsystem -Property caption).caption -match "server") {
             throw "Module ActiveDirectory is missing. Use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools"
         } else {
             throw "Module ActiveDirectory is missing. Use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
@@ -6501,13 +6182,6 @@ function Invoke-IntuneScriptRedeploy {
     .PARAMETER getDataFromIntune
     Switch for getting Scripts and User names from Intune, so locally used IDs can be translated to them.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER all
     Switch to redeploy all scripts of selected type (script, remediationScript).
 
@@ -6528,15 +6202,11 @@ function Invoke-IntuneScriptRedeploy {
     Get and show Remediation Script(s) deployed from Intune to this computer. Selected ones will be then redeployed.
 
     .EXAMPLE
-    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune credential $creds
+    Connect-MgGraph
+
+    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune
 
     Get and show Script(s) deployed from Intune to computer PC-01. IDs of scripts and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
-
-    .EXAMPLE
-    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune credential $creds -tenantId 123456789
-
-    Get and show Script(s) deployed from Intune to computer PC-01. App authentication will be used instead of user auth.
-    IDs of scripts and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
     #>
 
     [CmdletBinding()]
@@ -6550,10 +6220,6 @@ function Invoke-IntuneScriptRedeploy {
 
         [Alias("online")]
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $all,
 
@@ -6625,39 +6291,19 @@ function Invoke-IntuneScriptRedeploy {
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
         if ($scriptType -eq "remediationScript") {
-            $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
+            $intuneRemediationScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MgGraphAllPages
         }
         if ($scriptType -eq "script") {
-            $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
+            $intuneScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MgGraphAllPages
         }
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {
@@ -7095,13 +6741,6 @@ function Invoke-IntuneWin32AppRedeploy {
     Switch for getting Apps and User names from Intune, so locally used IDs can be translated.
     If you omit this switch, local Intune logs will be searched for such information instead.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER dontWait
     Don't wait on Win32App redeploy completion.
 
@@ -7115,7 +6754,7 @@ function Invoke-IntuneWin32AppRedeploy {
     IDs of targeted users and apps will be translated using information from local Intune log files.
 
     .EXAMPLE
-    Invoke-IntuneWin32AppRedeploy -computerName PC-01 -getDataFromIntune credential $creds
+    Invoke-IntuneWin32AppRedeploy -computerName PC-01 -getDataFromIntune
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
     #>
@@ -7127,10 +6766,6 @@ function Invoke-IntuneWin32AppRedeploy {
 
         [Alias("online")]
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $dontWait,
 
@@ -7185,8 +6820,6 @@ function Invoke-IntuneWin32AppRedeploy {
     $param = @{}
     if ($computerName) { $param.computerName = $computerName }
     if ($getDataFromIntune) { $param.getDataFromIntune = $true }
-    if ($credential) { $param.credential = $credential }
-    if ($tenantId) { $param.tenantId = $tenantId }
 
     Write-Verbose "Getting deployed Win32Apps"
     $win32App = Get-IntuneWin32AppLocally @param
@@ -7638,6 +7271,7 @@ function Remove-IntuneWin32AppAssignment {
     Removes all assignment of selected app.
     #>
     [CmdletBinding()]
+    [Alias("Unassign-IntuneWin32App", "Deassign-IntuneWin32App")]
     param (
         [guid[]] $appId,
 
@@ -7773,7 +7407,7 @@ function Reset-HybridADJoin {
             $hybridADJoinStatus = Get-HybridADJoinStatus -wait 30
 
             if ($hybridADJoinStatus) {
-                "$env:COMPUTERNAME was successfully joined to AAD again. Now you should restart it and run Start-AzureADSync"
+                "$env:COMPUTERNAME was successfully joined to AAD again. Now you should restart it and run Start-AzureSync"
             } else {
                 Write-Error "Join wasn't successful"
                 Write-Warning "Check if device $env:COMPUTERNAME exists in AAD"
@@ -7833,8 +7467,8 @@ function Reset-IntuneEnrollment {
 
     $ErrorActionPreference = "Stop"
 
-    if (!(Get-Module "Microsoft.Graph.Intune" -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing (use Install-Module Microsoft.Graph.Intune to get it)"
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     #region check Intune enrollment result
@@ -7869,32 +7503,30 @@ function Reset-IntuneEnrollment {
         $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
     } else {
         Write-Verbose "ActiveDirectory module is missing, unable to obtain computer GUID"
-        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+        if ((Get-CimInstance win32_operatingsystem -Property caption).caption -match "server") {
             Write-Verbose "To install it, use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools"
         } else {
             Write-Verbose "To install it, use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
         }
-    }
+   }
 
     #region get Intune data
-    Connect-MSGraph2
-
     $IntuneObj = @()
 
     # search device by name
-    $IntuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+    $IntuneObj += Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$computerName'"
 
     # search device by GUID
     if ($ADObj.ObjectGUID) {
         # because of bug? computer can be listed under guid_date name in cloud
-        $IntuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+        $IntuneObj += Get-MgDeviceManagementManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
     }
     #endregion get Intune data
 
     if ($IntuneObj) {
         $IntuneObj | ? { $_ } | % {
             Write-Host "Removing $($_.DeviceName) ($($_.id)) from Intune" -ForegroundColor Cyan
-            Remove-IntuneManagedDevice -managedDeviceId $_.id
+            Remove-MgDeviceManagementManagedDevice -ManagedDeviceId $_.id
         }
     } else {
         Write-Host "$computerName nor its guid exists in Intune. Skipping removal." -ForegroundColor DarkCyan
@@ -8062,8 +7694,9 @@ function Search-IntuneAccountPolicyAssignment {
     if (!(Get-Module Microsoft.Graph.DirectoryObjects) -and !(Get-Module Microsoft.Graph.DirectoryObjects -ListAvailable)) {
         throw "Module Microsoft.Graph.DirectoryObjects is missing"
     }
-    if (!(Get-Module Microsoft.Graph.Intune) -and !(Get-Module Microsoft.Graph.Intune -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing"
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     #region helper functions
@@ -8083,19 +7716,19 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             foreach ($assignment in $policy.assignments) {
-                # Write-Verbose "`tApplied to group(s): $($assignment.target.groupId -join ', ')"
+                # Write-Verbose "`tApplied to group(s): $($assignment.target.AdditionalProperties.groupId -join ', ')"
 
-                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
-                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.groupId) exists"
+                if (!$isAssigned -and ($assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
+                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All devices' exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All users' exists"
                     $isAssigned = $true
-                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
-                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.groupId) exists"
+                } elseif (!$ignoreExcludes -and $assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
+                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
                     $isExcluded = $true
                     break # faster processing, but INCLUDE assignments process after EXCLUDE ones won't be shown
                 } else {
@@ -8133,7 +7766,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+            $accountMemberOfGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
 
         }
 
@@ -8143,7 +7776,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+            $accountMemberOfGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
         }
 
         'group' {
@@ -8160,7 +7793,7 @@ function Search-IntuneAccountPolicyAssignment {
                 # add group itself
                 $accountMemberOfGroup += $accountObj | select Id, DisplayName
                 # add group transitive memberof
-                $accountMemberOfGroup += Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+                $accountMemberOfGroup += Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
             }
         }
 
@@ -8248,7 +7881,7 @@ function Upload-IntuneAutopilotHash {
     Beware that when the device already exists in the Autopilot, it won't be recreated (hash doesn't change)!
 
     .PARAMETER psObject
-    PS object with properties that will be used for upload.
+    PS object(s) with properties that will be used for upload.
     - (mandatory) SerialNumber
         Device serial number.
     - (mandatory) HardwareHash
@@ -8258,8 +7891,10 @@ function Upload-IntuneAutopilotHash {
     - (optional) ownerUPN
         Device owner UPN
 
+    TIP: it is better from performance perspective to provide more objects at once instead of one-by-one processing
+
     .PARAMETER thisDevice
-    Switch that instead of using PS object (psObject) for getting the data, hash of this computer will be uploaded.
+    Switch for getting&uploading hash of this computer instead of using PS object (psObject) as source of the data.
     Requires admin rights!
 
     .PARAMETER ownerUPN
@@ -8296,12 +7931,14 @@ function Upload-IntuneAutopilotHash {
 
     .NOTES
     Inspired by https://www.manishbangia.com/import-autopilot-devices-sccm-sqlquery/ and https://www.powershellgallery.com/packages/Upload-WindowsAutopilotDeviceInfo/1.0.0/Content/Upload-WindowsAutopilotDeviceInfo.ps1
+
+    Not using *-*AutopilotDevice cmdlets, because sometimes it connects using cached? token instead of actual AAD connection, so causing troubles in multi tenant environments
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'PSObject')]
     param(
         [Parameter(Mandatory = $true, ParameterSetName = "PSObject")]
-        [PSCustomObject] $psObject,
+        [PSCustomObject[]] $psObject,
 
         [Parameter(Mandatory = $true, ParameterSetName = "thisDevice")]
         [switch] $thisDevice,
@@ -8313,46 +7950,27 @@ function Upload-IntuneAutopilotHash {
         [string] $groupTag = (Get-Date -Format "dd.MM.yyyy")
     )
 
-    # check mandatory properties
     if ($psObject) {
-        $property = $psObject | Get-Member -MemberType NoteProperty, Property
+        # check mandatory properties
+        foreach ($autopilotItem in $psObject) {
+            $property = $autopilotItem | Get-Member -MemberType NoteProperty, Property
 
-        if ($property.Name -notcontains "SerialNumber") {
-            throw "PSObject doesn't contain property SerialNumber"
+            if ($property.Name -notcontains "SerialNumber") {
+                $autopilotItem
+                throw "PSObject doesn't contain mandatory property SerialNumber"
+            }
+            if ($property.Name -notcontains "HardwareHash") {
+                $autopilotItem
+                throw "PSObject object doesn't contain mandatory property HardwareHash"
+            }
         }
-        if ($property.Name -notcontains "HardwareHash") {
-            throw "PSObject object doesn't contain property HardwareHash"
-        }
-    }
-
-    $AuthToken = New-GraphAPIAuthHeader -useMSAL
-
-    function Get-ErrorResponseBody {
-        param(
-            [parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [System.Exception]$Exception
-        )
-
-        # Read the error stream
-        $ErrorResponseStream = $Exception.Response.GetResponseStream()
-        $StreamReader = New-Object System.IO.StreamReader($ErrorResponseStream)
-        $StreamReader.BaseStream.Position = 0
-        $StreamReader.DiscardBufferedData()
-        $ResponseBody = $StreamReader.ReadToEnd();
-
-        # Handle return object
-        return $ResponseBody
-    }
-
-    if ($thisDevice) {
-        # Gather device hash data
-
+    } else {
+        # gather this device hash data
         if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
             throw "You don't have administrator rights"
         }
 
-        Write-Verbose -Message "Gather device hash data from local machine"
+        Write-Verbose "Gather device hash data of the local machine"
         $HardwareHash = (Get-CimInstance -Namespace "root/cimv2/mdm/dmmap" -Class "MDM_DevDetail_Ext01" -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" -Verbose:$false).DeviceHardwareData
         $SerialNumber = (Get-CimInstance -ClassName "Win32_BIOS" -Verbose:$false).SerialNumber
         [PSCustomObject]$psObject = @{
@@ -8360,26 +7978,27 @@ function Upload-IntuneAutopilotHash {
             HardwareHash = $HardwareHash
             Hostname     = $env:COMPUTERNAME
         }
-    } else {
-        # data was provided using PSObject properties
     }
 
-    # Construct Graph variables
-    $GraphVersion = "beta"
-    $GraphResource = "deviceManagement/importedWindowsAutopilotDeviceIdentities"
-    $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
+    Connect-MgGraph -NoWelcome
 
-    foreach ($hashItem in $psObject) {
-        "Processing $($hashItem.SerialNumber)"
+    $failedUpload = @()
+    $processedDevice = @()
+    $missingDevice = @()
+
+    # upload autopilot hashes
+    Write-Host "Upload Autopilot hash(es)" -ForegroundColor Cyan
+    foreach ($autopilotItem in $psObject) {
+        "Processing $($autopilotItem.SerialNumber)"
 
         # Construct hash table for new Autopilot device identity and convert to JSON
-        Write-Verbose -Message "Constructing required JSON body based upon parameter input data for device hash upload"
+        Write-Verbose "Constructing required JSON body based upon parameter input data for device hash upload"
         $AutopilotDeviceIdentity = [ordered]@{
             '@odata.type'        = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
             'groupTag'           = $groupTag
-            'serialNumber'       = $hashItem.SerialNumber
+            'serialNumber'       = $autopilotItem.SerialNumber
             'productKey'         = ''
-            'hardwareIdentifier' = $hashItem.HardwareHash
+            'hardwareIdentifier' = $autopilotItem.HardwareHash
             'state'              = @{
                 '@odata.type'          = 'microsoft.graph.importedWindowsAutopilotDeviceIdentityState'
                 'deviceImportStatus'   = 'pending'
@@ -8389,93 +8008,88 @@ function Upload-IntuneAutopilotHash {
             }
         }
 
+        Write-Verbose "`t - serialNumber $($autopilotItem.SerialNumber)"
+        Write-Verbose "`t - hardwareIdentifier $($autopilotItem.HardwareHash)"
+
         # set owner
-        if ($hashItem.ownerUPN) {
-            "`t - set owner $($hashItem.ownerUPN)"
-            $AutopilotDeviceIdentity.assignedUserPrincipalName = $hashItem.ownerUPN
+        if ($autopilotItem.ownerUPN) {
+            Write-Verbose "`t - owner $($autopilotItem.ownerUPN)"
+            $AutopilotDeviceIdentity.assignedUserPrincipalName = $autopilotItem.ownerUPN
         } elseif ($ownerUPN) {
-            "`t - set owner $ownerUPN"
+            Write-Verbose "`t - owner $ownerUPN"
             $AutopilotDeviceIdentity.assignedUserPrincipalName = $ownerUPN
         }
 
         $AutopilotDeviceIdentityJSON = $AutopilotDeviceIdentity | ConvertTo-Json
 
+        # create new Autopilot device
         try {
-            # Call Graph API and post JSON data for new Autopilot device identity
-            Write-Verbose -Message "Attempting to post data for hardware hash upload"
-            # $result = Add-AutopilotImportedDevice -serialNumber $SerialNumber -hardwareIdentifier $HardwareHash -groupTag $groupTag #-assignedUser
-            $result = Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -Body $AutopilotDeviceIdentityJSON -ContentType "application/json" -ErrorAction Stop -Verbose:$false
-            # $result
-            Write-Verbose "Upload of $($hashItem.SerialNumber) finished"
-        } catch [System.Exception] {
-            # Construct stream reader for reading the response body from API call
-            $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
+            Write-Verbose "Uploading hardware hash"
+            New-MgDeviceManagementImportedWindowsAutopilotDeviceIdentity -BodyParameter $AutopilotDeviceIdentityJSON -ErrorAction Stop -Verbose:$false
 
-            # Handle response output and error message
-            Write-Output -InputObject "Response content:`n$ResponseBody"
-            Write-Warning -Message "Failed to upload hardware hash. Request to $($GraphURI) failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
-        }
+            $processedDevice += $autopilotItem
 
-        # set deviceName
-        if ($hashItem.Hostname) {
-            # invoking Intune Sync, to get imported device into Intune database, so I can set its hostname
-            try {
-                # Call Graph API and post Autopilot devices sync command
-                Write-Verbose -Message "Attempting to perform a sync action in Autopilot"
-                $GraphResource = "deviceManagement/windowsAutopilotSettings/sync"
-                $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
-                $result = (Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -ErrorAction Stop -Verbose:$false).Value
-                Write-Verbose "Autopilot sync started"
-            } catch [System.Exception] {
-                # Construct stream reader for reading the response body from API call
-                $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
-
-                # Handle response output and error message
-                Write-Output -InputObject "Response content:`n$ResponseBody"
-                Write-Warning -Message "Request to $GraphURI failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
+            # make a note about devices not already synced into the Autopilot
+            $autopilotDevice = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber
+            if (!$autopilotDevice) {
+                $missingDevice += $autopilotItem
             }
+        } catch {
+            throw "Failed to upload hardware hash."
 
-            "`t - set hostname $($hashItem.Hostname)"
-            $i = 0
-            while (1) {
-                ++$i
-                $deviceId = Get-AutopilotDevice -serial $hashItem.SerialNumber -ea Stop | select -exp id
-                if (!$deviceId) {
-                    if ($i -gt 50) {
-                        throw "$($hashItem.Hostname) ($($hashItem.SerialNumber)) didn't upload successfully. It probably exists in different tenant?"
-                    }
-                    Write-Host "`t`t$($hashItem.SerialNumber) not yet created..waiting"
-                    Start-Sleep 10
-                    continue
-                }
-                try {
-                    Set-AutopilotDevice -id $deviceId -displayName $hashItem.Hostname -ea Stop
-                    break
-                } catch {
-                    throw $_
-                }
-            }
+            $failedUpload += $autopilotItem.SerialNumber
         }
     }
 
-    # invoking Intune Sync, to get imported devices into Intune database ASAP
-    try {
-        # Call Graph API and post Autopilot devices sync command
-        Write-Verbose -Message "Attempting to perform a sync action in Autopilot"
-        $GraphResource = "deviceManagement/windowsAutopilotSettings/sync"
-        $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
-        $result = (Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -ErrorAction Stop -Verbose:$false).Value
-        Write-Verbose "Autopilot sync started"
-    } catch [System.Exception] {
-        # Construct stream reader for reading the response body from API call
-        $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
+    # invoke Autopilot SYNC, to get imported devices into the Intune database ASAP
+    # also device record needs to exist in database so hostname can be set
+    if ($missingDevice) {
+        Write-Host "Performing a Autopilot database sync" -ForegroundColor Cyan
+        Invoke-AutopilotSync
+        "`t - sync started..waiting 60 seconds before continue"
+        Start-Sleep 60
+    }
 
-        # Handle response output and error message
-        Write-Output -InputObject "Response content:`n$ResponseBody"
-        Write-Warning -Message "Request to $GraphURI failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
+    # set deviceName
+    # in separate cycle to avoid TooManyRequests error when invoking sync after each device upload
+    if ($psObject.Hostname -and $processedDevice) {
+        Write-Host "Setting hostname" -ForegroundColor Cyan
+
+        foreach ($autopilotItem in $psObject) {
+            if ($autopilotItem.Hostname) {
+                "Processing $($autopilotItem.SerialNumber)"
+
+                if ($autopilotItem.SerialNumber -in $failedUpload) {
+                    Write-Verbose "Skipping setting hostname of $($autopilotItem.SerialNumber), because it failed to upload"
+                    continue
+                }
+
+                Write-Verbose "`t - hostname $($autopilotItem.Hostname)"
+                $i = 0
+                while (1) {
+                    ++$i
+                    # trying to get the autopilot device record
+                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | select -ExpandProperty id
+
+                    if (!$deviceId) {
+                        if ($i -gt 50) {
+                            Write-Error "$($autopilotItem.Hostname) ($($autopilotItem.SerialNumber)) didn't upload successfully. It probably exists in different tenant?"
+                            break
+                        }
+
+                        Write-Host "`t`t$($autopilotItem.SerialNumber) not yet created..waiting"
+                        Start-Sleep 10
+                        continue
+                    }
+
+                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname
+                    break
+                }
+            }
+        }
     }
 }
 
-Export-ModuleMember -function Connect-MSGraph2, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
-Export-ModuleMember -alias Assign-IntuneWin32App, Connect-MSGraphApp2, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy
+Export-ModuleMember -alias Assign-IntuneWin32App, Deassign-IntuneWin32App, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy, Unassign-IntuneWin32App

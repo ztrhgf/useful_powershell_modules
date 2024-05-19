@@ -33,22 +33,13 @@
 
         .PARAMETER getDataFromIntune
         Switch for getting additional data (policy names and account names instead of IDs) from Intune itself.
-        Microsoft.Graph.Intune module is required!
+        Microsoft.Graph.Authentication module is required!
 
         Account with READ permission for: Applications, Scripts, RemediationScripts, Users will be needed i.e.:
         - DeviceManagementApps.Read.All
         - DeviceManagementManagedDevices.Read.All
         - DeviceManagementConfiguration.Read.All
         - User.Read.All
-
-        .PARAMETER credential
-        Credentials for connecting to Intune.
-        Account that has at least READ permissions has to be used.
-
-        .PARAMETER tenantId
-        String with your TenantID.
-        Use only if you want use application authentication (instead of user authentication).
-        You can get your TenantID at https://portal.azure.com/#blade/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/Overview.
 
         .PARAMETER showEnrollmentIDs
         Switch for showing EnrollmentIDs in the result.
@@ -72,19 +63,12 @@
         URLs to policies/settings will be included.
 
         .EXAMPLE
-        $intuneREADCred = Get-Credential
-        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -showConnectionData -credential $intuneREADCred
+        Connect-MgGraph
+
+        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -showConnectionData
 
         Will return HTML page containing Intune policy processing report data and connection data.
         URLs to policies/settings and Intune policies names (if available) will be included.
-
-        .EXAMPLE
-        $intuneREADAppCred = Get-Credential
-        Get-ClientIntunePolicyResult -showURLs -asHTML -getDataFromIntune -credential $intuneREADAppCred -tenantId 123456789
-
-        Will return HTML page containing Intune policy processing report data.
-        URLs to policies/settings will be included same as Intune policies names (if available).
-        For authentication to Intune registered application secret will be used (AppID and secret stored in credentials object).
         #>
 
     [Alias("ipresult", "Get-IntunePolicyResult", "Get-IntuneClientPolicyResult")]
@@ -105,10 +89,6 @@
 
         [switch] $getDataFromIntune,
 
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
-
         [switch] $showEnrollmentIDs,
 
         [switch] $showURLs,
@@ -125,7 +105,7 @@
             throw "Function '$($MyInvocation.MyCommand)' needs to be run with administrator permission"
         }
     }
-    
+
     #region prepare
     if ($computerName) {
         $session = New-PSSession -ComputerName $computerName -ErrorAction Stop
@@ -139,36 +119,16 @@
     }
 
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
-        $intuneApp = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneRemediationScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MgGraphAllPages
+        $intuneApp = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     # get the core Intune data

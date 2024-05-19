@@ -33,8 +33,8 @@
 
     $ErrorActionPreference = "Stop"
 
-    if (!(Get-Module "Microsoft.Graph.Intune" -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing (use Install-Module Microsoft.Graph.Intune to get it)"
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     #region check Intune enrollment result
@@ -69,32 +69,30 @@
         $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
     } else {
         Write-Verbose "ActiveDirectory module is missing, unable to obtain computer GUID"
-        if ((Get-WmiObject win32_operatingsystem -Property caption).caption -match "server") {
+        if ((Get-CimInstance win32_operatingsystem -Property caption).caption -match "server") {
             Write-Verbose "To install it, use: Install-WindowsFeature RSAT-AD-PowerShell -IncludeManagementTools"
         } else {
             Write-Verbose "To install it, use: Get-WindowsCapability -Name RSAT* -Online | Add-WindowsCapability -Online"
         }
-    }
+   }
 
     #region get Intune data
-    Connect-MSGraph2
-
     $IntuneObj = @()
 
     # search device by name
-    $IntuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+    $IntuneObj += Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$computerName'"
 
     # search device by GUID
     if ($ADObj.ObjectGUID) {
         # because of bug? computer can be listed under guid_date name in cloud
-        $IntuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+        $IntuneObj += Get-MgDeviceManagementManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
     }
     #endregion get Intune data
 
     if ($IntuneObj) {
         $IntuneObj | ? { $_ } | % {
             Write-Host "Removing $($_.DeviceName) ($($_.id)) from Intune" -ForegroundColor Cyan
-            Remove-IntuneManagedDevice -managedDeviceId $_.id
+            Remove-MgDeviceManagementManagedDevice -ManagedDeviceId $_.id
         }
     } else {
         Write-Host "$computerName nor its guid exists in Intune. Skipping removal." -ForegroundColor DarkCyan

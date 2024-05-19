@@ -26,6 +26,7 @@ function Remove-IntuneWin32AppAssignment {
     Removes all assignment of selected app.
     #>
     [CmdletBinding()]
+    [Alias("Unassign-IntuneWin32App", "Deassign-IntuneWin32App")]
     param (
         [guid[]] $appId,
 

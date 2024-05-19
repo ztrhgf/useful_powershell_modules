@@ -1,6 +1,5 @@
 ﻿
-#requires -modules Microsoft.Graph.DirectoryObjects
-#requires -modules Microsoft.Graph.Intune
+#requires -modules Microsoft.Graph.Authentication, Microsoft.Graph.DirectoryObjects
 function Search-IntuneAccountPolicyAssignment {
     <#
     .SYNOPSIS
@@ -144,8 +143,9 @@ function Search-IntuneAccountPolicyAssignment {
     if (!(Get-Module Microsoft.Graph.DirectoryObjects) -and !(Get-Module Microsoft.Graph.DirectoryObjects -ListAvailable)) {
         throw "Module Microsoft.Graph.DirectoryObjects is missing"
     }
-    if (!(Get-Module Microsoft.Graph.Intune) -and !(Get-Module Microsoft.Graph.Intune -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing"
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     #region helper functions
@@ -165,19 +165,19 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             foreach ($assignment in $policy.assignments) {
-                # Write-Verbose "`tApplied to group(s): $($assignment.target.groupId -join ', ')"
+                # Write-Verbose "`tApplied to group(s): $($assignment.target.AdditionalProperties.groupId -join ', ')"
 
-                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
-                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.groupId) exists"
+                if (!$isAssigned -and ($assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
+                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All devices' exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All users' exists"
                     $isAssigned = $true
-                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
-                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.groupId) exists"
+                } elseif (!$ignoreExcludes -and $assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
+                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
                     $isExcluded = $true
                     break # faster processing, but INCLUDE assignments process after EXCLUDE ones won't be shown
                 } else {
@@ -215,7 +215,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+            $accountMemberOfGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/devices/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
 
         }
 
@@ -225,7 +225,7 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             Write-Verbose "Getting account transitive memberOf property"
-            $accountMemberOfGroup = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+            $accountMemberOfGroup = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/users/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
         }
 
         'group' {
@@ -242,7 +242,7 @@ function Search-IntuneAccountPolicyAssignment {
                 # add group itself
                 $accountMemberOfGroup += $accountObj | select Id, DisplayName
                 # add group transitive memberof
-                $accountMemberOfGroup += Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MSGraphAllPages | select Id, DisplayName
+                $accountMemberOfGroup += Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/groups/$accountId/transitiveMemberOf?`$select=displayName,id" -ErrorAction Stop | Get-MgGraphAllPages | select Id, DisplayName
             }
         }
 

@@ -81,7 +81,7 @@
             $hybridADJoinStatus = Get-HybridADJoinStatus -wait 30
 
             if ($hybridADJoinStatus) {
-                "$env:COMPUTERNAME was successfully joined to AAD again. Now you should restart it and run Start-AzureADSync"
+                "$env:COMPUTERNAME was successfully joined to AAD again. Now you should restart it and run Start-AzureSync"
             } else {
                 Write-Error "Join wasn't successful"
                 Write-Warning "Check if device $env:COMPUTERNAME exists in AAD"

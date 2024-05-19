@@ -17,13 +17,6 @@
     Switch for getting Apps and User names from Intune, so locally used IDs can be translated.
     If you omit this switch, local Intune logs will be searched for such information instead.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER excludeSystemApp
     Switch for excluding Apps targeted to SYSTEM.
 
@@ -34,7 +27,7 @@
     IDs of targeted users and apps will be translated using information from local Intune log files.
 
     .EXAMPLE
-    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune credential (Get-Credential)
+    Get-IntuneWin32AppLocally -computerName PC-01 -getDataFromIntune
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names.
 
@@ -63,10 +56,6 @@
         [string] $computerName,
 
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $excludeSystemApp
     )
@@ -207,34 +196,15 @@
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
         # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
-        $intuneApp = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MSGraphAllPages
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneApp = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?select=id,displayname" | Get-MgGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {

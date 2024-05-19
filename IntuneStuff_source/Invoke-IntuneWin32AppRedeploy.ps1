@@ -1,4 +1,5 @@
-﻿function Invoke-IntuneWin32AppRedeploy {
+﻿#TODO pouzit intunemanagementextension://syncapp ?
+function Invoke-IntuneWin32AppRedeploy {
     <#
     .SYNOPSIS
     Function for forcing redeploy of selected Win32App deployed from Intune.
@@ -17,13 +18,6 @@
     Switch for getting Apps and User names from Intune, so locally used IDs can be translated.
     If you omit this switch, local Intune logs will be searched for such information instead.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER dontWait
     Don't wait on Win32App redeploy completion.
 
@@ -37,7 +31,7 @@
     IDs of targeted users and apps will be translated using information from local Intune log files.
 
     .EXAMPLE
-    Invoke-IntuneWin32AppRedeploy -computerName PC-01 -getDataFromIntune credential $creds
+    Invoke-IntuneWin32AppRedeploy -computerName PC-01 -getDataFromIntune
 
     Get and show Win32App(s) deployed from Intune to computer PC-01. IDs of apps and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
     #>
@@ -49,10 +43,6 @@
 
         [Alias("online")]
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $dontWait,
 
@@ -107,8 +97,6 @@
     $param = @{}
     if ($computerName) { $param.computerName = $computerName }
     if ($getDataFromIntune) { $param.getDataFromIntune = $true }
-    if ($credential) { $param.credential = $credential }
-    if ($tenantId) { $param.tenantId = $tenantId }
 
     Write-Verbose "Getting deployed Win32Apps"
     $win32App = Get-IntuneWin32AppLocally @param

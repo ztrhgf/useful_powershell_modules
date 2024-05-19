@@ -62,8 +62,7 @@
         $deviceId = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$select=id" -Method Get).value | select -ExpandProperty Id
     } elseif ($deviceName) {
         $deviceName | % {
-            #TODO limit returned properties using select filter
-            $id = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$_'" -Method Get).value | select -ExpandProperty Id
+            $id = (Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$filter=deviceName eq '$_'&`$select=DeviceName,Id" -Method Get).value | select -ExpandProperty Id
             if ($id) {
                 Write-Verbose "$_ was translated to $id"
                 $deviceId += $id

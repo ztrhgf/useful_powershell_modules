@@ -22,13 +22,6 @@
     .PARAMETER getDataFromIntune
     Switch for getting Scripts and User names from Intune, so locally used IDs can be translated to them.
 
-    .PARAMETER credential
-    Credential object used for Intune authentication.
-
-    .PARAMETER tenantId
-    Azure Tenant ID.
-    Requirement for Intune App authentication.
-
     .PARAMETER all
     Switch to redeploy all scripts of selected type (script, remediationScript).
 
@@ -49,15 +42,11 @@
     Get and show Remediation Script(s) deployed from Intune to this computer. Selected ones will be then redeployed.
 
     .EXAMPLE
-    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune credential $creds
+    Connect-MgGraph
+
+    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune
 
     Get and show Script(s) deployed from Intune to computer PC-01. IDs of scripts and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
-
-    .EXAMPLE
-    Invoke-IntuneScriptRedeploy -scriptType remediationScript -computerName PC-01 -getDataFromIntune credential $creds -tenantId 123456789
-
-    Get and show Script(s) deployed from Intune to computer PC-01. App authentication will be used instead of user auth.
-    IDs of scripts and targeted users will be translated to corresponding names. Selected ones will be then redeployed.
     #>
 
     [CmdletBinding()]
@@ -71,10 +60,6 @@
 
         [Alias("online")]
         [switch] $getDataFromIntune,
-
-        [System.Management.Automation.PSCredential] $credential,
-
-        [string] $tenantId,
 
         [switch] $all,
 
@@ -146,39 +131,19 @@
 
     #region prepare
     if ($getDataFromIntune) {
-        if (!(Get-Module 'Microsoft.Graph.Intune') -and !(Get-Module 'Microsoft.Graph.Intune' -ListAvailable)) {
-            throw "Module 'Microsoft.Graph.Intune' is required. To install it call: Install-Module 'Microsoft.Graph.Intune' -Scope CurrentUser"
-        }
-
-        if ($tenantId) {
-            # app logon
-            if (!$credential) {
-                $credential = Get-Credential -Message "Enter AppID and AppSecret for connecting to Intune tenant" -ErrorAction Stop
-            }
-            Update-MSGraphEnvironment -AppId $credential.UserName -Quiet
-            Update-MSGraphEnvironment -AuthUrl "https://login.windows.net/$tenantId" -Quiet
-            $null = Connect-MSGraph -ClientSecret $credential.GetNetworkCredential().Password -ErrorAction Stop
-        } else {
-            # user logon
-            if ($credential) {
-                $null = Connect-MSGraph -Credential $credential -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -credential $credential -ErrorAction Stop
-            } else {
-                $null = Connect-MSGraph -ErrorAction Stop
-                # $header = New-GraphAPIAuthHeader -ErrorAction Stop
-            }
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
         }
 
         Write-Verbose "Getting Intune data"
         # filtering by ID is as slow as getting all data
-        # Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?$filter=(id%20eq%20%2756695a77-925a-4df0-be79-24ed039afa86%27)'
         if ($scriptType -eq "remediationScript") {
-            $intuneRemediationScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MSGraphAllPages
+            $intuneRemediationScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?select=id,displayname" | Get-MgGraphAllPages
         }
         if ($scriptType -eq "script") {
-            $intuneScript = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MSGraphAllPages
+            $intuneScript = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?select=id,displayname" | Get-MgGraphAllPages
         }
-        $intuneUser = Invoke-MSGraphRequest -Url 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MSGraphAllPages
+        $intuneUser = Invoke-MgGraphRequest -Uri 'https://graph.microsoft.com/beta/users?select=id,userPrincipalName' | Get-MgGraphAllPages
     }
 
     if ($computerName) {

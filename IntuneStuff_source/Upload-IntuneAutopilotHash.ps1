@@ -1,4 +1,5 @@
-﻿#requires -modules WindowsAutoPilotIntune
+﻿#requires -modules Microsoft.Graph.DeviceManagement.Enrollment
+
 function Upload-IntuneAutopilotHash {
     <#
     .SYNOPSIS
@@ -11,7 +12,7 @@ function Upload-IntuneAutopilotHash {
     Beware that when the device already exists in the Autopilot, it won't be recreated (hash doesn't change)!
 
     .PARAMETER psObject
-    PS object with properties that will be used for upload.
+    PS object(s) with properties that will be used for upload.
     - (mandatory) SerialNumber
         Device serial number.
     - (mandatory) HardwareHash
@@ -21,8 +22,10 @@ function Upload-IntuneAutopilotHash {
     - (optional) ownerUPN
         Device owner UPN
 
+    TIP: it is better from performance perspective to provide more objects at once instead of one-by-one processing
+
     .PARAMETER thisDevice
-    Switch that instead of using PS object (psObject) for getting the data, hash of this computer will be uploaded.
+    Switch for getting&uploading hash of this computer instead of using PS object (psObject) as source of the data.
     Requires admin rights!
 
     .PARAMETER ownerUPN
@@ -59,12 +62,14 @@ function Upload-IntuneAutopilotHash {
 
     .NOTES
     Inspired by https://www.manishbangia.com/import-autopilot-devices-sccm-sqlquery/ and https://www.powershellgallery.com/packages/Upload-WindowsAutopilotDeviceInfo/1.0.0/Content/Upload-WindowsAutopilotDeviceInfo.ps1
+
+    Not using *-*AutopilotDevice cmdlets, because sometimes it connects using cached? token instead of actual AAD connection, so causing troubles in multi tenant environments
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'PSObject')]
     param(
         [Parameter(Mandatory = $true, ParameterSetName = "PSObject")]
-        [PSCustomObject] $psObject,
+        [PSCustomObject[]] $psObject,
 
         [Parameter(Mandatory = $true, ParameterSetName = "thisDevice")]
         [switch] $thisDevice,
@@ -76,46 +81,27 @@ function Upload-IntuneAutopilotHash {
         [string] $groupTag = (Get-Date -Format "dd.MM.yyyy")
     )
 
-    # check mandatory properties
     if ($psObject) {
-        $property = $psObject | Get-Member -MemberType NoteProperty, Property
+        # check mandatory properties
+        foreach ($autopilotItem in $psObject) {
+            $property = $autopilotItem | Get-Member -MemberType NoteProperty, Property
 
-        if ($property.Name -notcontains "SerialNumber") {
-            throw "PSObject doesn't contain property SerialNumber"
+            if ($property.Name -notcontains "SerialNumber") {
+                $autopilotItem
+                throw "PSObject doesn't contain mandatory property SerialNumber"
+            }
+            if ($property.Name -notcontains "HardwareHash") {
+                $autopilotItem
+                throw "PSObject object doesn't contain mandatory property HardwareHash"
+            }
         }
-        if ($property.Name -notcontains "HardwareHash") {
-            throw "PSObject object doesn't contain property HardwareHash"
-        }
-    }
-
-    $AuthToken = New-GraphAPIAuthHeader -useMSAL
-
-    function Get-ErrorResponseBody {
-        param(
-            [parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [System.Exception]$Exception
-        )
-
-        # Read the error stream
-        $ErrorResponseStream = $Exception.Response.GetResponseStream()
-        $StreamReader = New-Object System.IO.StreamReader($ErrorResponseStream)
-        $StreamReader.BaseStream.Position = 0
-        $StreamReader.DiscardBufferedData()
-        $ResponseBody = $StreamReader.ReadToEnd();
-
-        # Handle return object
-        return $ResponseBody
-    }
-
-    if ($thisDevice) {
-        # Gather device hash data
-
+    } else {
+        # gather this device hash data
         if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
             throw "You don't have administrator rights"
         }
 
-        Write-Verbose -Message "Gather device hash data from local machine"
+        Write-Verbose "Gather device hash data of the local machine"
         $HardwareHash = (Get-CimInstance -Namespace "root/cimv2/mdm/dmmap" -Class "MDM_DevDetail_Ext01" -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" -Verbose:$false).DeviceHardwareData
         $SerialNumber = (Get-CimInstance -ClassName "Win32_BIOS" -Verbose:$false).SerialNumber
         [PSCustomObject]$psObject = @{
@@ -123,26 +109,27 @@ function Upload-IntuneAutopilotHash {
             HardwareHash = $HardwareHash
             Hostname     = $env:COMPUTERNAME
         }
-    } else {
-        # data was provided using PSObject properties
     }
 
-    # Construct Graph variables
-    $GraphVersion = "beta"
-    $GraphResource = "deviceManagement/importedWindowsAutopilotDeviceIdentities"
-    $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
+    Connect-MgGraph -NoWelcome
 
-    foreach ($hashItem in $psObject) {
-        "Processing $($hashItem.SerialNumber)"
+    $failedUpload = @()
+    $processedDevice = @()
+    $missingDevice = @()
+
+    # upload autopilot hashes
+    Write-Host "Upload Autopilot hash(es)" -ForegroundColor Cyan
+    foreach ($autopilotItem in $psObject) {
+        "Processing $($autopilotItem.SerialNumber)"
 
         # Construct hash table for new Autopilot device identity and convert to JSON
-        Write-Verbose -Message "Constructing required JSON body based upon parameter input data for device hash upload"
+        Write-Verbose "Constructing required JSON body based upon parameter input data for device hash upload"
         $AutopilotDeviceIdentity = [ordered]@{
             '@odata.type'        = '#microsoft.graph.importedWindowsAutopilotDeviceIdentity'
             'groupTag'           = $groupTag
-            'serialNumber'       = $hashItem.SerialNumber
+            'serialNumber'       = $autopilotItem.SerialNumber
             'productKey'         = ''
-            'hardwareIdentifier' = $hashItem.HardwareHash
+            'hardwareIdentifier' = $autopilotItem.HardwareHash
             'state'              = @{
                 '@odata.type'          = 'microsoft.graph.importedWindowsAutopilotDeviceIdentityState'
                 'deviceImportStatus'   = 'pending'
@@ -152,89 +139,84 @@ function Upload-IntuneAutopilotHash {
             }
         }
 
+        Write-Verbose "`t - serialNumber $($autopilotItem.SerialNumber)"
+        Write-Verbose "`t - hardwareIdentifier $($autopilotItem.HardwareHash)"
+
         # set owner
-        if ($hashItem.ownerUPN) {
-            "`t - set owner $($hashItem.ownerUPN)"
-            $AutopilotDeviceIdentity.assignedUserPrincipalName = $hashItem.ownerUPN
+        if ($autopilotItem.ownerUPN) {
+            Write-Verbose "`t - owner $($autopilotItem.ownerUPN)"
+            $AutopilotDeviceIdentity.assignedUserPrincipalName = $autopilotItem.ownerUPN
         } elseif ($ownerUPN) {
-            "`t - set owner $ownerUPN"
+            Write-Verbose "`t - owner $ownerUPN"
             $AutopilotDeviceIdentity.assignedUserPrincipalName = $ownerUPN
         }
 
         $AutopilotDeviceIdentityJSON = $AutopilotDeviceIdentity | ConvertTo-Json
 
+        # create new Autopilot device
         try {
-            # Call Graph API and post JSON data for new Autopilot device identity
-            Write-Verbose -Message "Attempting to post data for hardware hash upload"
-            # $result = Add-AutopilotImportedDevice -serialNumber $SerialNumber -hardwareIdentifier $HardwareHash -groupTag $groupTag #-assignedUser
-            $result = Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -Body $AutopilotDeviceIdentityJSON -ContentType "application/json" -ErrorAction Stop -Verbose:$false
-            # $result
-            Write-Verbose "Upload of $($hashItem.SerialNumber) finished"
-        } catch [System.Exception] {
-            # Construct stream reader for reading the response body from API call
-            $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
+            Write-Verbose "Uploading hardware hash"
+            New-MgDeviceManagementImportedWindowsAutopilotDeviceIdentity -BodyParameter $AutopilotDeviceIdentityJSON -ErrorAction Stop -Verbose:$false
 
-            # Handle response output and error message
-            Write-Output -InputObject "Response content:`n$ResponseBody"
-            Write-Warning -Message "Failed to upload hardware hash. Request to $($GraphURI) failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
-        }
+            $processedDevice += $autopilotItem
 
-        # set deviceName
-        if ($hashItem.Hostname) {
-            # invoking Intune Sync, to get imported device into Intune database, so I can set its hostname
-            try {
-                # Call Graph API and post Autopilot devices sync command
-                Write-Verbose -Message "Attempting to perform a sync action in Autopilot"
-                $GraphResource = "deviceManagement/windowsAutopilotSettings/sync"
-                $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
-                $result = (Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -ErrorAction Stop -Verbose:$false).Value
-                Write-Verbose "Autopilot sync started"
-            } catch [System.Exception] {
-                # Construct stream reader for reading the response body from API call
-                $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
-
-                # Handle response output and error message
-                Write-Output -InputObject "Response content:`n$ResponseBody"
-                Write-Warning -Message "Request to $GraphURI failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
+            # make a note about devices not already synced into the Autopilot
+            $autopilotDevice = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber
+            if (!$autopilotDevice) {
+                $missingDevice += $autopilotItem
             }
+        } catch {
+            throw "Failed to upload hardware hash."
 
-            "`t - set hostname $($hashItem.Hostname)"
-            $i = 0
-            while (1) {
-                ++$i
-                $deviceId = Get-AutopilotDevice -serial $hashItem.SerialNumber -ea Stop | select -exp id
-                if (!$deviceId) {
-                    if ($i -gt 50) {
-                        throw "$($hashItem.Hostname) ($($hashItem.SerialNumber)) didn't upload successfully. It probably exists in different tenant?"
-                    }
-                    Write-Host "`t`t$($hashItem.SerialNumber) not yet created..waiting"
-                    Start-Sleep 10
-                    continue
-                }
-                try {
-                    Set-AutopilotDevice -id $deviceId -displayName $hashItem.Hostname -ea Stop
-                    break
-                } catch {
-                    throw $_
-                }
-            }
+            $failedUpload += $autopilotItem.SerialNumber
         }
     }
 
-    # invoking Intune Sync, to get imported devices into Intune database ASAP
-    try {
-        # Call Graph API and post Autopilot devices sync command
-        Write-Verbose -Message "Attempting to perform a sync action in Autopilot"
-        $GraphResource = "deviceManagement/windowsAutopilotSettings/sync"
-        $GraphURI = "https://graph.microsoft.com/$($GraphVersion)/$($GraphResource)"
-        $result = (Invoke-RestMethod -Uri $GraphURI -Headers $AuthToken -Method Post -ErrorAction Stop -Verbose:$false).Value
-        Write-Verbose "Autopilot sync started"
-    } catch [System.Exception] {
-        # Construct stream reader for reading the response body from API call
-        $ResponseBody = Get-ErrorResponseBody -Exception $_.Exception
+    # invoke Autopilot SYNC, to get imported devices into the Intune database ASAP
+    # also device record needs to exist in database so hostname can be set
+    if ($missingDevice) {
+        Write-Host "Performing a Autopilot database sync" -ForegroundColor Cyan
+        Invoke-AutopilotSync
+        "`t - sync started..waiting 60 seconds before continue"
+        Start-Sleep 60
+    }
 
-        # Handle response output and error message
-        Write-Output -InputObject "Response content:`n$ResponseBody"
-        Write-Warning -Message "Request to $GraphURI failed with HTTP Status $($_.Exception.Response.StatusCode) and description: $($_.Exception.Response.StatusDescription)"
+    # set deviceName
+    # in separate cycle to avoid TooManyRequests error when invoking sync after each device upload
+    if ($psObject.Hostname -and $processedDevice) {
+        Write-Host "Setting hostname" -ForegroundColor Cyan
+
+        foreach ($autopilotItem in $psObject) {
+            if ($autopilotItem.Hostname) {
+                "Processing $($autopilotItem.SerialNumber)"
+
+                if ($autopilotItem.SerialNumber -in $failedUpload) {
+                    Write-Verbose "Skipping setting hostname of $($autopilotItem.SerialNumber), because it failed to upload"
+                    continue
+                }
+
+                Write-Verbose "`t - hostname $($autopilotItem.Hostname)"
+                $i = 0
+                while (1) {
+                    ++$i
+                    # trying to get the autopilot device record
+                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | select -ExpandProperty id
+
+                    if (!$deviceId) {
+                        if ($i -gt 50) {
+                            Write-Error "$($autopilotItem.Hostname) ($($autopilotItem.SerialNumber)) didn't upload successfully. It probably exists in different tenant?"
+                            break
+                        }
+
+                        Write-Host "`t`t$($autopilotItem.SerialNumber) not yet created..waiting"
+                        Start-Sleep 10
+                        continue
+                    }
+
+                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname
+                    break
+                }
+            }
+        }
     }
 }

@@ -80,7 +80,7 @@ function ConvertFrom-MDMDiagReportXML {
 
         [switch] $showConnectionData
     )
-
+    
     if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
         throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
     }
@@ -128,12 +128,28 @@ function ConvertFrom-MDMDiagReportXML {
             }
         } else {
             Write-Verbose "Generating '$MDMDiagReport'..."
-            Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow
+            try {
+                Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow -ErrorAction Stop
+            } catch {
+                if ($_ -like "*The directory name is invalid*") {
+                    throw "Unable to generate report using MdmDiagnosticsTool.exe. This seems to be bug, try to run this function again in a new PowerShell console"
+                } else {
+                    throw $_
+                }
+            }
         }
     }
     if (!(Test-Path $MDMDiagReport -PathType Leaf)) {
         Write-Verbose "'$MDMDiagReport' doesn't exist, generating..."
-        Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow
+        try {
+            Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out `"$MDMDiagReportFolder`"" -NoNewWindow -ErrorAction Stop
+        } catch {
+            if ($_ -like "*The directory name is invalid*") {
+                throw "Unable to generate report using MdmDiagnosticsTool.exe. This seems to be bug, try to run this function again in a new PowerShell console"
+            } else {
+                throw $_
+            }
+        }
     }
 
     Write-Verbose "Converting '$MDMDiagReport' to XML object"
@@ -213,7 +229,7 @@ function ConvertFrom-MDMDiagReportXML {
             } else {
                 # it is AzureAD account
                 if ($getDataFromIntune) {
-                    return (Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/users/$id").userPrincipalName
+                    return (Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/users/$id").userPrincipalName
                 } else {
                     # unable to translate ID to name because there is no connection to the Intune Graph API
                     return $id

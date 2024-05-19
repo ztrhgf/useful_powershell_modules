@@ -64,7 +64,16 @@ function Get-IntuneLog {
                     Start-Process $viewer -ArgumentList "`"$log`""
                 } else {
                     # use associated viewer
-                    & $log
+
+                    $association = cmd /c assoc .log
+                    $associatedProgram = ($association -split "=")[-1]
+                    $associatedProgramPath = ((cmd /c ftype $associatedProgram) -split '"')[1]
+                    if (Test-Path $associatedProgramPath) {
+                        & $log
+                    } else {
+                        Write-Verbose "Associated program '$associatedProgram' doesn't exist, use notepad instead"
+                        notepad.exe $log
+                    }
                 }
             }
         }
@@ -76,7 +85,8 @@ function Get-IntuneLog {
         $log = "\\$computerName\" + ($log -replace ":", "$")
     }
     "opening logs in '$log'"
-    _openLog (Get-ChildItem $log -File | select -exp fullname)
+    # filter out "old" file version (contains '-')
+    _openLog (Get-ChildItem $log -File | ? BaseName -NotLike "*-*" | select -exp fullname)
 
     # When a PowerShell script is run on the client from Intune, the scripts and the script output will be stored here, but only until execution is complete
     $log = "C:\Program files (x86)\Microsoft Intune Management Extension\Policies\Scripts"
@@ -105,7 +115,7 @@ function Get-IntuneLog {
     # generate & open MDMDiagReport
     "generating & opening MDMDiagReport"
     if ($computerName) {
-        Write-Warning "TODO (zatim delej tak, ze spustis tuto fci lokalne pod uzivatelem, jehoz vysledky chces zjistit"
+        Write-Warning "TODO (run this function on the remote computer manually"
     } else {
         Start-Process MdmDiagnosticsTool.exe -Wait -ArgumentList "-out $env:TEMP\MDMDiag" -NoNewWindow
         & "$env:TEMP\MDMDiag\MDMDiagReport.html"

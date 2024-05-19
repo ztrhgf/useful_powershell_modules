@@ -1,5 +1,5 @@
-﻿
-#requires -modules Microsoft.Graph.Intune
+﻿#requires -modules Microsoft.Graph.Authentication, Microsoft.Graph.Beta.Devices.CorporateManagement, Microsoft.Graph.Beta.DeviceManagement, Microsoft.Graph.Beta.DeviceManagement.Enrollment
+
 function Get-IntunePolicy {
     <#
     .SYNOPSIS
@@ -95,8 +95,8 @@ function Get-IntunePolicy {
         [switch] $flatOutput
     )
 
-    if (!(Get-Module Microsoft.Graph.Intune) -and !(Get-Module Microsoft.Graph.Intune -ListAvailable)) {
-        throw "Module Microsoft.Graph.Intune is missing"
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
     if ($policyType -contains 'ALL') {
@@ -110,14 +110,18 @@ function Get-IntunePolicy {
     if ($basicOverview) {
         Write-Verbose "Just subset of available policy properties will be gathered"
         $selectFilter = '&$select=id,displayName,lastModifiedDateTime,assignments' # these properties are common across all intune policies, so it is safe to use them
-        $selectParam = @{select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments') }
         $expandFilter = '&$expand=assignments'
-        $expandParam = @{expand = 'assignments' }
     } else {
         $selectFilter = $null
-        $selectParam = @{}
         $expandFilter = '&$expand=assignments'
-        $expandParam = @{expand = 'assignments' }
+    }
+    $sharedParam = @{
+        all    = $true
+        expand = "assignments"
+    }
+    if ($basicOverview) {
+        Write-Verbose "Just subset of available policy properties will be gathered"
+        $param.select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments')
     }
 
     # progress variables
@@ -138,8 +142,9 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Apps"
         Write-Progress -Activity $progressActivity -Status "Processing Apps" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = ("https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=(microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true)$expandFilter$selectFilter" -replace "\s+", "%20")
-        $app = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true"
+        $app = Get-MgBetaDeviceAppManagementMobileApp @param
 
         $resultProperty.App = $app
     }
@@ -153,14 +158,14 @@ function Get-IntunePolicy {
 
         # targetedManagedAppConfigurations
         Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
         $targetedManagedAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
 
         # mobileAppConfigurations
         Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $uri = "https://graph.microsoft.com//beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false)$expandFilter$selectFilter" -replace "\s+", "%20"
-        $mobileAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false"
+        $mobileAppConfigurations = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
         $mobileAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
 
         if ($appConfigurationPolicy) {
@@ -179,32 +184,29 @@ function Get-IntunePolicy {
 
         # iosManagedAppProtections
         Write-Verbose "`t- processing 'iosManagedAppProtections'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosManagedAppProtections?$expandFilter$selectFilter"
-        $iosManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $iosManagedAppProtections = Get-MgBetaDeviceAppManagementiOSManagedAppProtection @sharedParam
         $iosManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # androidManagedAppProtections
         Write-Verbose "`t- processing 'androidManagedAppProtections'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/androidManagedAppProtections?$expandFilter$selectFilter"
-        $androidManagedAppProtections = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $androidManagedAppProtections = Get-MgBetaDeviceAppManagementAndroidManagedAppProtection @sharedParam
         $androidManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # targetedManagedAppConfigurations
         Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/targetedManagedAppConfigurations?$expandFilter$selectFilter"
-        $targetedManagedAppConfigurations = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
         $targetedManagedAppConfigurations | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # windowsInformationProtectionPolicies
         Write-Verbose "`t- processing 'windowsInformationProtectionPolicies'"
+        # unable to use cmdlet because of error: Get-MgBetaDeviceAppManagementWindowsInformationProtectionPolicy_List: Object reference not set to an instance of an object.
         $uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $windowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsInformationProtectionPolicies = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
         $windowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         # mdmWindowsInformationProtectionPolicies
         Write-Verbose "`t- processing 'mdmWindowsInformationProtectionPolicies'"
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mdmWindowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $mdmWindowsInformationProtectionPolicies = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $mdmWindowsInformationProtectionPolicies = Get-MgBetaDeviceAppManagementMdmWindowsInformationProtectionPolicy @sharedParam
         $mdmWindowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
 
         if ($appProtectionPolicy) {
@@ -219,8 +221,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Compliance policies"
         Write-Progress -Activity $progressActivity -Status "Processing Compliance policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/v1.0/deviceManagement/deviceCompliancePolicies?$expandFilter$selectFilter"
-        $compliancePolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $compliancePolicy = Get-MgBetaDeviceManagementDeviceCompliancePolicy @sharedParam
 
         $resultProperty.CompliancePolicy = $compliancePolicy
     }
@@ -236,30 +237,32 @@ function Get-IntunePolicy {
         # Templates profile type
         # api returns also Windows Update Ring policies, but they are filtered, so just policies as in GUI are returned
         Write-Verbose "`t- processing 'deviceConfigurations'"
-        $dcTemplate = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=(not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration'))$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration')"
+        $dcTemplate = Get-MgBetaDeviceManagementDeviceConfiguration @param
         $dcTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Administrative Templates
         Write-Verbose "`t- processing 'groupPolicyConfigurations'"
-        $dcAdmTemplate = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/groupPolicyConfigurations?$expandFilter$selectFilter" | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $dcAdmTemplate = Get-MgBetaDeviceManagementGroupPolicyConfiguration @sharedParam
         $dcAdmTemplate | ? { $_ } | % { $configurationPolicy += $_ }
 
         # mobileAppConfigurations
         Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $dcMobileAppConf = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceAppManagement/mobileAppConfigurations?`$filter=(microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true)$expandFilter$selectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true"
+        $dcMobileAppConf = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
         $dcMobileAppConf | ? { $_ } | % { $configurationPolicy += $_ }
 
         # Settings Catalog profile type
         # api returns also Attack Surface Reduction Rules and Account protection policies (from Endpoint Security section), but they are filtered, so just policies as in GUI are returned
         # configurationPolicies objects have property Name instead of DisplayName
         Write-Verbose "`t- processing 'configurationPolicies'"
-        $custSelectFilter = $selectFilter -replace "displayname", "name"
-        if ($basicOverview) {
-            $custExpandFilter = $expandFilter
-        } else {
-            $custExpandFilter = "$expandFilter,settings"
-        }
-        $dcSettingCatalog = Invoke-MSGraphRequest -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')$custExpandFilter$custSelectFilter" -replace "\s+", "%20") | Get-MSGraphAllPages | select @{n = 'Displayname'; e = { $_.Name } }, * -ExcludeProperty 'Name', 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.select = $param.select -replace "displayname", "name"
+        $param.expand += ",settings"
+        $param.filter = "(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')"
+        $dcSettingCatalog = Get-MgBetaDeviceManagementConfigurationPolicy @param
         $dcSettingCatalog | ? { $_ } | % { $configurationPolicy += $_ }
 
         if ($configurationPolicy) {
@@ -275,7 +278,7 @@ function Get-IntunePolicy {
         Write-Progress -Activity $progressActivity -Status "Processing Custom Attribute Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
         $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCustomAttributeShellScripts?$expandFilter$selectFilter"
-        $customAttributeShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $customAttributeShellScript = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
 
         $resultProperty.CustomAttributeShellScript = $customAttributeShellScript
     }
@@ -285,8 +288,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions"
         Write-Progress -Activity $progressActivity -Status "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceEnrollmentConfigurations?$expandFilter$selectFilter"
-        $deviceEnrollmentConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceEnrollmentConfiguration = Get-MgBetaDeviceManagementDeviceEnrollmentConfiguration @sharedParam
 
         $resultProperty.DeviceEnrollmentConfiguration = $deviceEnrollmentConfiguration
     }
@@ -296,8 +298,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing PowerShell scripts"
         Write-Progress -Activity $progressActivity -Status "Processing PowerShell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceManagementScripts?$expandFilter$selectFilter"
-        $deviceConfigPSHScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceConfigPSHScript = Get-MgBetaDeviceManagementScript @sharedParam
 
         $resultProperty.DeviceManagementPSHScript = $deviceConfigPSHScript
     }
@@ -307,8 +308,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Shell scripts"
         Write-Progress -Activity $progressActivity -Status "Processing Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceShellScripts?$expandFilter$selectFilter"
-        $deviceConfigShellScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $deviceConfigShellScript = Get-MgBetaDeviceManagementDeviceShellScript @sharedParam
 
         $resultProperty.DeviceManagementShellScript = $deviceConfigShellScript
     }
@@ -322,21 +322,22 @@ function Get-IntunePolicy {
 
         #region process: Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies (not 'Local User Group Membership')
         if ($basicOverview) {
-            $endpointSecPol = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents?$selectFilter" | Get-MSGraphAllPages
+            $endpointSecPol = Get-MgBetaDeviceManagementIntent @sharedParam
         } else {
-            $templates = (Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents" -ErrorAction Stop).Value
+            $templates = Get-MgBetaDeviceManagementIntent @sharedParam
             $endpointSecPol = @()
             foreach ($template in $templates) {
                 Write-Verbose "`t- processing intent $($template.id), template $($template.templateId)"
 
-                $settings = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents/$($template.id)/settings"
-                $templateDetail = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/templates/$($template.templateId)"
+                $settings = Get-MgBetaDeviceManagementIntentSetting -DeviceManagementIntentId $template.id | Expand-MgAdditionalProperties
+                $templateDetail = Get-MgBetaDeviceManagementTemplate -DeviceManagementTemplateId $template.templateId
+                $assignments = Get-MgBetaDeviceManagementIntentAssignment -DeviceManagementIntentId $template.id
 
                 $template | Add-Member Noteproperty -Name 'platforms' -Value $templateDetail.platformType -Force # to match properties of second function region objects
                 $template | Add-Member Noteproperty -Name 'type' -Value "$($templateDetail.templateType)-$($templateDetail.templateSubtype)" -Force
 
                 $templSettings = @()
-                foreach ($setting in $settings.value) {
+                foreach ($setting in $settings) {
                     $displayName = $setting.definitionId -replace "deviceConfiguration--", "" -replace "admx--", "" -replace "_", " "
                     if ($null -eq $setting.value) {
                         if ($setting.definitionId -eq "deviceConfiguration--windows10EndpointProtectionConfiguration_firewallRules") {
@@ -359,8 +360,7 @@ function Get-IntunePolicy {
 
                 $template | Add-Member Noteproperty -Name Settings -Value $templSettings -Force
                 $template | Add-Member Noteproperty -Name 'settingCount' -Value $templSettings.count -Force # to match properties of second function region objects
-                $assignments = Invoke-MSGraphRequest -Url "https://graph.microsoft.com/beta/deviceManagement/intents/$($template.id)/assignments"
-                $template | Add-Member Noteproperty -Name Assignments -Value $assignments.Value -Force
+                $template | Add-Member Noteproperty -Name Assignments -Value $assignments -Force
                 $endpointSecPol += $template | select -Property * -ExcludeProperty templateId
             }
         }
@@ -369,10 +369,20 @@ function Get-IntunePolicy {
 
         #region process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
         if ($basicOverview) {
+            $param = $sharedParam.clone()
+            $param.select = $param.select -replace "displayname", "name"
+            $param.select += ",templateReference"
+            $param.expand += ",settings"
+            $param.filter = "templateReference/templateFamily ne 'none'"
+
             $custSelectFilter = $selectFilter -replace "displayname", "name"
-            $endpointSecPol2 = Invoke-MSGraphRequest -HttpMethod GET -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$filter=(templateReference/templateFamily ne 'none')$expandFilter$custSelectFilter,templateReference" -replace "\s+", "%20") | Get-MSGraphAllPages | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select @{ n = 'id'; e = { $_.id } }, @{ n = 'displayName'; e = { $_.name } }, * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context' # id as calculated property to have it first and still be able to use *
+            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select @{ n = 'id'; e = { $_.id } }, @{ n = 'displayName'; e = { $_.name } }, * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context' # id as calculated property to have it first and still be able to use *
         } else {
-            $endpointSecPol2 = Invoke-MSGraphRequest -HttpMethod GET -Url ("https://graph.microsoft.com/beta/deviceManagement/configurationPolicies?`$select=id,name,description,isAssigned,platforms,lastModifiedDateTime,settingCount,roleScopeTagIds,templateReference&`$expand=Assignments,Settings&`$filter=(templateReference/templateFamily ne 'none')" -replace "\s+", "%20") | Get-MSGraphAllPages | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select -Property id, @{n = 'displayName'; e = { $_.name } }, description, isAssigned, lastModifiedDateTime, roleScopeTagIds, platforms, @{n = 'type'; e = { $_.templateReference.templateFamily } }, templateReference, @{n = 'settings'; e = { $_.settings | % { [PSCustomObject]@{
+            $param = $sharedParam.clone()
+            $param.select = ('id', 'name', 'description', 'isAssigned', 'platforms', 'lastModifiedDateTime', 'settingCount', 'roleScopeTagIds', 'templateReference')
+            $param.expand += ",settings"
+            $param.filter = "templateReference/templateFamily ne 'none'"
+            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | select -Property id, @{n = 'displayName'; e = { $_.name } }, description, isAssigned, lastModifiedDateTime, roleScopeTagIds, platforms, @{n = 'type'; e = { $_.templateReference.templateFamily } }, templateReference, @{n = 'settings'; e = { $_.settings | % { [PSCustomObject]@{
                             # trying to have same settings format a.k.a. name/value as in previous function region
                             Name  = $_.settinginstance.settingDefinitionId
                             Value = $(
@@ -404,8 +414,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing iOS App Provisioning profiles"
         Write-Progress -Activity $progressActivity -Status "Processing iOS App Provisioning profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/iosLobAppProvisioningConfigurations?$expandFilter$selectFilter"
-        $iosAppProvisioningProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $iosAppProvisioningProfile = Get-MgBetaDeviceAppManagementiOSLobAppProvisioningConfiguration @sharedParam
 
         $resultProperty.IOSAppProvisioningProfile = $iosAppProvisioningProfile
     }
@@ -415,8 +424,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing iOS Update configurations"
         Write-Progress -Activity $progressActivity -Status "Processing iOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.iosUpdateConfiguration')$expandFilter$selectFilter"
-        $iosUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.iosUpdateConfiguration')"
+
+        $iosUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.IOSUpdateConfiguration = $iosUpdateConfiguration
     }
@@ -426,8 +437,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing macOS Update configurations"
         Write-Progress -Activity $progressActivity -Status "Processing macOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.macOSSoftwareUpdateConfiguration')$expandFilter$selectFilter"
-        $macosSoftwareUpdateConfiguration = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.macOSSoftwareUpdateConfiguration')"
+
+        $macosSoftwareUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.MacOSSoftwareUpdateConfiguration = $macosSoftwareUpdateConfiguration
     }
@@ -439,17 +452,19 @@ function Get-IntunePolicy {
 
         $policySet = @()
 
-        $uri = 'https://graph.microsoft.com/beta/deviceAppManagement/policySets'
-        $policySetList = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages
+        $param = $sharedParam.clone()
+        $param.Remove('expand')
 
-        if ($basicOverview) {
-            $custExpandFilter = $expandFilter
-        } else {
-            $custExpandFilter = "$expandFilter,items"
+        $policySetList = Get-MgBetaDeviceAppManagementPolicySet @param
+
+        $param = $sharedParam.clone()
+        $param.Remove('all')
+        if (!$basicOverview) {
+            $param.expand += ",items"
         }
+
         foreach ($policy in $policySetList) {
-            $uri = "https://graph.microsoft.com/beta/deviceAppManagement/policySets/$($policy.id)/?$custExpandFilter$selectFilter"
-            $policyContent = Invoke-MSGraphRequest -Url $uri | select -Property * -ExcludeProperty '@odata.context', 'assignments@odata.context', 'items@odata.context'
+            $policyContent = Get-MgBetaDeviceAppManagementPolicySet -PolicySetId $policy.id @param
 
             $policySet += $policyContent
         }
@@ -466,9 +481,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Remediation (Health) scripts"
         Write-Progress -Activity $progressActivity -Status "Processing Remediation (Health) scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceHealthScripts?$expandFilter$selectFilter"
-        $remediationScript = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
+        $remediationScript = Get-MgBetaDeviceManagementDeviceHealthScript @sharedParam
         $resultProperty.RemediationScript = $remediationScript
     }
 
@@ -477,8 +490,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing S Mode Supplemental policies"
         Write-Progress -Activity $progressActivity -Status "Processing S mode supplemental policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/wdacSupplementalPolicies?$expandFilter$selectFilter"
-        $sModeSupplementalPolicy = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $sModeSupplementalPolicy = Get-MgBetaDeviceAppManagementWdacSupplementalPolicy @sharedParam
 
         $resultProperty.SModeSupplementalPolicy = $sModeSupplementalPolicy
     }
@@ -488,8 +500,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Autopilot Deployment profile"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Autopilot Deployment profile" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsAutopilotDeploymentProfiles?$expandFilter$selectFilter"
-        $windowsAutopilotDeploymentProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsAutopilotDeploymentProfile = Get-MgBetaDeviceManagementWindowsAutopilotDeploymentProfile @sharedParam
 
         $resultProperty.WindowsAutopilotDeploymentProfile = $windowsAutopilotDeploymentProfile
     }
@@ -499,8 +510,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Feature Update profiles"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Feature Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsFeatureUpdateProfiles?$expandFilter$selectFilter"
-        $windowsFeatureUpdateProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsFeatureUpdateProfile = Get-MgBetaDeviceManagementWindowsFeatureUpdateProfile @sharedParam
 
         $resultProperty.WindowsFeatureUpdateProfile = $windowsFeatureUpdateProfile
     }
@@ -510,8 +520,7 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Quality Update profiles"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Quality Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/windowsQualityUpdateProfiles?$expandFilter$selectFilter"
-        $windowsQualityUpdateProfile = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $windowsQualityUpdateProfile = Get-MgBetaDeviceManagementWindowsQualityUpdateProfile @sharedParam
 
         $resultProperty.WindowsQualityUpdateProfile = $windowsQualityUpdateProfile
     }
@@ -521,8 +530,10 @@ function Get-IntunePolicy {
         Write-Verbose "Processing Windows Update rings"
         Write-Progress -Activity $progressActivity -Status "Processing Windows Update rings" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = ("https://graph.microsoft.com/beta/deviceManagement/deviceConfigurations?`$filter=isof('microsoft.graph.windowsUpdateForBusinessConfiguration')$expandFilter$selectFilter" -replace "\s+", "%20")
-        $windowsUpdateRing = Invoke-MSGraphRequest -Url $uri | Get-MSGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
+        $param = $sharedParam.clone()
+        $param.filter = "isof('microsoft.graph.windowsUpdateForBusinessConfiguration')"
+
+        $windowsUpdateRing = Get-MgBetaDeviceManagementDeviceConfiguration @param
 
         $resultProperty.WindowsUpdateRing = $windowsUpdateRing
     }
@@ -533,7 +544,7 @@ function Get-IntunePolicy {
 
     if ($flatOutput) {
         # extract main object properties (policy types) and output the data as array of policies instead of one big object
-        $result | Get-Member -MemberType NoteProperty | select -exp name | % {
+        $result | Get-Member -MemberType NoteProperty | select -ExpandProperty name | % {
             $polType = $_
 
             $result.$polType | ? { $_ } | % {

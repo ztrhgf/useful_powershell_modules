@@ -1,4 +1,4 @@
-﻿#requires -modules Microsoft.Graph.Intune
+﻿#requires -modules Microsoft.Graph.DeviceManagement
 function Get-IntuneEnrollmentStatus {
     <#
     .SYNOPSIS
@@ -60,22 +60,24 @@ function Get-IntuneEnrollmentStatus {
         $ErrActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Stop"
 
+        if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+            throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+        }
+
         try {
             if (Get-Command Get-ADComputer -ErrorAction SilentlyContinue) {
                 $ADObj = Get-ADComputer -Filter "Name -eq '$computerName'" -Properties Name, ObjectGUID
             } else {
-                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID. Install RSAT to fix this."
+                Write-Verbose "Get-ADComputer command is missing, unable to get device GUID"
             }
-
-            Connect-MSGraph2
 
             $intuneObj = @()
 
-            $intuneObj += Get-IntuneManagedDevice -Filter "DeviceName eq '$computerName'"
+            $intuneObj += Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$computerName'"
 
             if ($ADObj.ObjectGUID) {
                 # because of bug? computer can be listed under guid_date name in cloud
-                $intuneObj += Get-IntuneManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
+                $intuneObj += Get-MgDeviceManagementManagedDevice -Filter "azureADDeviceId eq '$($ADObj.ObjectGUID)'" | ? DeviceName -NE $computerName
             }
         } catch {
             Write-Warning "Unable to get information from Intune. $_"

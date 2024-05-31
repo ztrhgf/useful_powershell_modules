@@ -1,12 +1,12 @@
-function Export-VariableToStorage {
+﻿function Export-VariableToStorage {
     <#
     .SYNOPSIS
     Function for saving PowerShell variable as XML file in Azure Blob storage.
-    That way you can easily later download & convert it back to original state.
+    That way you can easily later download & convert it back to original state using Import-VariableFromStorage.
 
     .DESCRIPTION
     Function for saving PowerShell variable as XML file in Azure Blob storage.
-    That way you can easily later download & convert it back to original state.
+    That way you can easily later download & convert it back to original state using Import-VariableFromStorage.
 
     Uses native Export-CliXml to convert variable to a XML.
 
@@ -278,12 +278,12 @@ function Get-AzureResource {
 function Import-VariableFromStorage {
     <#
     .SYNOPSIS
-    Function for downloading Azure Blob storage XML file and converting it back to original PowerShell variable.
+    Function for downloading Azure Blob storage XML file and converting it back to original PowerShell object.
 
     .DESCRIPTION
-    Function for downloading Azure Blob storage XML file and converting it back to original PowerShell variable.
+    Function for downloading Azure Blob storage XML file and converting it back to original PowerShell object.
 
-    Uses native Import-CliXml to convert variable from a XML.
+    Uses native Import-CliXml command for converting XML back to an object hence expects that such PowerShell object was previously saved using Export-VariableToStorage.
 
     .PARAMETER fileName
     Name of the file you want to download and convert back to the original variable.

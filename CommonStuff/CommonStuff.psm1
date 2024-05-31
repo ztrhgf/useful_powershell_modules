@@ -1,4 +1,4 @@
-function Compare-Object2 {
+﻿function Compare-Object2 {
     <#
     .SYNOPSIS
     Function for detection if two inputs are the same.
@@ -4404,6 +4404,131 @@ function Invoke-MSTSC {
     }
 }
 
+function Invoke-RestMethod2 {
+    <#
+    .SYNOPSIS
+    Proxy function for Invoke-RestMethod.
+
+    Adds support for:
+     - pagination (by detecting '@odata.nextLink')
+     - throttling (by adding sleep time before giving another try)
+
+    .DESCRIPTION
+    Proxy function for Invoke-RestMethod.
+
+    Adds support for:
+     - pagination (by detecting '@odata.nextLink')
+     - throttling (by adding sleep time before giving another try)
+
+    .PARAMETER uri
+    URL.
+
+    .PARAMETER method
+    Request method.
+
+    Possible values: GET, POST, PATCH, PUT, DELETE
+
+    By default GET.
+
+    .PARAMETER headers
+    Authentication header etc.
+
+    .PARAMETER body
+    Request body.
+
+    .PARAMETER waitTime
+    Number of seconds to wait if error "too many requests" is detected.
+
+    By default 30.
+
+    .EXAMPLE
+    $header = New-M365DefenderAuthHeader
+
+    $url = "https://api-eu.securitycenter.microsoft.com/api/vulnerabilities/machinesVulnerabilities"
+
+    Invoke-RestMethod2 -uri $url -headers $header
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $uri,
+
+        [ValidateSet('GET', 'POST', 'PATCH', 'PUT', 'DELETE')]
+        [string] $method = "GET",
+
+        $headers,
+
+        $body,
+
+        [ValidateRange(1, 999)]
+        [int] $waitTime = 30
+    )
+
+    function _result {
+        param ($response)
+
+        if ($response | Get-Member -MemberType NoteProperty | select -ExpandProperty name | ? { $_ -notin '@odata.context', '@odata.nextLink', '@odata.count', 'Value' }) {
+            # only one item was returned, no expand is needed
+            $response
+        } else {
+            # its more than one result, I need to expand the Value property
+            $response.Value
+        }
+    }
+
+    $uriLink = $uri
+    $responseObj = $Null
+
+    do {
+        try {
+            Write-Verbose $uriLink
+
+            $param = @{
+                ErrorAction = 'Stop'
+                Method      = $method
+                Uri         = $uriLink
+            }
+            if ($headers) {
+                $param.Headers = $headers
+            }
+            if ($body) {
+                $param.Body = $body
+            }
+            $responseObj = Invoke-RestMethod @param
+
+            _result $responseObj
+
+            # loop through '@odata.nextLink' to get all results
+            $uriLink = $responseObj.'@odata.nextLink'
+        } catch {
+            switch ($_) {
+                { $_ -like "*Too Many Requests*" -or $_ -like "*TooManyRequests*" } {
+                    Write-Warning "Too Many Requests. Waiting $waitTime seconds to avoid further throttling before trying again"
+                    Start-Sleep $waitTime
+                }
+
+                { $_ -like "*Gateway Time-out*" } {
+                    Write-Warning "Gateway Time-out. Waiting $waitTime seconds before trying again"
+                    Start-Sleep $waitTime
+                }
+
+                { $_ -like "*(400)*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
+
+                { $_ -like "*(401)*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
+
+                { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request ($uri)" }
+
+                default {
+                    Write-Error $_
+                    # break the loop (break command wasn't working)
+                    $uriLink = $null
+                }
+            }
+        }
+    } while ($uriLink)
+}
+
 function Invoke-SQL {
     <#
     .SYNOPSIS
@@ -4752,6 +4877,182 @@ function Publish-Module2 {
     }
 }
 
+function Send-EmailViaSendGrid {
+    <#
+    .SYNOPSIS
+    Function for sending email using SendGrid service.
+
+    .DESCRIPTION
+    Function for sending email using SendGrid service.
+
+    Supports retrieval of the api token from Azure Keyvault or from given credentials object.
+
+    .PARAMETER to
+    Email address(es) of recipient(s).
+
+    .PARAMETER subject
+    Email subject.
+
+    .PARAMETER body
+    Email body.
+
+    .PARAMETER asHTML
+    Switch for sending email body as HTML instead of plaintext.
+
+    .PARAMETER from
+    Sender email address.
+
+    .PARAMETER credentials
+    PSCredential object that contains SendGrid authentication token in the password field.
+
+    If not provided, token will be retrieved from Azure vault if possible.
+
+    .EXAMPLE
+    $cr = Get-Credential -UserName "whatever" -Message "Enter SendGrid token to the password field"
+
+    $param = @{
+        to = 'johnd@contoso.com'
+        from = 'marie@contoso.com'
+        subject = 'greetings'
+        body = "Hi,`nhow are you?"
+        credentials = $cr
+    }
+    Send-EmailViaSendGrid @param
+
+    Will send plaintext email using given token to johnd@contoso.com.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    $param = @{
+        to = 'johnd@contoso.com'
+        from = 'marie@contoso.com'
+        subject = 'greetings'
+        body = 'Hi,<br>how are you?'
+        asHTML = $true
+        vaultSubscription = 'production'
+        vaultName = 'secrets'
+        secretName = 'sendgrid'
+    }
+    Send-EmailViaSendGrid @param
+
+    Will send HTML email (using token retrieved from Azure Keyvault) to johnd@contoso.com.
+    To be able to automatically retrieve token from Azure Vault, you have to be authenticated (Connect-AzAccount).
+#>
+
+[CmdletBinding(DefaultParameterSetName = 'credentials')]
+    param (
+        [ValidateScript( {
+            if ($_ -like "*@*") {
+                $true
+            } else {
+                throw "$_ is not a valid email address (johnd@contoso.com)"
+            }
+        })]
+        [string[]] $to = $_sendTo,
+
+        [Parameter(Mandatory = $true)]
+        [string] $subject,
+
+        [Parameter(Mandatory = $true)]
+        [string] $body,
+
+        [switch] $asHTML,
+
+        [ValidateScript( {
+            if ($_ -like "*@*") {
+                $true
+            } else {
+                throw "$_ is not a valid email address (johnd@contoso.com)"
+            }
+        })]
+        [string] $from = $_sendFrom,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "credentials")] 
+        [System.Management.Automation.PSCredential] $credentials,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "keyvault")] 
+        [string] $vaultSubscription = $_vaultSubscription,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "keyvault")] 
+        [string] $vaultName = $_vaultName,
+
+        [Parameter(Mandatory = $false, ParameterSetName = "keyvault")] 
+        [string] $secretName = $_secretName
+    )
+
+    #region checks
+    if (!(Get-Command Send-PSSendGridMail -ea SilentlyContinue)) {
+        throw "Command Send-PSSendGridMail is missing (part of module PSSendGrid)"
+    }
+
+    if (!$to) {
+        throw "$($MyInvocation.MyCommand) has to have 'to' parameter defined"
+    }
+    if (!$from) {
+        throw "$($MyInvocation.MyCommand) has to have 'from' parameter defined"
+    }
+
+    if ($credentials -and !($credentials.GetNetworkCredential().password)) {
+            throw "Credentials doesn't contain password"
+    } elseif (!$credentials) {
+        if (!$vaultSubscription) {
+            throw "$($MyInvocation.MyCommand) has to have 'vaultSubscription' parameter defined"
+        }
+        if (!$vaultName) {
+            throw "$($MyInvocation.MyCommand) has to have 'vaultName' parameter defined"
+        }
+        if (!$secretName) {
+            throw "$($MyInvocation.MyCommand) has to have 'secretName' parameter defined"
+        } 
+    }
+    #endregion checks
+
+    #region retrieve token
+    if (!$credentials) {
+        try {
+            $currentSubscription = (Get-AzContext).Subscription.Name
+            if ($currentSubscription -ne $vaultSubscription) {
+                Write-Verbose "Switching subscription to $vaultSubscription"
+                $null = Select-AzSubscription $vaultSubscription
+            }
+
+            Write-Verbose "Retrieving sendgrid token (vault: $vaultName, secret: $secretName)"
+            $token = Get-AzKeyVaultSecret -VaultName $vaultName -Name $secretName -AsPlainText -ErrorAction Stop
+
+            Write-Verbose "Switching subscription back to $currentSubscription"
+            $null = Select-AzSubscription $currentSubscription
+        } catch {
+            if ($_ -match "Run Connect-AzAccount to login") {
+                throw "Unable to obtain sendgrid token from Azure Vault, because you are not authenticated. Use Connect-AzAccount to fix this"
+            } else {
+                throw "Unable to obtain sendgrid token from Azure Vault.`n`n$_"
+            }
+        }
+    } else {
+        $token = $credentials.GetNetworkCredential().password
+        if (!$token) {
+            throw "Token parameter doesn't contain token"
+        }
+    }
+    #endregion retrieve token
+
+    $param = @{
+        FromAddress = $from
+        ToAddress   = $to
+        Subject     = $subject
+        Token       = $token
+    }
+    if ($asHTML) {
+        $param.BodyAsHTML = $body
+    } else {
+        $param.Body = $body
+    }
+
+    Write-Verbose "Sending email"
+    Send-PSSendGridMail @param
+}
+
 function Uninstall-ApplicationViaUninstallString {
     <#
     .SYNOPSIS
@@ -4883,6 +5184,6 @@ function Uninstall-ApplicationViaUninstallString {
     }
 }
 
-Export-ModuleMember -function Compare-Object2, ConvertFrom-CompressedString, ConvertFrom-HTMLTable, ConvertFrom-XML, ConvertTo-CompressedString, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-SQL, Invoke-WindowsUpdate, New-BasicAuthHeader, Publish-Module2, Uninstall-ApplicationViaUninstallString
+Export-ModuleMember -function Compare-Object2, ConvertFrom-CompressedString, ConvertFrom-HTMLTable, ConvertFrom-XML, ConvertTo-CompressedString, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-RestMethod2, Invoke-SQL, Invoke-WindowsUpdate, New-BasicAuthHeader, Publish-Module2, Send-EmailViaSendGrid, Uninstall-ApplicationViaUninstallString
 
 Export-ModuleMember -alias Create-BasicAuthHeader, Install-WindowsUpdate, Invoke-WU, rdp, Watch-FileContent, Watch-FileSystem

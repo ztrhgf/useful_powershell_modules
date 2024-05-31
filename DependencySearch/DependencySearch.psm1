@@ -452,7 +452,7 @@ function Get-CodeDependency {
         )
 
         foreach ($item in $inputArray) {
-            if ($null -eq $item) {
+            if ($null -ne $item) {
                 # recurse for arrays
                 if ($item.gettype().BaseType -eq [System.Array]) {
                     ConvertTo-FlatArray $item

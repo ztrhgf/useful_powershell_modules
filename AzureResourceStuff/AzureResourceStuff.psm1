@@ -1,4 +1,4 @@
-﻿function Export-VariableToStorage {
+function Export-VariableToStorage {
     <#
     .SYNOPSIS
     Function for saving PowerShell variable as XML file in Azure Blob storage.
@@ -190,6 +190,485 @@ function Get-AutomationVariable2 {
     } else {
         return
     }
+}
+
+function Get-AzureAutomationRunbookRuntime {
+    <#
+    .SYNOPSIS
+    Get Runtime Environment name of the selected Azure Automation Account Runbook.
+
+    .DESCRIPTION
+    Get Runtime Environment name of the selected Azure Automation Account Runbook.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRunbookRuntime
+
+    Get name of the Runtime Environment used in selected Runbook.
+    Missing function arguments like $resourceGroupName, $automationAccountName or $runbookName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to process"
+    }
+    #endregion get missing arguments
+
+    Invoke-RestMethod2 "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName`?api-version=2023-05-15-preview" -headers $header | select -ExpandProperty properties | select -ExpandProperty runtimeEnvironment
+}
+
+function Get-AzureAutomationRuntime {
+    <#
+    .SYNOPSIS
+    Function returns selected/all Azure Automation runtime environment/s.
+
+    .DESCRIPTION
+    Function returns selected/all Azure Automation runtime environment/s.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    If not provided, all runtimes will be returned.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER programmingLanguage
+    Filter runtimes to just ones using selected language.
+
+    Possible values: All, PowerShell, Python.
+
+    By default: All
+
+    .PARAMETER runtimeSource
+    Filter runtimes by source of creation.
+
+    Possible values: All, Default, Custom.
+
+    By default: All
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntime -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging"
+
+    Get all Automation Runtimes in given Automation Account.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntime -programmingLanguage PowerShell -runtimeSource Custom
+
+    Get just PowerShell based manually created Automation Runtimes in given Automation Account.
+
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .NOTES
+    https://learn.microsoft.com/en-us/rest/api/automation/runtime-environments/get?view=rest-automation-2023-05-15-preview&tabs=HTTP
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [ValidateSet('PowerShell', 'Python', 'All')]
+        [string] $programmingLanguage = 'All',
+
+        [ValidateSet('Default', 'Custom', 'All')]
+        [string] $runtimeSource = 'All',
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+    #endregion get missing arguments
+
+    $result = Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/?api-version=2023-05-15-preview" -headers $header -ErrorAction $ErrorActionPreference
+
+    #region filter results
+    if ($result -and $programmingLanguage -ne 'All') {
+        $result = $result | ? { $_.Properties.Runtime.language -eq $programmingLanguage }
+    }
+
+    if ($result -and $runtimeSource -ne 'All') {
+        switch ($runtimeSource) {
+            'Default' {
+                $result = $result | ? { $_.Properties.Description -like "System-generated Runtime Environment for your Automation account with Runtime language:*" }
+            }
+
+            'Custom' {
+                $result = $result | ? { $_.Properties.Description -notlike "System-generated Runtime Environment for your Automation account with Runtime language:*" }
+            }
+
+            default {
+                throw "Undefined runtimeSource ($runtimeSource)"
+            }
+        }
+    }
+    #endregion filter results
+
+    $result
+}
+
+function Get-AzureAutomationRuntimeAvailableDefaultModule {
+    <#
+    .SYNOPSIS
+    Function returns default modules (Az) available to select in selected/all PSH runtime(s).
+
+    .DESCRIPTION
+    Function returns default modules (Az) available to select in selected/all PSH runtime(s).
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runtimeName
+    (optional) runtime name you want to get default modules for.
+
+    If not provided, all default modules for all PSH runtimes in given automation account will be outputted.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeAvailableDefaultModule
+
+    You will get list of all resource groups and automation accounts (in current subscription) to pick the one you are interested in.
+    And the output will be all default modules (Az) that are available to select there.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeAvailableDefaultModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName "PSH51_Custom"
+
+    And the output will be default modules (Az) that are available to select in given Runtime Environment.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runtimeName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+    #endregion get missing arguments
+
+    if ($runtimeName) {
+        # get available default modules for this specific runtime
+        # for this we need to get used PowerShell version
+        $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -runtimeName $runtimeName -programmingLanguage PowerShell -ErrorAction Stop
+
+        if (!$runtime) {
+            throw "Runtime Environment wasn't found. Name is misspelled or it is not a PSH runtime"
+        }
+
+        $runtimeVersion = $runtime.properties.runtime.version
+
+        if ($runtimeVersion -eq '5.1') {
+            $runtimeLanguageVersion = 'powershell'
+        } elseif ($runtimeVersion -eq '7.1') {
+            $runtimeLanguageVersion = 'powershell7'
+        } else {
+            # hopefully MS will stick with this format
+            $runtimeLanguageVersion = ('powershell' + ($runtimeVersion -replace '\.'))
+        }
+
+        Write-Verbose "Available default modules will be limited to $runtimeLanguageVersion runtime language"
+    } else {
+        $runtimeLanguageVersion = '*'
+    }
+
+    $result = Invoke-RestMethod2 -method Post -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/listbuiltinmodules?api-version=2023-05-15-preview" -headers $header
+
+    if ($result) {
+        # instead of one object containing all runtimes return one object per runtime
+        $result | Get-Member -MemberType NoteProperty | select -ExpandProperty Name | ? { $_ -like $runtimeLanguageVersion } | % {
+            $runtimeLanguage = $_
+            $result.$runtimeLanguage | select @{n = 'RuntimeLanguage'; e = { $runtimeLanguage } }, *
+        }
+    }
+}
+
+function Get-AzureAutomationRuntimeCustomModule {
+    <#
+    .SYNOPSIS
+    Function gets all (or just selected) custom modules (packages) that are imported in the specified PowerShell Azure Automation runtime.
+
+    .DESCRIPTION
+    Function gets all (or just selected) custom modules (packages) that are imported in the specified PowerShell Azure Automation runtime.
+
+    Custom modules are added by user, default ones are built-in (Az) and user just select version to use.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER moduleName
+    Name of the custom module you want to get.
+
+    If not provided, all custom modules will be returned.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeCustomModule
+
+    You will get list of all (in current subscription) resource groups, automation accounts and runtimes to pick the one you are interested in.
+    And the output will be all custom modules imported in the specified Automation runtime.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeCustomModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff
+
+    Get custom module CommonStuff imported in the specified Automation runtime.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeCustomModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51
+
+    Get all custom modules imported in the specified Automation runtime.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $moduleName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runtime you want to process"
+    }
+    #endregion get missing arguments
+
+    Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -headers $header
+}
+
+function Get-AzureAutomationRuntimeSelectedDefaultModule {
+    <#
+    .SYNOPSIS
+    Function get default module (Az) that is selected in the specified Azure Automation runtime.
+
+    .DESCRIPTION
+    Function get default module (Az) that is selected in the specified Azure Automation runtime.
+
+    Custom modules are added by user, default ones are built-in (Az) and user just select version to use.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeSelectedDefaultModule
+
+    You will get list of all (in current subscription) resource groups, automation accounts and runtimes to pick the one you are interested in.
+    And you will get default module name (AZ) and its version that is selected in the specified Automation runtime.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRuntimeSelectedDefaultModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51
+
+    Get default module (Az) version in the specified Automation runtime.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-AzureAutomationRuntimeAzModule")]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages
 }
 
 function Get-AzureResource {
@@ -399,6 +878,49 @@ function Import-VariableFromStorage {
 
     # remove temp file
     $null = Remove-Item $cliXmlFile -Force
+}
+
+function New-AzureAutomationGraphToken {
+    <#
+    .SYNOPSIS
+    Generating auth header for Azure Automation.
+
+    .DESCRIPTION
+    Generating auth header for Azure Automation.
+
+    Expects that you are already connected to Azure using Connect-AzAccount command.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    $header = New-AzureAutomationGraphToken
+
+    $body = @{
+        "properties" = @{
+            "contentLink" = @{
+                "uri" = $modulePkgUri
+            }
+            "version"     = $moduleVersion
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeEnvironmentName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+
+    #>
+
+    $accessToken = Get-AzAccessToken -ResourceUrl "https://management.azure.com" -ErrorAction Stop
+    if ($accessToken.Token) {
+        $header = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer {0}" -f $accessToken.Token
+        }
+
+        return $header
+    } else {
+        throw "Unable to obtain token. Are you connected using Connect-AzAccount?"
+    }
 }
 
 function New-AzureAutomationModule {
@@ -805,6 +1327,395 @@ function New-AzureAutomationModule {
     }
 }
 
+function New-AzureAutomationRuntime {
+    <#
+    .SYNOPSIS
+    Function creates a new custom Azure Automation Account Runtime.
+
+    .DESCRIPTION
+    Function creates a new custom Azure Automation Account Runtime.
+
+    Both Powershell nad Python runtimes are supported. Powershell one supports specifying Az module version.
+
+    .PARAMETER runtimeName
+    Name of the created runtime.
+
+    .PARAMETER runtimeLanguage
+    Language that will be used in created runtime.
+
+    Possible values are PowerShell, Python.
+
+    .PARAMETER runtimeVersion
+    Version of the runtimeLanguage.
+
+    For Python it is 3.8, 3.10, for PowerShell '5.1', '7.1', '7.2', but this will likely change in the future.
+
+    .PARAMETER defaultPackage
+    Only use for PowerShell runtimeLanguage!
+
+    Hashtable where keys are default module names ('az' (both PSHs), 'azure cli' (only in PSH Core)) and values are module versions.
+
+    If no defaultPackage hashtable is provided, no default modules will be enabled in created runtime.
+
+    .PARAMETER description
+    Runtime description.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    $defaultPackage = @{
+        az = '8.0.0'
+    }
+
+    New-AzureAutomationRuntime -runtimeName 'CustomPSH51' -runtimeLanguage 'PowerShell' -runtimeVersion 5.1 -defaultPackage $defaultPackage -description 'PSH 5.1 for testing purposes' -resourceGroupName 'AdvancedLoggingRG' -automationAccountName 'EnableO365AdvancedLogging'
+
+    Create new custom Powershell 5.1 runtime with Az module 8.0.0 enabled.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    New-AzureAutomationRuntime -runtimeName 'CustomPSH51' -runtimeLanguage 'PowerShell' -runtimeVersion 5.1 -description 'PSH 5.1 for testing purposes' -resourceGroupName 'AdvancedLoggingRG' -automationAccountName 'EnableO365AdvancedLogging'
+
+    Create a new custom Powershell 5.1 runtime without Az module enabled.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    $defaultPackage = @{
+        'az' = '8.0.0'
+        'azure cli' = '2.56.0'
+    }
+
+    New-AzureAutomationRuntime -runtimeName 'CustomPSH72' -runtimeLanguage 'PowerShell' -runtimeVersion 7.2 -defaultPackage $defaultPackage -description 'PSH 7.2 for testing purposes' -resourceGroupName 'AdvancedLoggingRG' -automationAccountName 'EnableO365AdvancedLogging'
+
+    Create a new custom Powershell 7.2 runtime with 'Az module 8.0.0' and 'azure cli 2.56.0' enabled.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    New-AzureAutomationRuntime -runtimeName 'CustomPython310' -runtimeLanguage 'Python' -runtimeVersion 3.10 -description 'Python 3.10 for testing purposes' -resourceGroupName 'AdvancedLoggingRG' -automationAccountName 'EnableO365AdvancedLogging'
+
+    Create a new custom Python 3.10 runtime.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $runtimeName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('PowerShell', 'Python')]
+        [string] $runtimeLanguage,
+
+        [ArgumentCompleter( {
+                param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
+
+                if ($runtimeLanguage = $FakeBoundParams.runtimeLanguage) {
+                    switch ($runtimeLanguage) {
+                        'PowerShell' {
+                            '5.1', '7.1', '7.2' | ? { $_ -like "*$WordToComplete*" }
+                        }
+
+                        'Python' {
+                            '3.8', '3.10' | ? { $_ -like "*$WordToComplete*" }
+                        }
+                    }
+                }
+            })]
+        [string] $runtimeVersion,
+
+        [hashtable] $defaultPackage,
+
+        [string] $description,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [hashtable] $header
+    )
+
+    #region checks
+    if ($defaultPackage -and $runtimeLanguage -ne 'PowerShell') {
+        Write-Warning "Parameter 'defaultModuleData' can be defined only for 'PowerShell' runtime language. Will be ignored."
+        $defaultPackage = @{}
+    }
+
+    if (!$defaultPackage -and $runtimeLanguage -eq 'PowerShell') {
+        $defaultPackage = @{}
+    }
+    #endregion checks
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+    #endregion get missing arguments
+
+    #region checks
+    try {
+        $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -runtimeName $runtimeName -ErrorAction Stop
+    } catch {
+        if ($_.exception.StatusCode -ne 'NotFound') {
+            throw $_
+        }
+    }
+
+    if ($runtime) {
+        # prevent accidental replacing of the existing runtime
+        throw "Runtime with given name '$runtimeName' already exist"
+    }
+    #endregion checks
+
+    #region send web request
+    $body = @{
+        properties = @{
+            runtime         = @{
+                language = $runtimeLanguage
+                version  = $runtimeVersion
+            }
+            defaultPackages = $defaultPackage
+            description     = $description
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
+}
+
+function Remove-AzureAutomationRuntime {
+    <#
+    .SYNOPSIS
+    Removes selected Azure Automation Account Runtime(s).
+
+    .DESCRIPTION
+    Removes selected Azure Automation Account Runtime(s).
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to remove.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Remove-AzureAutomationRuntime
+
+    Removes selected Automation Runtime.
+
+    Missing function arguments like $runtimeName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Remove-AzureAutomationRuntime -runtimeName "PSH51Custom" -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging"
+
+    Removes "PSH51Custom" Automation Runtime from given Automation Account.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string[]] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    if ($runtimeName) {
+        foreach ($runtName in $runtimeName) {
+            Write-Verbose "Checking existence of $runtName runtime"
+            try {
+                $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -runtimeName $runtName -ErrorAction Stop
+            } catch {
+                if ($_.exception.StatusCode -eq 'NotFound') {
+                    throw "Runtime '$runtName' doesn't exist"
+                } else {
+                    throw $_
+                }
+            }
+        }
+    } else {
+        while (!$runtimeName) {
+            $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell -runtimeSource Custom | select -ExpandProperty Name | Out-GridView -OutputMode Multiple -Title "Select runtime you want to process"
+        }
+    }
+    #endregion get missing arguments
+
+    foreach ($runtName in $runtimeName) {
+        Write-Verbose "Removing $runtName runtime"
+
+        Invoke-RestMethod2 -method delete -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtName`?api-version=2023-05-15-preview" -body $body -headers $header
+    }
+}
+
+function Remove-AzureAutomationRuntimeModule {
+    <#
+    .SYNOPSIS
+    Function remove selected module from specified Azure Automation runtime.
+
+    .DESCRIPTION
+    Function remove selected module from specified Azure Automation runtime.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    If not provided, all runtimes will be returned.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER moduleName
+    Name of the module(s) you want to remove.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Remove-AzureAutomationRuntimeModule
+
+    Remove selected module(s) from the specified Automation runtime.
+    Missing function arguments like $resourceGroupName or $moduleName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Remove-AzureAutomationRuntimeModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff
+
+    Remove module CommonStuff from the specified Automation runtime.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string[]] $moduleName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell -runtimeSource Custom | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runtime you want to process"
+    }
+
+    if (!$moduleName) {
+        while (!$moduleName) {
+            $moduleName = Get-AzureAutomationRuntimeCustomModule -runtimeName $runtimeName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -moduleName $moduleName -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Multiple -Title "Select module(s) you want to remove"
+        }
+    } else {
+        $moduleExists = Get-AzureAutomationRuntimeCustomModule -runtimeName $runtimeName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -moduleName $moduleName -header $header
+        if (!$moduleExists) {
+            throw "Module $moduleName doesn't exist in specified Automation environment"
+        }
+    }
+    #endregion get missing arguments
+
+    foreach ($modName in $moduleName) {
+        Write-Verbose "Removing module $modName"
+
+        Invoke-RestMethod2 -method Delete -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$modName`?api-version=2023-05-15-preview" -headers $header
+    }
+}
+
 function Set-AutomationVariable2 {
     <#
     .SYNOPSIS
@@ -862,6 +1773,540 @@ function Set-AutomationVariable2 {
     } catch {
         throw "Unable to set automation variable $name. Set value is probably too big. Error was: $_"
     }
+}
+
+function Set-AzureAutomationRunbookRuntime {
+    <#
+    .SYNOPSIS
+    Set Runtime Environment in the selected Azure Automation Account Runbook.
+
+    .DESCRIPTION
+    Set Runtime Environment in the selected Azure Automation Account Runbook.
+
+    .PARAMETER runtimeName
+    Runtime name you want to use.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRunbookRuntime
+
+    Set selected Runtime Environment in selected Runbook.
+    Missing function arguments like $runtimeName, $resourceGroupName, $automationAccountName or $runbookName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to change"
+    }
+    #endregion get missing arguments
+
+    $runbookType = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName -Name $runbookName | select -ExpandProperty RunbookType
+
+    if ($runbookType -eq 'python2') {
+        $programmingLanguage = 'Python'
+    } else {
+        $programmingLanguage = $runbookType
+    }
+
+    $currentRuntimeName = Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $runbookName -header $header
+
+    if ($runtimeName -and $runtimeName -eq $currentRuntimeName) {
+        Write-Warning "Runtime '$runtimeName' is already set. Skipping."
+        return
+    } else {
+        while (!$runtimeName) {
+            $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage $programmingLanguage | select -ExpandProperty Name | ? { $_ -notin $currentRuntimeName } | Out-GridView -OutputMode Single -Title "Select runtime you want to set (current is '$currentRuntimeName')"
+        }
+    }
+
+    #region send web request
+    $body = @{
+        "properties" = @{
+            runtimeEnvironment = $runtimeName
+        }
+    }
+    if ($programmingLanguage -eq 'Python') {
+        # fix for bug? "The property runtimeEnvironment cannot be configured for runbookType Python2. Either use runbookType Python or remove runtimeEnvironment from input."
+        $body.properties.runbookType = 'Python'
+    }
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Invoke-RestMethod2 -method PATCH -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
+}
+
+function Set-AzureAutomationRuntimeDefaultModule {
+    <#
+    .SYNOPSIS
+    Function sets Runtime Default Module(s) to given version(s) in selected Azure Automation Account PowerShell Runbook.
+    Default modules are currently 'az' and 'azure cli' (just in PowerShell 7.2).
+
+    .DESCRIPTION
+    Function sets Runtime Default Module(s) to given version(s) in selected Azure Automation Account PowerShell Runbook.
+    Default modules are currently 'az' and 'azure cli' (just in PowerShell 7.2).
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to update.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER defaultPackage
+    Hashtable where keys are default module names ('az' (both PSHs), 'azure cli' (only in PSH 7.2)) and values are module versions.
+
+    If empty hashtable is provided, currently set default module(s) will be removed (set to 'not configured' in GUI terms).
+
+    .PARAMETER replace
+    Switch for replacing current default modules with the ones in 'defaultPackage' parameter.
+    Hence what is not defined, will be removed.
+
+    By default default modules not specified in the 'defaultPackage' parameter are ignored.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    $defaultPackage = @{
+        'az'        = '8.3.0'
+        'azure cli' = '2.56.0'
+    }
+
+    Set-AzureAutomationRuntimeDefaultModule -defaultPackage $defaultPackage
+
+    Set default modules to versions specified in $defaultPackage.
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    $defaultPackage = @{
+        'azure cli' = '2.56.0'
+    }
+
+    Set-AzureAutomationRuntimeDefaultModule -defaultPackage $defaultPackage
+
+    Set default module 'azure cli' to version '2.56.0'.
+    In case that any other default module ('az') is set in the modified Runtime too, it will stay intact.
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    $defaultPackage = @{
+        'azure cli' = '2.56.0'
+    }
+
+    Set-AzureAutomationRuntimeDefaultModule -defaultPackage $defaultPackage -replace
+
+    Set default module 'azure cli' to version '2.56.0'.
+    In case that any other default module ('az') is set in the modified Runtime too, it will be removed.
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRuntimeDefaultModule -defaultPackage @{}
+
+    All default modules in selected Runtime will be removed.
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable] $defaultPackage,
+
+        [switch] $replace,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    #region checks
+    $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header
+
+    if (!$runtime) {
+        throw "Runtime '$runtimeName' wasn't found"
+    }
+
+    # what default modules are currently set
+    $currentDefaultModule = Get-AzureAutomationRuntimeSelectedDefaultModule -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header
+
+    # check default modules defined in given hashtable vs allowed/currently set ones
+    $defaultPackage.GetEnumerator() | % {
+        $defaultModuleName = $_.Key
+        $defaultModuleVersion = $_.Value
+
+        $currentDefaultModuleVersion = $currentDefaultModule.$defaultModuleName
+
+        if ($defaultModuleVersion -eq $currentDefaultModuleVersion) {
+            Write-Warning "Module '$defaultModuleName' already has version $defaultModuleVersion"
+        }
+    }
+    #endregion checks
+
+    #region send web request
+    if ($defaultPackage.Count -eq 0) {
+        # remove all default modules
+
+        Write-Verbose "Removing all default modules"
+
+        $body = @{
+            properties = @{
+                runtime         = @{
+                    language = $runtime.properties.runtime.language
+                    version  = $runtime.properties.runtime.version
+                }
+                defaultPackages = @{}
+            }
+        }
+
+        $method = "Put"
+    } else {
+        # modify current default modules
+
+        Write-Verbose "Replacing current default modules with the defined ones"
+
+        if ($replace) {
+            # replace
+
+            $body = @{
+                properties = @{
+                    runtime         = @{
+                        language = $runtime.properties.runtime.language
+                        version  = $runtime.properties.runtime.version
+                    }
+                    defaultPackages = $defaultPackage
+                }
+            }
+
+            $method = "Put"
+        } else {
+            # modify
+
+            Write-Verbose "Updating defined default modules"
+
+            $body = @{
+                properties = @{
+                    defaultPackages = $defaultPackage
+                }
+            }
+
+            $method = "Patch"
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Invoke-RestMethod2 -method $method -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
+}
+
+function Set-AzureAutomationRuntimeDescription {
+    <#
+    .SYNOPSIS
+    Function set Azure Automation Account Runtime description.
+
+    .DESCRIPTION
+    Function set Azure Automation Account Runtime description.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to update.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER description
+    Runtime description.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRuntimeDescription -description "testing runtime"
+
+    Set given description in given Automation Runtime.
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRuntimeDescription -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -description "testing runtime"
+
+    Set given description in given Automation Runtime.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $description,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    #region send web request
+    $body = @{
+        "properties" = @{
+            "description" = $description
+        }
+    }
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Invoke-RestMethod2 -method Patch -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
+}
+
+function Set-AzureAutomationRuntimeModule {
+    <#
+    .SYNOPSIS
+    Function add/replace selected module in specified Azure Automation runtime by importing it from the PowerShell Gallery.
+
+    .DESCRIPTION
+    Function add/replace selected module in specified Azure Automation runtime by importing it from the PowerShell Gallery.
+
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    If not provided, all runtimes will be returned.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER moduleName
+    Name of the module you want to add/(replace by other version).
+
+    .PARAMETER moduleVersion
+    Module version.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRuntimeModule -moduleName CommonStuff -moduleVersion 1.0.18
+
+    Add module CommonStuff with version 1.0.18 to specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Set-AzureAutomationRuntimeModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff -moduleVersion 1.0.18
+
+    Add module CommonStuff with version 1.0.18 to specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Update-AzureAutomationRuntimeModule")]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $moduleName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $moduleVersion,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntimeEnvironment -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -programmingLanguage PowerShell | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
+
+    $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
+    if ($pkgStatus.StatusCode -ne 200) {
+        throw "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+    }
+
+    #region send web request
+    $body = @{
+        "properties" = @{
+            "contentLink" = @{
+                "uri" = $modulePkgUri
+            }
+            "version"     = $moduleVersion
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
 }
 
 function Update-AzureAutomationModule {
@@ -997,6 +2442,6 @@ function Update-AzureAutomationModule {
     }
 }
 
-Export-ModuleMember -function Export-VariableToStorage, Get-AutomationVariable2, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationModule, Set-AutomationVariable2, Update-AzureAutomationModule
+Export-ModuleMember -function Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Set-AzureAutomationRuntimeModule, Update-AzureAutomationModule
 
-Export-ModuleMember -alias New-AzAutomationModule2
+Export-ModuleMember -alias Get-AzureAutomationRuntimeAzModule, New-AzAutomationModule2, Update-AzureAutomationRuntimeModule

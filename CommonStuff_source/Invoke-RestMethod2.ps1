@@ -97,6 +97,7 @@
             $uriLink = $responseObj.'@odata.nextLink'
         } catch {
             switch ($_) {
+                #TODO https://learn.microsoft.com/en-us/defender-endpoint/api/common-errors?view=o365-worldwide#throttling tzn vycitat sleep z Retry-After
                 { $_ -like "*Too Many Requests*" -or $_ -like "*TooManyRequests*" } {
                     Write-Warning "Too Many Requests. Waiting $waitTime seconds to avoid further throttling before trying again"
                     Start-Sleep $waitTime
@@ -110,6 +111,11 @@
                 { $_ -like "*(400)*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
 
                 { $_ -like "*(401)*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
+
+                { $_ -like "*(408)*" } {
+                    Write-Warning "(408) Request Time-out. Waiting $waitTime seconds before trying again"
+                    Start-Sleep $waitTime
+                }
 
                 { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request ($uri)" }
 

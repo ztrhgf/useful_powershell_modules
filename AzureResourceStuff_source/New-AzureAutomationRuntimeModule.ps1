@@ -1,46 +1,42 @@
-﻿#requires -modules Az.Accounts, Az.Automation
-function New-AzureAutomationModule {
+﻿# TODO upload WHL souboru pro PYTHON a zip pro PSH
+function New-AzureAutomationRuntimeModule {
     <#
     .SYNOPSIS
-    Function for importing new (or updating existing) Azure Automation PSH module.
-
-    Any module dependencies will be automatically installed too.
+    Function add/replace selected module in specified Azure Automation runtime by importing it from the PowerShell Gallery.
+    If module has some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
 
     .DESCRIPTION
-    Function for importing new (or updating existing) Azure Automation PSH module.
+    Function add/replace selected module in specified Azure Automation runtime by importing it from the PowerShell Gallery.
 
-    Any module dependencies will be automatically installed too.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
 
-    By default newest supported version is imported (if 'moduleVersion' is not set). If module exists, but with different version, it will be replaced (including its dependencies).
+    If module has some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
 
-    According the dependencies. If version that can be used exist, it is not updated to the newest possible one, but is used at it is. Reason for this is to avoid unnecessary updates that can lead to unstable/untested environment.
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
 
-    Supported version means, version that support given runtime ('runtimeVersion' parameter).
-
-    .PARAMETER moduleName
-    Name of the PSH module.
-
-    .PARAMETER moduleVersion
-    (optional) version of the PSH module.
-    If not specified, newest supported version for given runtime will be gathered from PSGallery.
+    If not provided, all runtimes will be returned.
 
     .PARAMETER resourceGroupName
-    Name of the Azure Resource Group.
+    Resource group name.
 
     .PARAMETER automationAccountName
-    Name of the Azure Automation Account.
+    Automation account name.
 
-    .PARAMETER runtimeVersion
-    PSH runtime version.
+    .PARAMETER moduleName
+    Name of the module you want to add/(replace by other version).
 
-    Possible values: 5.1, 7.2.
+    .PARAMETER moduleVersion
+    Module version.
+    If not specified, newest supported version for given runtime will be gathered from PSGallery.
 
-    By default 5.1.
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
 
     .PARAMETER overridePSGalleryModuleVersion
     Hashtable of hashtables where you can specify what module version should be used for given runtime if no specific version is required.
 
-    This is needed in cases, where module newest available PSGallery version isn't compatible with your runtime because of incorrect manifest.
+    This is needed in cases, where newest module version available in PSGallery isn't compatible with your runtime because of incorrect module manifest.
 
     By default:
 
@@ -53,60 +49,44 @@ function New-AzureAutomationModule {
     }
 
     .EXAMPLE
-    Connect-AzAccount -Tenant "contoso.onmicrosoft.com" -SubscriptionName "AutomationSubscription"
+    Connect-AzAccount
 
-    New-AzureAutomationModule -resourceGroupName test -automationAccountName test -moduleName "Microsoft.Graph.Groups"
+    Set-AzContext -Subscription "IT_Testing"
 
-    Imports newest supported version (for given runtime) of the "Microsoft.Graph.Groups" module including all its dependencies.
-    In case module "Microsoft.Graph.Groups" with such version is already imported, nothing will happens.
-    Otherwise module will be imported/replaced (including all dependencies that are required for this specific version).
+    New-AzureAutomationRuntimeModule -moduleName CommonStuff -moduleVersion 1.0.18
+
+    Add module CommonStuff 1.0.18 to the specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+    If module has some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
+
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
 
     .EXAMPLE
-    Connect-AzAccount -Tenant "contoso.onmicrosoft.com" -SubscriptionName "AutomationSubscription"
+    Connect-AzAccount
 
-    New-AzureAutomationModule -resourceGroupName test -automationAccountName test -moduleName "Microsoft.Graph.Groups" -moduleVersion "2.11.1"
+    Set-AzContext -Subscription "IT_Testing"
 
-    Imports "2.11.1" version of the "Microsoft.Graph.Groups" module including all its dependencies.
-    In case module "Microsoft.Graph.Groups" with version "2.11.1" is already imported, nothing will happens.
-    Otherwise module will be imported/replaced (including all dependencies that are required for this specific version).
+    New-AzureAutomationRuntimeModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff -moduleVersion 1.0.18
 
-    .NOTES
-    1. Because this function depends on Find-Module command heavily, it needs to have communication with the PSGallery enabled. To automate this, you can use following code:
-
-    "Install a package manager"
-    $null = Install-PackageProvider -Name nuget -Force -ForceBootstrap -Scope allusers
-
-    "Set PSGallery as a trusted repository"
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-
-    'PackageManagement', 'PowerShellGet', 'PSReadline', 'PSScriptAnalyzer' | % {
-        "Install module $_"
-        Install-Module $_ -Repository PSGallery -Force -AllowClobber
-    }
-
-    "Uninstall old version of PowerShellGet"
-    Get-Module PowerShellGet -ListAvailable | ? version -lt 2.0.0 | select -exp ModuleBase | % { Remove-Item -Path $_ -Recurse -Force }
-
-    2. Modules saved in Azure Automation Account have only "main" version saved and suffixes like "beta", "rc" etc are always cut off!
-    A.k.a. if you import module with version "1.0.0-rc4". Version that will be shown in the GUI will be just "1.0.0" hence if you try to import such module again, it won't be correctly detected hence will be imported once again.
+    Add module CommonStuff 1.0.18 to specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
     #>
 
     [CmdletBinding()]
-    [Alias("New-AzAutomationModule2", "Set-AzureAutomationModule")]
+    [Alias("Set-AzureAutomationRuntimeModule")]
     param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
         [Parameter(Mandatory = $true)]
         [string] $moduleName,
 
         [string] $moduleVersion,
 
-        [Parameter(Mandatory = $true)]
-        [string] $resourceGroupName,
-
-        [Parameter(Mandatory = $true)]
-        [string] $automationAccountName,
-
-        [ValidateSet('5.1', '7.2')]
-        [string] $runtimeVersion = '5.1',
+        [hashtable] $header,
 
         [int] $indent = 0,
 
@@ -122,6 +102,33 @@ function New-AzureAutomationModule {
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage PowerShell -runtimeSource Custom -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    try {
+        $runtime = Get-AzureAutomationRuntime -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -programmingLanguage PowerShell -runtimeSource Custom -header $header -ErrorAction Stop
+    } catch {
+        throw "Runtime '$runtimeName' doesn't exist or it isn't custom created PowerShell Runtime"
+    }
+    $runtimeVersion = $runtime.properties.runtime.version
 
     $indentString = "     " * $indent
 
@@ -278,13 +285,13 @@ function New-AzureAutomationModule {
     }
 
     Write-Verbose "Getting current Automation modules"
-    $currentAutomationModules = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop
+    $currentAutomationModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -header $header -ErrorAction Stop
 
     # check whether required module is present
     # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
-    $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.ProvisioningState -eq "Succeeded" -or $_.SizeInBytes) }
+    $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
     if ($moduleExists) {
-        $moduleExistsVersion = $moduleExists.Version
+        $moduleExistsVersion = $moduleExists.Properties.Version
         if ($moduleVersion -and $moduleVersion -ne $moduleExistsVersion) {
             $moduleExists = $null
         }
@@ -314,8 +321,8 @@ function New-AzureAutomationModule {
             _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
 
             # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
-            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.ProvisioningState -eq "Succeeded" -or $_.SizeInBytes) }
-            $existingRequiredModuleVersion = $existingRequiredModule.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
+            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
+            $existingRequiredModuleVersion = $existingRequiredModule.Properties.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
 
             # check that existing module version fits
             if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
@@ -349,7 +356,7 @@ function New-AzureAutomationModule {
                     moduleName            = $requiredModuleName
                     resourceGroupName     = $resourceGroupName
                     automationAccountName = $automationAccountName
-                    runtimeVersion        = $runtimeVersion
+                    runtimeName           = $runtimeName
                     indent                = $indent + 1
                 }
                 if ($requiredModuleMinVersion) {
@@ -362,7 +369,7 @@ function New-AzureAutomationModule {
                     $param.moduleVersion = $requiredModuleReqVersion
                 }
 
-                New-AzureAutomationModule @param
+                New-AzureAutomationRuntimeModule @param
                 #endregion install required module first
             } else {
                 if ($existingRequiredModuleVersion) {
@@ -376,9 +383,30 @@ function New-AzureAutomationModule {
         _write "  - No dependency found"
     }
 
-    $uri = "https://www.powershellgallery.com/api/v2/package/$moduleName/$moduleVersion"
     _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
-    $status = New-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -Name $moduleName -ContentLinkUri $uri -RuntimeVersion $runtimeVersion
+    $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
+
+    $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
+    if ($pkgStatus.StatusCode -ne 200) {
+        throw "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+    }
+
+    #region send web request
+    $body = @{
+        "properties" = @{
+            "contentLink" = @{
+                "uri" = $modulePkgUri
+            }
+            "version"     = $moduleVersion
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+    #endregion send web request
 
     #region output dots while waiting on import to finish
     $i = 0
@@ -391,13 +419,13 @@ function New-AzureAutomationModule {
         }
 
         ++$i
-    } while (!($requiredModule = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop | ? { $_.Name -eq $moduleName -and $_.ProvisioningState -in "Succeeded", "Failed" }))
+    } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header -ErrorAction Stop | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
 
     ""
     #endregion output dots while waiting on import to finish
 
-    if ($requiredModule.ProvisioningState -ne "Succeeded") {
-        Write-Error "Import failed. Check Azure Portal >> Automation Account >> Modules >> $moduleName details to get the reason."
+    if ($requiredModule.Properties.ProvisioningState -ne "Succeeded") {
+        Write-Error "Import failed. Check Azure Portal >> Automation Account >> Runtime Environments >> $runtimeName >> $moduleName details to get the reason."
     } else {
         _write " - Success" "Green"
     }

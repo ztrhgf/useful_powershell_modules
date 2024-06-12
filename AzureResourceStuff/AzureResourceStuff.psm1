@@ -2116,7 +2116,9 @@ function New-AzureAutomationRuntimeModule {
 
     $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
     if ($pkgStatus.StatusCode -ne 200) {
-        throw "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+        # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
+        Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+        return
     }
 
     #region send web request
@@ -2941,7 +2943,7 @@ function Update-AzureAutomationModule {
 
             if (!$requiredModuleVersion) {
                 # no version specified, newest version from PSGallery will be used"
-                $requiredModuleVersion = $moduleGalleryInfo.Version
+                $requiredModuleVersion = $moduleGalleryInfo.Version | select -First 1
 
                 if ($requiredModuleVersion -eq $module.Version) {
                     Write-Warning "Module $moduleName already has newest available version $requiredModuleVersion. Skipping"
@@ -3070,8 +3072,6 @@ function Update-AzureAutomationRunbookModule {
     $subscriptionId = (Get-AzContext).Subscription.Id
     $subscription = $((Get-AzContext).Subscription.Name)
 
-    $automationAccount = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName
-
     while (!$resourceGroupName) {
         $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
     }
@@ -3090,7 +3090,7 @@ function Update-AzureAutomationRunbookModule {
     foreach ($runtName in $runtimeName) {
         "Processing Runtime '$runtName' (ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
 
-        $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $atmAccountName -ResourceGroup $atmAccountResourceGroup -runtimeName $runtName -header $header
+        $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtName -header $header -ErrorAction Stop
 
         if ($allCustomModule) {
             $automationModulesToUpdate = $currentAutomationCustomModules
@@ -3148,7 +3148,7 @@ function Update-AzureAutomationRunbookModule {
 
             if (!$requiredModuleVersion) {
                 # no version specified, newest version from PSGallery will be used"
-                $requiredModuleVersion = $moduleGalleryInfo.Version
+                $requiredModuleVersion = $moduleGalleryInfo.Version | select -First 1
 
                 if ($requiredModuleVersion -eq $module.Version) {
                     Write-Warning "Module $moduleName already has newest available version $requiredModuleVersion. Skipping"
@@ -3157,11 +3157,10 @@ function Update-AzureAutomationRunbookModule {
             }
 
             $param = @{
-                resourceGroupName     = $module.ResourceGroupName
-                automationAccountName = $module.AutomationAccountName
-                runtimeName           = $runtimeName
+                resourceGroupName     = $resourceGroupName
+                automationAccountName = $automationAccountName
+                runtimeName           = $runtName
                 moduleName            = $module.Name
-                runtimeVersion        = $runtimeVersion
                 moduleVersion         = $requiredModuleVersion
                 header                = $header
             }

@@ -105,8 +105,6 @@
     $subscriptionId = (Get-AzContext).Subscription.Id
     $subscription = $((Get-AzContext).Subscription.Name)
 
-    $automationAccount = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName
-
     while (!$resourceGroupName) {
         $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
     }
@@ -125,7 +123,7 @@
     foreach ($runtName in $runtimeName) {
         "Processing Runtime '$runtName' (ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
 
-        $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $atmAccountName -ResourceGroup $atmAccountResourceGroup -runtimeName $runtName -header $header
+        $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtName -header $header -ErrorAction Stop
 
         if ($allCustomModule) {
             $automationModulesToUpdate = $currentAutomationCustomModules
@@ -183,7 +181,7 @@
 
             if (!$requiredModuleVersion) {
                 # no version specified, newest version from PSGallery will be used"
-                $requiredModuleVersion = $moduleGalleryInfo.Version
+                $requiredModuleVersion = $moduleGalleryInfo.Version | select -First 1
 
                 if ($requiredModuleVersion -eq $module.Version) {
                     Write-Warning "Module $moduleName already has newest available version $requiredModuleVersion. Skipping"
@@ -192,11 +190,10 @@
             }
 
             $param = @{
-                resourceGroupName     = $module.ResourceGroupName
-                automationAccountName = $module.AutomationAccountName
-                runtimeName           = $runtimeName
+                resourceGroupName     = $resourceGroupName
+                automationAccountName = $automationAccountName
+                runtimeName           = $runtName
                 moduleName            = $module.Name
-                runtimeVersion        = $runtimeVersion
                 moduleVersion         = $requiredModuleVersion
                 header                = $header
             }

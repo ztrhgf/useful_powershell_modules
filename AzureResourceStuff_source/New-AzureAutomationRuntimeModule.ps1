@@ -408,7 +408,9 @@ function New-AzureAutomationRuntimeModule {
 
     $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
     if ($pkgStatus.StatusCode -ne 200) {
-        throw "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+        # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
+        Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+        return
     }
 
     #region send web request

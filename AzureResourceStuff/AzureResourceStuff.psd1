@@ -12,7 +12,7 @@
 RootModule = 'AzureResourceStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.9'
+ModuleVersion = '1.0.10'
 
 # Supported PSEditions
 CompatiblePSEditions = 'Core', 'Desktop'
@@ -195,6 +195,9 @@ PrivateData = @{
                 ADDED
                     Copy-AzureAutomationRuntime
                     Update-AzureAutomationRunbookModule
+            1.0.10
+                FIXED
+                    Update-AzureAutomationModule, Update-AzureAutomationRunbookModule, New-AzureAutomationRuntimeModule
             '
 
         # Prerelease string of this module

@@ -110,7 +110,7 @@ function Update-AzureAutomationModule {
 
             if (!$requiredModuleVersion) {
                 # no version specified, newest version from PSGallery will be used"
-                $requiredModuleVersion = $moduleGalleryInfo.Version
+                $requiredModuleVersion = $moduleGalleryInfo.Version | select -First 1
 
                 if ($requiredModuleVersion -eq $module.Version) {
                     Write-Warning "Module $moduleName already has newest available version $requiredModuleVersion. Skipping"

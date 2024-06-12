@@ -24,6 +24,13 @@ function New-AzureAutomationModule {
     (optional) version of the PSH module.
     If not specified, newest supported version for given runtime will be gathered from PSGallery.
 
+    .PARAMETER moduleVersionType
+    Type of the specified module version.
+
+    Possible values are: 'RequiredVersion', 'MinimumVersion', 'MaximumVersion'.
+
+    By default 'RequiredVersion'.
+
     .PARAMETER resourceGroupName
     Name of the Azure Resource Group.
 
@@ -98,6 +105,9 @@ function New-AzureAutomationModule {
         [string] $moduleName,
 
         [string] $moduleVersion,
+
+        [ValidateSet('RequiredVersion', 'MinimumVersion', 'MaximumVersion')]
+        [string] $moduleVersionType = 'RequiredVersion',
 
         [Parameter(Mandatory = $true)]
         [string] $resourceGroupName,
@@ -238,7 +248,7 @@ function New-AzureAutomationModule {
         ErrorAction = "Stop"
     }
     if ($moduleVersion) {
-        $param.RequiredVersion = $moduleVersion
+        $param.$moduleVersionType = $moduleVersion
         if (!($moduleVersion -as [version])) {
             # version is something like "2.2.0.rc4" a.k.a. pre-release version
             $param.AllowPrerelease = $true
@@ -262,7 +272,14 @@ function New-AzureAutomationModule {
         return
     }
 
-    # override module version
+    #region override module version
+    # range instead of specific module version was specified
+    if ($moduleVersion -and $moduleVersionType -ne 'RequiredVersion' -and $moduleVersion -ne $moduleGalleryInfo.Version) {
+        _write " (version $($moduleGalleryInfo.Version) will be used instead of $moduleVersionType $moduleVersion)"
+        $moduleVersion = $moduleGalleryInfo.Version
+    }
+
+    # no version was specified and module is in override list
     if (!$moduleVersion -and $moduleName -in $overridePSGalleryModuleVersion.Keys -and $overridePSGalleryModuleVersion.$moduleName.$runtimeVersion) {
         $overriddenModule = $overridePSGalleryModuleVersion.$moduleName
         $overriddenModuleVersion = $overriddenModule.$runtimeVersion
@@ -272,10 +289,12 @@ function New-AzureAutomationModule {
         }
     }
 
+    # no version was specified, use the newest one
     if (!$moduleVersion) {
         $moduleVersion = $moduleGalleryInfo.Version
         _write " (no version specified, newest supported version from PSGallery will be used ($moduleVersion))"
     }
+    #endregion override module version
 
     Write-Verbose "Getting current Automation modules"
     $currentAutomationModules = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop
@@ -354,12 +373,15 @@ function New-AzureAutomationModule {
                 }
                 if ($requiredModuleMinVersion) {
                     $param.moduleVersion = $requiredModuleMinVersion
+                    $param.moduleVersionType = 'MinimumVersion'
                 }
                 if ($requiredModuleMaxVersion) {
                     $param.moduleVersion = $requiredModuleMaxVersion
+                    $param.moduleVersionType = 'MaximumVersion'
                 }
                 if ($requiredModuleReqVersion) {
                     $param.moduleVersion = $requiredModuleReqVersion
+                    $param.moduleVersionType = 'RequiredVersion'
                 }
 
                 New-AzureAutomationModule @param

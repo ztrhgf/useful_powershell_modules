@@ -156,6 +156,7 @@
 
     #region checks
     try {
+        $runtime = $null
         $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -runtimeName $runtimeName -ErrorAction Stop
     } catch {
         if ($_.exception.StatusCode -ne 'NotFound') {

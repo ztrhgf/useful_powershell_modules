@@ -1,3 +1,169 @@
+function Copy-AzureAutomationRuntime {
+    <#
+    .SYNOPSIS
+    Make a copy of existing Azure Automation Runtime Environment.
+
+    .DESCRIPTION
+    Make a copy of existing Azure Automation Runtime Environment.
+
+    Copy will have:
+    - same default and custom modules
+    - same language, version and description
+
+    Copy is by default created in the same Automation Account, but can be placed in different one too.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runtimeName
+    Name of the runtime to copy.
+
+    .PARAMETER newResourceGroupName
+    Destination Resource group name.
+    If not specified, source one will be used.
+
+    .PARAMETER newAutomationAccountName
+    Destination Automation account name.
+
+    If not specified, source one will be used.
+
+    .PARAMETER newRuntimeName
+    Name of the new runtime.
+
+    If not specified, it will be "copy_<sourceRuntimeName>".
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Copy-AzureAutomationRuntime
+
+    Creates a copy of the selected Runtime in the same Automation Account. It will be named like "copy_<sourceRuntimeName>".
+
+    Missing function arguments like $runtimeName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Copy-AzureAutomationRuntime -runtimeName "Runtime51" -newRuntimeName "Runtime51_v2" -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging"
+
+    Creates a copy of the selected Runtime in the same Automation Account.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runtimeName,
+
+        [string] $newResourceGroupName,
+
+        [string] $newAutomationAccountName,
+
+        [string] $newRuntimeName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    if (($newResourceGroupName -and !$newAutomationAccountName) -or (!$newResourceGroupName -and $newAutomationAccountName)) {
+        throw "Either both 'newResourceGroupName' and 'newAutomationAccountName' parameters have to be set or neither of them"
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage PowerShell -runtimeSource Custom -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    # get all custom modules
+    Write-Verbose "Get Runtime '$runtimeName' custom modules"
+    $customModule = Get-AzureAutomationRuntimeCustomModule -runtimeName $runtimeName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -ErrorAction Stop
+
+    # get all default modules
+    Write-Verbose "Get Runtime '$runtimeName' default modules"
+    $defaultPackageObj = Get-AzureAutomationRuntimeSelectedDefaultModule -runtimeName $runtimeName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -ErrorAction Stop
+
+    # get runtime language, version, description
+    Write-Verbose "Get Runtime '$runtimeName' information"
+    $runtime = Get-AzureAutomationRuntime -runtimeName $runtimeName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -ErrorAction Stop
+
+    $runtimeLanguage = $runtime.properties.runtime.language
+    $runtimeVersion = $runtime.properties.runtime.version
+    $runtimeDescription = $runtime.properties.description
+
+    #region create new runtime with language, version and default modules
+    if (!$newResourceGroupName) {
+        $newResourceGroupName = $resourceGroupName
+    }
+    if (!$newAutomationAccountName) {
+        $newAutomationAccountName = $automationAccountName
+    }
+    if (!$newRuntimeName) {
+        $newRuntimeName = "copy_$runtimeName"
+    }
+
+    if ($defaultPackageObj) {
+        # transform $defaultPackageObj to hashtable
+        $defaultPackage = @{}
+
+        $moduleNameList = $defaultPackageObj | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
+        $moduleNameList | % {
+            $defaultPackage.$_ = $defaultPackageObj.$_
+        }
+    } else {
+        # no default modules needed
+        $defaultPackage = @{}
+    }
+
+    "Creating new runtime '$newRuntimeName'"
+    $null = New-AzureAutomationRuntime -runtimeName $newRuntimeName -resourceGroupName $newResourceGroupName -automationAccountName $newAutomationAccountName -runtimeLanguage $runtimeLanguage -runtimeVersion $runtimeVersion -defaultPackage $defaultPackage -description $runtimeDescription -header $header
+    #region create new runtime with language, version and default modules
+
+    # add custom modules
+    foreach ($custModule in $customModule) {
+        $name = $custModule.name
+        $version = $custModule.properties.version
+        $provisioningState = $custModule.properties.provisioningState
+
+        if ($provisioningState -ne 'Succeeded') {
+            Write-Verbose "Skipping adding custom module '$name', because it is in '$provisioningState' provisioning state"
+            continue
+        }
+
+        "Adding custom module '$name' $version"
+        New-AzureAutomationRuntimeModule -runtimeName $newRuntimeName -resourceGroupName $newResourceGroupName -automationAccountName $newAutomationAccountName -moduleName $name -moduleVersion $version -header $header
+    }
+}
+
 function Export-VariableToStorage {
     <#
     .SYNOPSIS
@@ -948,6 +1114,13 @@ function New-AzureAutomationModule {
     (optional) version of the PSH module.
     If not specified, newest supported version for given runtime will be gathered from PSGallery.
 
+    .PARAMETER moduleVersionType
+    Type of the specified module version.
+
+    Possible values are: 'RequiredVersion', 'MinimumVersion', 'MaximumVersion'.
+
+    By default 'RequiredVersion'.
+
     .PARAMETER resourceGroupName
     Name of the Azure Resource Group.
 
@@ -1022,6 +1195,9 @@ function New-AzureAutomationModule {
         [string] $moduleName,
 
         [string] $moduleVersion,
+
+        [ValidateSet('RequiredVersion', 'MinimumVersion', 'MaximumVersion')]
+        [string] $moduleVersionType = 'RequiredVersion',
 
         [Parameter(Mandatory = $true)]
         [string] $resourceGroupName,
@@ -1162,7 +1338,7 @@ function New-AzureAutomationModule {
         ErrorAction = "Stop"
     }
     if ($moduleVersion) {
-        $param.RequiredVersion = $moduleVersion
+        $param.$moduleVersionType = $moduleVersion
         if (!($moduleVersion -as [version])) {
             # version is something like "2.2.0.rc4" a.k.a. pre-release version
             $param.AllowPrerelease = $true
@@ -1186,7 +1362,14 @@ function New-AzureAutomationModule {
         return
     }
 
-    # override module version
+    #region override module version
+    # range instead of specific module version was specified
+    if ($moduleVersion -and $moduleVersionType -ne 'RequiredVersion' -and $moduleVersion -ne $moduleGalleryInfo.Version) {
+        _write " (version $($moduleGalleryInfo.Version) will be used instead of $moduleVersionType $moduleVersion)"
+        $moduleVersion = $moduleGalleryInfo.Version
+    }
+
+    # no version was specified and module is in override list
     if (!$moduleVersion -and $moduleName -in $overridePSGalleryModuleVersion.Keys -and $overridePSGalleryModuleVersion.$moduleName.$runtimeVersion) {
         $overriddenModule = $overridePSGalleryModuleVersion.$moduleName
         $overriddenModuleVersion = $overriddenModule.$runtimeVersion
@@ -1196,10 +1379,12 @@ function New-AzureAutomationModule {
         }
     }
 
+    # no version was specified, use the newest one
     if (!$moduleVersion) {
         $moduleVersion = $moduleGalleryInfo.Version
         _write " (no version specified, newest supported version from PSGallery will be used ($moduleVersion))"
     }
+    #endregion override module version
 
     Write-Verbose "Getting current Automation modules"
     $currentAutomationModules = Get-AzAutomationModule -AutomationAccountName $automationAccountName -ResourceGroup $resourceGroupName -RuntimeVersion $runtimeVersion -ErrorAction Stop
@@ -1278,12 +1463,15 @@ function New-AzureAutomationModule {
                 }
                 if ($requiredModuleMinVersion) {
                     $param.moduleVersion = $requiredModuleMinVersion
+                    $param.moduleVersionType = 'MinimumVersion'
                 }
                 if ($requiredModuleMaxVersion) {
                     $param.moduleVersion = $requiredModuleMaxVersion
+                    $param.moduleVersionType = 'MaximumVersion'
                 }
                 if ($requiredModuleReqVersion) {
                     $param.moduleVersion = $requiredModuleReqVersion
+                    $param.moduleVersionType = 'RequiredVersion'
                 }
 
                 New-AzureAutomationModule @param
@@ -1485,6 +1673,7 @@ function New-AzureAutomationRuntime {
 
     #region checks
     try {
+        $runtime = $null
         $runtime = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -runtimeName $runtimeName -ErrorAction Stop
     } catch {
         if ($_.exception.StatusCode -ne 'NotFound') {
@@ -1534,8 +1723,6 @@ function New-AzureAutomationRuntimeModule {
     .PARAMETER runtimeName
     Name of the runtime environment you want to retrieve.
 
-    If not provided, all runtimes will be returned.
-
     .PARAMETER resourceGroupName
     Resource group name.
 
@@ -1548,6 +1735,13 @@ function New-AzureAutomationRuntimeModule {
     .PARAMETER moduleVersion
     Module version.
     If not specified, newest supported version for given runtime will be gathered from PSGallery.
+
+    .PARAMETER moduleVersionType
+    Type of the specified module version.
+
+    Possible values are: 'RequiredVersion', 'MinimumVersion', 'MaximumVersion'.
+
+    By default 'RequiredVersion'.
 
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
@@ -1604,6 +1798,9 @@ function New-AzureAutomationRuntimeModule {
         [string] $moduleName,
 
         [string] $moduleVersion,
+
+        [ValidateSet('RequiredVersion', 'MinimumVersion', 'MaximumVersion')]
+        [string] $moduleVersionType = 'RequiredVersion',
 
         [hashtable] $header,
 
@@ -1764,7 +1961,7 @@ function New-AzureAutomationRuntimeModule {
         ErrorAction = "Stop"
     }
     if ($moduleVersion) {
-        $param.RequiredVersion = $moduleVersion
+        $param.$moduleVersionType = $moduleVersion
         if (!($moduleVersion -as [version])) {
             # version is something like "2.2.0.rc4" a.k.a. pre-release version
             $param.AllowPrerelease = $true
@@ -1788,7 +1985,14 @@ function New-AzureAutomationRuntimeModule {
         return
     }
 
-    # override module version
+    #region override module version
+    # range instead of specific module version was specified
+    if ($moduleVersion -and $moduleVersionType -ne 'RequiredVersion' -and $moduleVersion -ne $moduleGalleryInfo.Version) {
+        _write " (version $($moduleGalleryInfo.Version) will be used instead of $moduleVersionType $moduleVersion)"
+        $moduleVersion = $moduleGalleryInfo.Version
+    }
+
+    # no version was specified and module is in override list
     if (!$moduleVersion -and $moduleName -in $overridePSGalleryModuleVersion.Keys -and $overridePSGalleryModuleVersion.$moduleName.$runtimeVersion) {
         $overriddenModule = $overridePSGalleryModuleVersion.$moduleName
         $overriddenModuleVersion = $overriddenModule.$runtimeVersion
@@ -1798,10 +2002,12 @@ function New-AzureAutomationRuntimeModule {
         }
     }
 
+    # no version was specified, use the newest one
     if (!$moduleVersion) {
         $moduleVersion = $moduleGalleryInfo.Version
         _write " (no version specified, newest supported version from PSGallery will be used ($moduleVersion))"
     }
+    #endregion override module version
 
     Write-Verbose "Getting current Automation modules"
     $currentAutomationModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -header $header -ErrorAction Stop
@@ -1880,12 +2086,15 @@ function New-AzureAutomationRuntimeModule {
                 }
                 if ($requiredModuleMinVersion) {
                     $param.moduleVersion = $requiredModuleMinVersion
+                    $param.moduleVersionType = 'MinimumVersion'
                 }
                 if ($requiredModuleMaxVersion) {
                     $param.moduleVersion = $requiredModuleMaxVersion
+                    $param.moduleVersionType = 'MaximumVersion'
                 }
                 if ($requiredModuleReqVersion) {
                     $param.moduleVersion = $requiredModuleReqVersion
+                    $param.moduleVersionType = 'RequiredVersion'
                 }
 
                 New-AzureAutomationRuntimeModule @param
@@ -2754,6 +2963,215 @@ function Update-AzureAutomationModule {
     }
 }
 
-Export-ModuleMember -function Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Update-AzureAutomationModule
+function Update-AzureAutomationRunbookModule {
+    <#
+    .SYNOPSIS
+    Function updates all/selected custom modules in given Azure Automation Account Environment Runtime.
+
+    Custom module means module you have to explicitly import (not 'Az' or 'azure cli').
+
+    .DESCRIPTION
+    Function updates all/selected custom modules in given Azure Automation Account Environment Runtime.
+
+    Custom module means module you have to explicitly import (not 'Az' or 'azure cli').
+
+    .PARAMETER moduleName
+    Name of the module you want to add/(replace by other version).
+
+    .PARAMETER moduleVersion
+    Target module version you want to update to.
+
+    Applies to all updated modules!
+
+    If not specified, newest supported version for used runtime language version will be gathered from PSGallery.
+
+    .PARAMETER allCustomModule
+    Parameter description
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Update-AzureAutomationRunbookModule -moduleName CommonStuff -moduleVersion 1.0.18
+
+    Updates module CommonStuff to the version 1.0.18 in the specified Automation runtime(s).
+    If module has some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
+
+    Missing function arguments like $runtimeName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Update-AzureAutomationRunbookModule -moduleName CommonStuff
+
+    Updates module CommonStuff to the newest available version in the specified Automation runtime(s).
+    If module has some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
+
+    Missing function arguments like $runtimeName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Update-AzureAutomationRunbookModule -allCustomModule
+
+    Updates all custom modules to the newest available version in the specified Automation runtime(s).
+    If module(s) have some dependencies, that are currently missing (or have incorrect version), they will be imported automatically.
+
+    Missing function arguments like $runtimeName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string[]] $moduleName,
+
+        [string] $moduleVersion,
+
+        [switch] $allCustomModule,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string[]] $runtimeName,
+
+        [hashtable] $header
+    )
+
+    if ($allCustomModule -and $moduleName) {
+        throw "Choose moduleName or allCustomModule"
+    }
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+    $subscription = $((Get-AzContext).Subscription.Name)
+
+    $automationAccount = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage PowerShell -runtimeSource Custom -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Multiple -Title "Select environment you want to process"
+    }
+
+    $runtimeVersion = $runtime.properties.runtime.version
+    #endregion get missing arguments
+
+    foreach ($runtName in $runtimeName) {
+        "Processing Runtime '$runtName' (ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
+
+        $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $atmAccountName -ResourceGroup $atmAccountResourceGroup -runtimeName $runtName -header $header
+
+        if ($allCustomModule) {
+            $automationModulesToUpdate = $currentAutomationCustomModules
+        } elseif ($moduleName) {
+            $automationModulesToUpdate = $currentAutomationCustomModules | ? Name -In $moduleName
+
+            if ($moduleVersion -and $automationModulesToUpdate) {
+                Write-Verbose "Selecting only module(s) with version $moduleVersion or lower"
+                $automationModulesToUpdate = $automationModulesToUpdate | ? { [version]$_.Version -lt [version] $moduleVersion }
+            }
+        } else {
+            $automationModulesToUpdate = $currentAutomationCustomModules | Out-GridView -PassThru -Title "Select module(s) to update"
+
+            if ($moduleVersion -and $automationModulesToUpdate) {
+                Write-Verbose "Selecting only module(s) with version $moduleVersion or lower"
+                $automationModulesToUpdate = $automationModulesToUpdate | ? { [version]$_.Version -lt [version] $moduleVersion }
+            }
+        }
+
+        if (!$automationModulesToUpdate) {
+            Write-Warning "No module match the selected update criteria. Skipping"
+            continue
+        }
+
+        foreach ($module in $automationModulesToUpdate) {
+            $moduleName = $module.Name
+            $requiredModuleVersion = $moduleVersion
+
+            #region get PSGallery module data
+            $param = @{
+                # IncludeDependencies = $true # cannot be used, because always returns newest available modules, I want to use existing modules if possible (to minimize risk that something will stop working)
+                Name        = $moduleName
+                ErrorAction = "Stop"
+            }
+            if ($requiredModuleVersion) {
+                $param.RequiredVersion = $requiredModuleVersion
+            } else {
+                $param.AllVersions = $true
+            }
+
+            $moduleGalleryInfo = Find-Module @param
+            #endregion get PSGallery module data
+
+            # get newest usable module version for given runtime
+            if (!$requiredModuleVersion -and $runtimeVersion -eq '5.1') {
+                # no specific version was selected and older PSH version is used, make sure module that supports it, will be found
+                # for example (currently newest) pnp.powershell 2.3.0 supports only PSH 7.2
+                $moduleGalleryInfo = $moduleGalleryInfo | ? { $_.AdditionalMetadata.PowerShellVersion -le $runtimeVersion } | select -First 1
+            }
+
+            if (!$moduleGalleryInfo) {
+                Write-Error "No supported $moduleName module was found in PSGallery"
+                continue
+            }
+
+            if (!$requiredModuleVersion) {
+                # no version specified, newest version from PSGallery will be used"
+                $requiredModuleVersion = $moduleGalleryInfo.Version
+
+                if ($requiredModuleVersion -eq $module.Version) {
+                    Write-Warning "Module $moduleName already has newest available version $requiredModuleVersion. Skipping"
+                    continue
+                }
+            }
+
+            $param = @{
+                resourceGroupName     = $module.ResourceGroupName
+                automationAccountName = $module.AutomationAccountName
+                runtimeName           = $runtimeName
+                moduleName            = $module.Name
+                runtimeVersion        = $runtimeVersion
+                moduleVersion         = $requiredModuleVersion
+                header                = $header
+            }
+
+            "Updating module $($module.Name) $($module.Version) >> $requiredModuleVersion"
+            New-AzureAutomationRuntimeModule @param
+        }
+    }
+}
+
+Export-ModuleMember -function Copy-AzureAutomationRuntime, Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Update-AzureAutomationModule, Update-AzureAutomationRunbookModule
 
 Export-ModuleMember -alias Get-AzureAutomationRuntimeAzModule, New-AzAutomationModule2, Set-AzureAutomationModule, Set-AzureAutomationRuntimeModule

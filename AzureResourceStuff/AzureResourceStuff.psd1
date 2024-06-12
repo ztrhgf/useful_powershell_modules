@@ -12,7 +12,7 @@
 RootModule = 'AzureResourceStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.10'
+ModuleVersion = '1.0.11'
 
 # Supported PSEditions
 CompatiblePSEditions = 'Core', 'Desktop'
@@ -87,11 +87,14 @@ RequiredModules = @('Az.Accounts',
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = 'Copy-AzureAutomationRuntime', 'Export-VariableToStorage', 
                'Get-AutomationVariable2', 'Get-AzureAutomationRunbookRuntime', 
+               'Get-AzureAutomationRunbookTestJobOutput', 
+               'Get-AzureAutomationRunbookTestJobStatus', 
                'Get-AzureAutomationRuntime', 
                'Get-AzureAutomationRuntimeAvailableDefaultModule', 
                'Get-AzureAutomationRuntimeCustomModule', 
                'Get-AzureAutomationRuntimeSelectedDefaultModule', 
                'Get-AzureResource', 'Import-VariableFromStorage', 
+               'Invoke-AzureAutomationRunbookTestJob', 
                'New-AzureAutomationGraphToken', 'New-AzureAutomationModule', 
                'New-AzureAutomationRuntime', 'New-AzureAutomationRuntimeModule', 
                'Remove-AzureAutomationRuntime', 
@@ -198,6 +201,11 @@ PrivateData = @{
             1.0.10
                 FIXED
                     Update-AzureAutomationModule, Update-AzureAutomationRunbookModule, New-AzureAutomationRuntimeModule
+            1.0.11
+                ADDED
+                    Get-AzureAutomationRunbookTestJobOutput
+                    Get-AzureAutomationRunbookTestJobStatus
+                    Invoke-AzureAutomationRunbookTestJob
             '
 
         # Prerelease string of this module

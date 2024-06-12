@@ -427,6 +427,192 @@ function Get-AzureAutomationRunbookRuntime {
     Invoke-RestMethod2 "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName`?api-version=2023-05-15-preview" -headers $header | select -ExpandProperty properties | select -ExpandProperty runtimeEnvironment
 }
 
+function Get-AzureAutomationRunbookTestJobOutput {
+    <#
+    .SYNOPSIS
+    Get output from last Runbook test run.
+
+    .DESCRIPTION
+    Get output from last Runbook test run.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER justText
+    Instead of object return just outputted messages of selected type(s).
+
+    Possible values: 'Output', 'Warning', 'Error', 'Exception'
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRunbookTestJobOutput
+
+    Get output of selected Runbook last test run. Output will be returned via array of objects where beside returned text also other properties like type of the output or output time are returned.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRunbookTestJobOutput -justText Output
+
+    Get just common (no warnings or errors) output of selected Runbook last test run. Output will be returned as array of strings.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [ValidateSet('Output', 'Warning', 'Error', 'Exception')]
+        [string[]] $justText,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to change"
+    }
+    #endregion get missing arguments
+
+    # get ordinary output, warnings, errors
+    $result = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams?`$filter=properties/time ge 1899-12-30T23:00:00.001Z&api-version=2019-06-01" -headers $header | select -ExpandProperty properties
+
+    # get exceptions
+    $testJobStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
+
+    if ($justText) {
+        # output specified type of messages (ordinary output, warnings and errors)
+        $result | ? streamType -In $justText | select -ExpandProperty Summary
+
+        # output exception message if requested
+        if ($justText -contains 'Exception' -and $testJobStatus.exception) {
+            $testJobStatus.exception
+        }
+    } else {
+        # output ordinary output, warnings and errors
+        $result
+
+        # output exception message
+        if ($testJobStatus.exception) {
+            [PSCustomObject]@{
+                jobStreamId = $null
+                summary     = $testJobStatus.exception
+                time        = $testJobStatus.endTime
+                streamType  = 'Exception'
+            }
+        }
+    }
+}
+
+function Get-AzureAutomationRunbookTestJobStatus {
+    <#
+    .SYNOPSIS
+    Get status of the last Runbook test run.
+
+    .DESCRIPTION
+    Get status of the last Runbook test run.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Get-AzureAutomationRunbookTestJobStatus
+
+    Get status of selected Runbook last test run.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to change"
+    }
+    #endregion get missing arguments
+
+    Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2019-06-01" -headers $header
+}
+
 function Get-AzureAutomationRuntime {
     <#
     .SYNOPSIS
@@ -1044,6 +1230,122 @@ function Import-VariableFromStorage {
 
     # remove temp file
     $null = Remove-Item $cliXmlFile -Force
+}
+
+function Invoke-AzureAutomationRunbookTestJob {
+    <#
+    .SYNOPSIS
+    Invoke test run of the selected Runbook using selected Runtime.
+
+    .DESCRIPTION
+    Invoke test run of the selected Runbook using selected Runtime.
+
+    Runtime will be used only for test run, no permanent change to the Runbook will be made.
+
+    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+
+    .PARAMETER runbookName
+    Runbook name you want to run.
+
+    .PARAMETER runtimeName
+    Runtime name you want to use for a test run.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Invoke-AzureAutomationRunbookTestJob
+
+    Invoke test run of the selected Runbook using selected Runtime.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runbookName,
+
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to start"
+    }
+
+    #region get runbook language
+    $runbook = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName -Name $runbookName -ErrorAction Stop
+
+    $runbookType = $runbook.RunbookType
+    if ($runbookType -eq 'python2') {
+        $programmingLanguage = 'Python'
+    } else {
+        $programmingLanguage = $runbookType
+    }
+    #endregion get runbook language
+
+    $currentRuntimeName = Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $runbookName -header $header -ErrorAction Stop
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage $programmingLanguage -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to test (currently used '$currentRuntimeName')"
+    }
+    #endregion get missing arguments
+
+    #region send web request
+    $body = @{
+        properties = @{
+            "runtimeEnvironment" = $runtimeName
+            "runOn"              = ""
+            "parameters"         = @{}
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Write-Verbose "Invoking Runbook '$runbookName' test run using Runtime '$runtimeName'"
+
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2023-05-15-preview" -headers $header -body $body
+    #endregion send web request
+
+    Write-Verbose "To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus."
 }
 
 function New-AzureAutomationGraphToken {
@@ -3171,6 +3473,6 @@ function Update-AzureAutomationRunbookModule {
     }
 }
 
-Export-ModuleMember -function Copy-AzureAutomationRuntime, Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Update-AzureAutomationModule, Update-AzureAutomationRunbookModule
+Export-ModuleMember -function Copy-AzureAutomationRuntime, Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRunbookTestJobOutput, Get-AzureAutomationRunbookTestJobStatus, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, Invoke-AzureAutomationRunbookTestJob, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Update-AzureAutomationModule, Update-AzureAutomationRunbookModule
 
 Export-ModuleMember -alias Get-AzureAutomationRuntimeAzModule, New-AzAutomationModule2, Set-AzureAutomationModule, Set-AzureAutomationRuntimeModule

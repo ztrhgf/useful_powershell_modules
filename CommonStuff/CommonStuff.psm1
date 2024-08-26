@@ -3609,6 +3609,12 @@ function Invoke-AsSystem {
     .PARAMETER scriptBlock
     Scriptblock that should be run under SYSTEM account.
 
+    .PARAMETER scriptFile
+    Script that should be run under SYSTEM account.
+
+    .PARAMETER usePSHCore
+    Switch for running the code using PowerShell Core instead of Windows PowerShell.
+
     .PARAMETER computerName
     Name of computer, where to run this.
 
@@ -3623,7 +3629,7 @@ function Invoke-AsSystem {
     Hashtable where keys will be names of variables and values will be, well values :)
 
     Example:
-    [hashtable]$Argument = @{
+    [hashtable]$argument = @{
         name = "John"
         cities = "Boston", "Prague"
         hash = @{var1 = 'value1','value11'; var2 = @{ key ='value' }}
@@ -3641,22 +3647,49 @@ function Invoke-AsSystem {
 
     Default is SYSTEM.
 
+    .PARAMETER PSHCorePath
+    Path to PowerShell Core executable you want to use.
+
+    By default Core 7 is used ("$env:ProgramFiles\PowerShell\7\pwsh.exe").
+
     .EXAMPLE
-    Invoke-AsSystem {New-Item $env:TEMP\abc}
+    Invoke-AsSystem -scriptBlock {New-Item $env:TEMP\abc}
 
     On local computer will call given scriptblock under SYSTEM account.
 
     .EXAMPLE
-    Invoke-AsSystem {New-Item "$env:TEMP\$name"} -computerName PC-01 -ReturnTranscript -Argument @{name = 'someFolder'} -Verbose
+    Invoke-AsSystem -scriptBlock {New-Item "$env:TEMP\$name"} -computerName PC-01 -ReturnTranscript -Argument @{name = 'someFolder'} -Verbose
 
     On computer PC-01 will call given scriptblock under SYSTEM account i.e. will create folder 'someFolder' in C:\Windows\Temp.
     Transcript will be outputted in console too.
+
+    .EXAMPLE
+    Invoke-AsSystem -scriptFile C:\Scripts\dosomestuff.ps1 -ReturnTranscript
+
+    On local computer will run given script under SYSTEM account and return the captured output.
+
+    .EXAMPLE
+    Invoke-AsSystem -scriptFile C:\Scripts\dosomestuff.ps1 -ReturnTranscript -usePSHCore
+
+    On local computer will run given script under SYSTEM account using PowerShell Core 7 and return the captured output.
     #>
 
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'scriptBlock')]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, ParameterSetName = "scriptBlock")]
         [scriptblock] $scriptBlock,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "scriptFile")]
+        [ValidateScript( {
+                if ((Test-Path -Path $_ ) -and $_ -like "*.ps1") {
+                    $true
+                } else {
+                    throw "$_ is not a path to ps1 script file"
+                }
+            })]
+        [string] $scriptFile,
+
+        [switch] $usePSHCore,
 
         [string] $computerName,
 
@@ -3667,18 +3700,31 @@ function Invoke-AsSystem {
         [ValidateSet('SYSTEM', 'NETWORKSERVICE', 'LOCALSERVICE')]
         [string] $runAs = "SYSTEM",
 
-        [switch] $CacheToDisk
+        [switch] $cacheToDisk,
+
+        [ValidateScript( {
+                if ((Test-Path -Path $_ ) -and $_ -like "*.exe") {
+                    $true
+                } else {
+                    throw "$_ is not a path to executable"
+                }
+            })]
+        [string] $PSHCorePath
     )
 
     (Get-Variable runAs).Attributes.Clear()
     $runAs = "NT Authority\$runAs"
+
+    if ($PSHCorePath -and !$usePSHCore) {
+        $usePSHCore = $true
+    }
 
     #region prepare Invoke-Command parameters
     # export this function to remote session (so I am not dependant whether it exists there or not)
     $allFunctionDefs = "function Create-VariableTextDefinition { ${function:Create-VariableTextDefinition} }"
 
     $param = @{
-        argumentList = $scriptBlock, $runAs, $CacheToDisk, $allFunctionDefs, $VerbosePreference, $ReturnTranscript, $Argument
+        argumentList = $scriptBlock, $scriptFile, $usePSHCore, $PSHCorePath, $runAs, $cacheToDisk, $allFunctionDefs, $VerbosePreference, $returnTranscript, $argument
     }
 
     if ($computerName -and $computerName -notmatch "localhost|$env:COMPUTERNAME") {
@@ -3691,63 +3737,92 @@ function Invoke-AsSystem {
     #endregion prepare Invoke-Command parameters
 
     Invoke-Command @param -ScriptBlock {
-        param ($scriptBlock, $runAs, $CacheToDisk, $allFunctionDefs, $VerbosePreference, $ReturnTranscript, $Argument)
+        param ($scriptBlock, $scriptFile, $usePSHCore, $PSHCorePath, $runAs, $cacheToDisk, $allFunctionDefs, $VerbosePreference, $returnTranscript, $argument)
 
         foreach ($functionDef in $allFunctionDefs) {
             . ([ScriptBlock]::Create($functionDef))
         }
 
-        $TranscriptPath = "$ENV:TEMP\Invoke-AsSYSTEM_$(Get-Random).log"
+        $transcriptPath = "$ENV:TEMP\Invoke-AsSYSTEM_$(Get-Random).log"
+        $encodedCommand, $temporaryScript = $null
 
-        if ($Argument -or $ReturnTranscript) {
+        if ($argument -or $returnTranscript) {
             # define passed variables
-            if ($Argument) {
+            if ($argument) {
                 # convert hash to variables text definition
-                $VariableTextDef = Create-VariableTextDefinition $Argument
+                $variableTextDef = Create-VariableTextDefinition $argument
             }
 
-            if ($ReturnTranscript) {
+            if ($returnTranscript) {
                 # modify scriptBlock to contain creation of transcript
-                $TranscriptStart = "Start-Transcript $TranscriptPath"
-                $TranscriptEnd = 'Stop-Transcript'
+                $transcriptStart = "Start-Transcript $transcriptPath"
+                $transcriptEnd = 'Stop-Transcript'
             }
 
-            $ScriptBlockContent = ($TranscriptStart + "`n`n" + $VariableTextDef + "`n`n" + $ScriptBlock.ToString() + "`n`n" + $TranscriptStop)
+            if ($scriptBlock) {
+                $codeText = $scriptBlock.ToString()
+            } else {
+                $codeText = Get-Content $scriptFile -Raw
+            }
+
+            $scriptBlockContent = ($transcriptStart + "`n`n" + $variableTextDef + "`n`n" + $codeText + "`n`n" + $transcriptEnd)
             Write-Verbose "####### SCRIPTBLOCK TO RUN"
-            Write-Verbose $ScriptBlockContent
+            Write-Verbose $scriptBlockContent
             Write-Verbose "#######"
-            $scriptBlock = [Scriptblock]::Create($ScriptBlockContent)
+            $scriptBlock = [Scriptblock]::Create($scriptBlockContent)
         }
 
-        if ($CacheToDisk) {
-            $ScriptGuid = New-Guid
-            $null = New-Item "$($ENV:TEMP)\$($ScriptGuid).ps1" -Value $ScriptBlock -Force
-            $pwshcommand = "-ExecutionPolicy Bypass -Window Hidden -noprofile -file `"$($ENV:TEMP)\$($ScriptGuid).ps1`""
+        if ($cacheToDisk) {
+            $temporaryScript = "$env:temp\$(New-Guid).ps1"
+            $null = New-Item $temporaryScript -Value $scriptBlock -Force
+            $pshCommand = "-ExecutionPolicy Bypass -Window Hidden -noprofile -file `"$temporaryScript`""
         } else {
-            $encodedcommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($ScriptBlock))
-            $pwshcommand = "-ExecutionPolicy Bypass -Window Hidden -noprofile -EncodedCommand $($encodedcommand)"
+            $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($scriptBlock))
+            $pshCommand = "-ExecutionPolicy Bypass -Window Hidden -noprofile -EncodedCommand $($encodedCommand)"
         }
 
-        $OSLevel = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentVersion
-        if ($OSLevel -lt 6.2) { $MaxLength = 8190 } else { $MaxLength = 32767 }
-        if ($encodedcommand.length -gt $MaxLength -and $CacheToDisk -eq $false) {
-            throw "The encoded script is longer than the command line parameter limit. Please execute the script with the -CacheToDisk option."
+        if ($encodedCommand) {
+            $OSLevel = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentVersion
+
+            if ($OSLevel -lt 6.2) { $maxLength = 8190 } else { $maxLength = 32767 }
+
+            if ($encodedCommand.length -gt $maxLength -and $cacheToDisk -eq $false) {
+                throw "The encoded script is longer than the command line parameter limit. Please execute the script with the -CacheToDisk option."
+            }
         }
 
         try {
             #region create&run sched. task
-            $A = New-ScheduledTaskAction -Execute "$($ENV:windir)\system32\WindowsPowerShell\v1.0\powershell.exe" -Argument $pwshcommand
-            if ($runAs -match "\$") {
-                # pod gMSA uctem
-                $P = New-ScheduledTaskPrincipal -UserId $runAs -LogonType Password
+            if ($usePSHCore) {
+                if ($PSHCorePath) {
+                    $pshPath = $PSHCorePath
+                } else {
+                    $pshPath = "$env:ProgramFiles\PowerShell\7\pwsh.exe"
+
+                    if (!(Test-Path $pshPath -ErrorAction SilentlyContinue)) {
+                        throw "PSH Core isn't installed at '$pshPath' use 'PSHCorePath' parameter to specify correct path"
+                    }
+                }
             } else {
-                # pod systemovym uctem
-                $P = New-ScheduledTaskPrincipal -UserId $runAs -LogonType ServiceAccount
+                $pshPath = "$($env:windir)\system32\WindowsPowerShell\v1.0\powershell.exe"
             }
-            $S = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
+
+            $taskAction = New-ScheduledTaskAction -Execute $pshPath -Argument $pshCommand
+
+            if ($runAs -match "\$") {
+                # run as gMSA account
+                $taskPrincipal = New-ScheduledTaskPrincipal -UserId $runAs -LogonType Password
+            } else {
+                # run as system account
+                $taskPrincipal = New-ScheduledTaskPrincipal -UserId $runAs -LogonType ServiceAccount
+            }
+
+            $taskSetting = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
+
             $taskName = "RunAsSystem_" + (Get-Random)
+
             try {
-                $null = New-ScheduledTask -Action $A -Principal $P -Settings $S -ea Stop | Register-ScheduledTask -Force -TaskName $taskName -ea Stop
+                $null = New-ScheduledTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSetting -ErrorAction Stop | Register-ScheduledTask -Force -TaskName $taskName -ErrorAction Stop
             } catch {
                 if ($_ -match "No mapping between account names and security IDs was done") {
                     throw "Account $runAs doesn't exist or cannot be used on $env:COMPUTERNAME"
@@ -3772,23 +3847,23 @@ function Invoke-AsSystem {
             $result = (Get-ScheduledTaskInfo $taskName).LastTaskResult
 
             # read & delete transcript
-            if ($ReturnTranscript) {
+            if ($returnTranscript) {
                 # return just interesting part of transcript
-                if (Test-Path $TranscriptPath) {
-                    $transcriptContent = (Get-Content $TranscriptPath -Raw) -Split [regex]::escape('**********************')
+                if (Test-Path $transcriptPath) {
+                    $transcriptContent = (Get-Content $transcriptPath -Raw) -Split [regex]::escape('**********************')
                     # return command output
                     ($transcriptContent[2] -split "`n" | Select-Object -Skip 2 | Select-Object -SkipLast 3) -join "`n"
 
-                    Remove-Item $TranscriptPath -Force
+                    Remove-Item $transcriptPath -Force
                 } else {
                     Write-Warning "There is no transcript, command probably failed!"
                 }
             }
 
-            if ($CacheToDisk) { $null = Remove-Item "$($ENV:TEMP)\$($ScriptGuid).ps1" -Force }
+            if ($temporaryScript) { $null = Remove-Item $temporaryScript -Force }
 
             try {
-                Unregister-ScheduledTask $taskName -Confirm:$false -ea Stop
+                Unregister-ScheduledTask $taskName -Confirm:$false -ErrorAction Stop
             } catch {
                 throw "Unable to unregister sched. task $taskName. Please remove it manually"
             }
@@ -3799,6 +3874,9 @@ function Invoke-AsSystem {
             #endregion create&run sched. task
         } catch {
             throw $_.Exception
+        } finally {
+            Unregister-ScheduledTask $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            if ($temporaryScript) { $null = Remove-Item $temporaryScript -Force -ErrorAction SilentlyContinue }
         }
     }
 }
@@ -4051,7 +4129,7 @@ function Invoke-MSTSC {
 
     It has to be run from PowerShell console, that is running under account with permission for reading LAPS password!
 
-    It uses AdmPwd.PS for getting LAPS password and AutoItx PowerShell module for automatic filling of credentials into mstsc.exe app for RDP, in case LAPS password wasn't retrieved or domain account is used.
+    It uses an official LAPS module for getting LAPS password and AutoItx PowerShell module for automatic filling of credentials into mstsc.exe app for RDP, in case LAPS password wasn't retrieved or domain account is used for connection instead of local admin one.
 
     It is working only on English OS.
 
@@ -4116,6 +4194,8 @@ function Invoke-MSTSC {
     .NOTES
     Automatic filling is working only on english operating systems.
     Author: Ondřej Šebela - ztrhgf@seznam.cz
+
+    Requires builtin Windows LAPS module.
     #>
 
     [CmdletBinding()]
@@ -4155,12 +4235,6 @@ function Invoke-MSTSC {
     begin {
         # remove validation ValidateNotNullOrEmpty
         (Get-Variable computerName).Attributes.Clear()
-
-        try {
-            $null = Import-Module AdmPwd.PS -ErrorAction Stop -Verbose:$false
-        } catch {
-            throw "Module AdmPwd.PS isn't available"
-        }
 
         try {
             Write-Verbose "Get list of domain DCs"
@@ -4244,7 +4318,7 @@ function Invoke-MSTSC {
 
             if ($tryLaps -and $computerHostname -notin $DC.ToLower()) {
                 Write-Verbose "Getting LAPS password for $computerHostname"
-                $password = (Get-AdmPwdPassword $computerHostname).password
+                $password = Get-LapsADPassword -Identity $computerName -AsPlainText | select -ExpandProperty Password
 
                 if (!$password) {
                     Write-Warning "Unable to get LAPS password for $computerHostname."
@@ -4292,6 +4366,7 @@ function Invoke-MSTSC {
                 $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
                 $ProcessInfo.Arguments = "/generic:TERMSRV/$computer /user:$userName /pass:`"$password`""
                 $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $ProcessInfo.RedirectStandardOutput = ".\NUL"
                 $Process.StartInfo = $ProcessInfo
                 [void]$Process.Start()
                 $null = $Process.WaitForExit()
@@ -4306,6 +4381,20 @@ function Invoke-MSTSC {
                 # I don't have credentials, so I have to use AutoIt for log on automation
 
                 Write-Verbose "I don't have credentials, so AutoIt will be used instead"
+
+                try {
+                    $null = Get-Command Get-AU3WinHandle -ErrorAction Stop
+                } catch {
+                    try {
+                        if ($PSVersionTable.PSEdition -eq "Core") {
+                            $null = Import-Module AutoItX -SkipEditionCheck -ErrorAction Stop -Verbose:$false
+                        } else {
+                            $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        }
+                    } catch {
+                        throw "Module AutoItX isn't available"
+                    }
+                }
 
                 if ([console]::CapsLock) {
                     $keyBoardObject = New-Object -ComObject WScript.Shell
@@ -4352,7 +4441,11 @@ function Invoke-MSTSC {
                     $null = Get-Command Show-AU3WinActivate -ErrorAction Stop
                 } catch {
                     try {
-                        $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        if ($PSVersionTable.PSEdition -eq "Core") {
+                            $null = Import-Module AutoItX -SkipEditionCheck -ErrorAction Stop -Verbose:$false
+                        } else {
+                            $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        }
                     } catch {
                         throw "Module AutoItX isn't available. It is part of the AutoIt installer https://www.autoitconsulting.com/site/scripting/autoit-cmdlets-for-windows-powershell/"
                     }
@@ -4468,7 +4561,7 @@ function Invoke-RestMethod2 {
     function _result {
         param ($response)
 
-        if ($response | Get-Member -MemberType NoteProperty | select -ExpandProperty name | ? { $_ -notin '@odata.context', '@odata.nextLink', '@odata.count', 'Value' }) {
+        if ($response | Get-Member -MemberType NoteProperty | select -ExpandProperty name | ? { $_ -notin '@odata.context', '@odata.nextLink', '@odata.count', 'Value', 'nextlink' }) {
             # only one item was returned, no expand is needed
             $response
         } else {
@@ -4478,7 +4571,7 @@ function Invoke-RestMethod2 {
     }
 
     $uriLink = $uri
-    $responseObj = $Null
+    $responseObj = $null
 
     do {
         try {
@@ -4500,7 +4593,15 @@ function Invoke-RestMethod2 {
             _result $responseObj
 
             # loop through '@odata.nextLink' to get all results
-            $uriLink = $responseObj.'@odata.nextLink'
+            if ($responseObj.'@odata.nextLink') {
+                # MS Graph Api uses '@odata.nextLink' property
+                $uriLink = $responseObj.'@odata.nextLink'
+            } elseif ($responseObj.nextLink) {
+                # Azure Automation Api uses 'nextlink' property
+                $uriLink = $responseObj.nextLink
+            } else {
+                $uriLink = $null
+            }
         } catch {
             switch ($_) {
                 #TODO https://learn.microsoft.com/en-us/defender-endpoint/api/common-errors?view=o365-worldwide#throttling tzn vycitat sleep z Retry-After

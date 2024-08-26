@@ -11,7 +11,7 @@ function Invoke-MSTSC {
 
     It has to be run from PowerShell console, that is running under account with permission for reading LAPS password!
 
-    It uses AdmPwd.PS for getting LAPS password and AutoItx PowerShell module for automatic filling of credentials into mstsc.exe app for RDP, in case LAPS password wasn't retrieved or domain account is used.
+    It uses an official LAPS module for getting LAPS password and AutoItx PowerShell module for automatic filling of credentials into mstsc.exe app for RDP, in case LAPS password wasn't retrieved or domain account is used for connection instead of local admin one.
 
     It is working only on English OS.
 
@@ -76,6 +76,8 @@ function Invoke-MSTSC {
     .NOTES
     Automatic filling is working only on english operating systems.
     Author: Ondřej Šebela - ztrhgf@seznam.cz
+
+    Requires builtin Windows LAPS module.
     #>
 
     [CmdletBinding()]
@@ -115,12 +117,6 @@ function Invoke-MSTSC {
     begin {
         # remove validation ValidateNotNullOrEmpty
         (Get-Variable computerName).Attributes.Clear()
-
-        try {
-            $null = Import-Module AdmPwd.PS -ErrorAction Stop -Verbose:$false
-        } catch {
-            throw "Module AdmPwd.PS isn't available"
-        }
 
         try {
             Write-Verbose "Get list of domain DCs"
@@ -204,7 +200,7 @@ function Invoke-MSTSC {
 
             if ($tryLaps -and $computerHostname -notin $DC.ToLower()) {
                 Write-Verbose "Getting LAPS password for $computerHostname"
-                $password = (Get-AdmPwdPassword $computerHostname).password
+                $password = Get-LapsADPassword -Identity $computerName -AsPlainText | select -ExpandProperty Password
 
                 if (!$password) {
                     Write-Warning "Unable to get LAPS password for $computerHostname."
@@ -252,6 +248,7 @@ function Invoke-MSTSC {
                 $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
                 $ProcessInfo.Arguments = "/generic:TERMSRV/$computer /user:$userName /pass:`"$password`""
                 $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $ProcessInfo.RedirectStandardOutput = ".\NUL"
                 $Process.StartInfo = $ProcessInfo
                 [void]$Process.Start()
                 $null = $Process.WaitForExit()
@@ -266,6 +263,20 @@ function Invoke-MSTSC {
                 # I don't have credentials, so I have to use AutoIt for log on automation
 
                 Write-Verbose "I don't have credentials, so AutoIt will be used instead"
+
+                try {
+                    $null = Get-Command Get-AU3WinHandle -ErrorAction Stop
+                } catch {
+                    try {
+                        if ($PSVersionTable.PSEdition -eq "Core") {
+                            $null = Import-Module AutoItX -SkipEditionCheck -ErrorAction Stop -Verbose:$false
+                        } else {
+                            $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        }
+                    } catch {
+                        throw "Module AutoItX isn't available"
+                    }
+                }
 
                 if ([console]::CapsLock) {
                     $keyBoardObject = New-Object -ComObject WScript.Shell
@@ -312,7 +323,11 @@ function Invoke-MSTSC {
                     $null = Get-Command Show-AU3WinActivate -ErrorAction Stop
                 } catch {
                     try {
-                        $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        if ($PSVersionTable.PSEdition -eq "Core") {
+                            $null = Import-Module AutoItX -SkipEditionCheck -ErrorAction Stop -Verbose:$false
+                        } else {
+                            $null = Import-Module AutoItX -ErrorAction Stop -Verbose:$false
+                        }
                     } catch {
                         throw "Module AutoItX isn't available. It is part of the AutoIt installer https://www.autoitconsulting.com/site/scripting/autoit-cmdlets-for-windows-powershell/"
                     }

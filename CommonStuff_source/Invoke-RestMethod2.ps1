@@ -62,7 +62,7 @@
     function _result {
         param ($response)
 
-        if ($response | Get-Member -MemberType NoteProperty | select -ExpandProperty name | ? { $_ -notin '@odata.context', '@odata.nextLink', '@odata.count', 'Value' }) {
+        if ($response | Get-Member -MemberType NoteProperty | select -ExpandProperty name | ? { $_ -notin '@odata.context', '@odata.nextLink', '@odata.count', 'Value', 'nextlink' }) {
             # only one item was returned, no expand is needed
             $response
         } else {
@@ -72,7 +72,7 @@
     }
 
     $uriLink = $uri
-    $responseObj = $Null
+    $responseObj = $null
 
     do {
         try {
@@ -94,7 +94,15 @@
             _result $responseObj
 
             # loop through '@odata.nextLink' to get all results
-            $uriLink = $responseObj.'@odata.nextLink'
+            if ($responseObj.'@odata.nextLink') {
+                # MS Graph Api uses '@odata.nextLink' property
+                $uriLink = $responseObj.'@odata.nextLink'
+            } elseif ($responseObj.nextLink) {
+                # Azure Automation Api uses 'nextlink' property
+                $uriLink = $responseObj.nextLink
+            } else {
+                $uriLink = $null
+            }
         } catch {
             switch ($_) {
                 #TODO https://learn.microsoft.com/en-us/defender-endpoint/api/common-errors?view=o365-worldwide#throttling tzn vycitat sleep z Retry-After

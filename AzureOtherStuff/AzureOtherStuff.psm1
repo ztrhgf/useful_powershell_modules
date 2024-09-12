@@ -135,7 +135,7 @@ function Get-AzureAuditAggregatedSignInEvent {
     Get all 'Service principal sign-ins' events for selected enterprise app aggregated by 1 day.
 
     .NOTES
-    Token can be created using (Get-AzAccessToken -ResourceTypeName AadGraph).token.
+    Token can be created using (Get-AzAccessToken -AsSecureString -ResourceTypeName AadGraph).token.
     #>
 
     [CmdletBinding()]
@@ -173,11 +173,11 @@ function Get-AzureAuditAggregatedSignInEvent {
         [string] $aggregationWindow = '1d'
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken -AsSecureString' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -AsSecureString -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -ErrorAction Stop
+    $accessToken = Get-AzAccessToken -AsSecureString -ResourceUri 'https://graph.windows.net' -ErrorAction Stop
 
     if (!$tenantId) {
         $tenantId = $accessToken.TenantId

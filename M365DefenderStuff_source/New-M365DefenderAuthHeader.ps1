@@ -73,12 +73,12 @@
     if ($identity) {
         # connecting using managed identity
 
-        if (!(Get-Command "Get-AzAccessToken" -ea SilentlyContinue)) {
-            throw "'Get-AzAccessToken' command is missing (module Az.Accounts). Unable to continue"
+        if (!(Get-Command "Get-AzAccessToken -AsSecureString" -ea SilentlyContinue)) {
+            throw "'Get-AzAccessToken -AsSecureString' command is missing (module Az.Accounts). Unable to continue"
         }
 
         $sourceAppIdUri = 'https://api.securitycenter.microsoft.com/.default'
-        $response = Get-AzAccessToken -ResourceUri $sourceAppIdUri
+        $response = Get-AzAccessToken -AsSecureString -ResourceUri $sourceAppIdUri
         $token = $response.token
 
         if (!$token) {
@@ -101,7 +101,7 @@
             $token = $authResponse.access_token
         } else {
             # connecting using existing Azure session
-            $AccessToken = Get-AzAccessToken -ResourceUri 'https://api.securitycenter.microsoft.com' -ErrorAction Stop
+            $AccessToken = Get-AzAccessToken -AsSecureString -ResourceUri 'https://api.securitycenter.microsoft.com' -ErrorAction Stop
             $token = $AccessToken.token
         }
 

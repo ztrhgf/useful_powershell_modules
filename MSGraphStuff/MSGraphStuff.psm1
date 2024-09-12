@@ -981,7 +981,7 @@ function New-GraphAPIAuthHeader {
 
         try {
             # test if connection already exists
-            $azConnectionToken = Get-AzAccessToken -ResourceTypeName MSGraph -ea Stop
+            $azConnectionToken = Get-AzAccessToken -AsSecureString -ResourceTypeName MSGraph -ea Stop
 
             # use AZ connection
 

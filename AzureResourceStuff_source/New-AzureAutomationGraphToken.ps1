@@ -29,7 +29,7 @@ function New-AzureAutomationGraphToken {
 
     #>
 
-    $accessToken = Get-AzAccessToken -ResourceUrl "https://management.azure.com" -ErrorAction Stop
+    $accessToken = Get-AzAccessToken -AsSecureString -ResourceUrl "https://management.azure.com" -ErrorAction Stop
     if ($accessToken.Token) {
         $header = @{
             'Content-Type'  = 'application/json'

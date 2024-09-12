@@ -67,7 +67,7 @@ function Connect-AzAccount2 {
     )
 
     #region checks
-    $azAccesstoken = Get-AzAccessToken -ErrorAction SilentlyContinue
+    $azAccesstoken = Get-AzAccessToken -AsSecureString -ErrorAction SilentlyContinue
 
     #region check whether there is valid existing session
     $tenantIsDomainName = $false

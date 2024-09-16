@@ -85,7 +85,33 @@
     #endregion get missing arguments
 
     # get ordinary output, warnings, errors
-    $result = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams?`$filter=properties/time ge 1899-12-30T23:00:00.001Z&api-version=2019-06-01" -headers $header | select -ExpandProperty properties
+    $result = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams?&api-version=2019-06-01" -headers $header -ErrorAction Stop
+
+    # how the returned output looks like can vary
+    if ('Value' -in ($result | Get-Member -MemberType NoteProperty | select -ExpandProperty Name)) {
+        $result = $result.value.properties
+    } else {
+        $result = $result.properties
+    }
+
+    # fix for empty summary problem
+    # sometimes it happens that primary api call returns empty summary property
+    # and direct api calls agains job stream id has to be made to get the actual data
+    foreach ($item in $result) {
+        $output = $item.summary
+        $jobStreamId = $item.jobStreamId
+
+        if (!$output) {
+            Write-Verbose "Getting missing output of the job stream $jobStreamId"
+
+            $jobStreamResult = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams/$jobStreamId`?&api-version=2019-06-01" -headers $header
+
+            if ($jobStreamResult.properties.streamText) {
+                Write-Verbose "Found it"
+                $item.summary = $jobStreamResult.properties.streamText
+            }
+        }
+    }
 
     # get exceptions
     $testJobStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header

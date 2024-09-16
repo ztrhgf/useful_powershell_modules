@@ -22,6 +22,9 @@
 
     If not provided, all custom modules will be returned.
 
+    .PARAMETER simplified
+    Switch to return only name and version of successfully imported modules.
+
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
 
@@ -64,6 +67,8 @@
 
         [string] $moduleName,
 
+        [switch] $simplified,
+
         [hashtable] $header
     )
 
@@ -91,5 +96,11 @@
     }
     #endregion get missing arguments
 
-    Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -headers $header
+    $result = Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -headers $header
+
+    if ($simplified) {
+        $result | ? { $_.properties.provisioningState -eq 'Succeeded' } | select @{n = 'Name'; e = { $_.Name } }, @{n = 'Version'; e = { $version = $_.properties.version; if ($version -eq 'Unknown') { $null } else { $version } } }
+    } else {
+        $result
+    }
 }

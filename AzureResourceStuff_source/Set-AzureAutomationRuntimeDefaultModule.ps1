@@ -142,7 +142,7 @@
         $defaultModuleName = $_.Key
         $defaultModuleVersion = $_.Value
 
-        $currentDefaultModuleVersion = $currentDefaultModule.$defaultModuleName
+        $currentDefaultModuleVersion = $currentDefaultModule | ? Name -EQ $defaultModuleName | select -ExpandProperty Version
 
         if ($defaultModuleVersion -eq $currentDefaultModuleVersion) {
             Write-Warning "Module '$defaultModuleName' already has version $defaultModuleVersion"

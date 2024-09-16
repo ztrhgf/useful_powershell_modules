@@ -135,9 +135,8 @@ function Copy-AzureAutomationRuntime {
         # transform $defaultPackageObj to hashtable
         $defaultPackage = @{}
 
-        $moduleNameList = $defaultPackageObj | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
-        $moduleNameList | % {
-            $defaultPackage.$_ = $defaultPackageObj.$_
+        $defaultPackageObj | % {
+            $defaultPackage.($_.Name) = $_.Version
         }
     } else {
         # no default modules needed
@@ -358,6 +357,85 @@ function Get-AutomationVariable2 {
     }
 }
 
+function Get-AzureAutomationRunbookContent {
+    <#
+    .SYNOPSIS
+    Function gets Automation Runbook code content.
+
+    .DESCRIPTION
+    Function gets Automation Runbook code content.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Get-AzureAutomationRunbookContent -runbookName someRunbook -ResourceGroupName Automations -AutomationAccountName someAutomationAccount
+
+    Gets code set in the specified runbook.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    # create auth token
+    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
+    if ($accessToken.Token) {
+        $header = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer {0}" -f $accessToken.Token
+        }
+    }
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to process"
+    }
+    #endregion get missing arguments
+
+    Write-Verbose "Getting runbook code content"
+
+    try {
+        Invoke-RestMethod "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/content?api-version=2015-10-31" -Method GET -Headers $header
+    } catch {
+        if ($_.Exception.StatusCode -eq 'NotFound') {
+            Write-Verbose "There is no code set in the runbook"
+        } else {
+            throw $_
+        }
+    }
+}
+
 function Get-AzureAutomationRunbookRuntime {
     <#
     .SYNOPSIS
@@ -514,7 +592,33 @@ function Get-AzureAutomationRunbookTestJobOutput {
     #endregion get missing arguments
 
     # get ordinary output, warnings, errors
-    $result = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams?`$filter=properties/time ge 1899-12-30T23:00:00.001Z&api-version=2019-06-01" -headers $header | select -ExpandProperty properties
+    $result = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams?&api-version=2019-06-01" -headers $header -ErrorAction Stop
+
+    # how the returned output looks like can vary
+    if ('Value' -in ($result | Get-Member -MemberType NoteProperty | select -ExpandProperty Name)) {
+        $result = $result.value.properties
+    } else {
+        $result = $result.properties
+    }
+
+    # fix for empty summary problem
+    # sometimes it happens that primary api call returns empty summary property
+    # and direct api calls agains job stream id has to be made to get the actual data
+    foreach ($item in $result) {
+        $output = $item.summary
+        $jobStreamId = $item.jobStreamId
+
+        if (!$output) {
+            Write-Verbose "Getting missing output of the job stream $jobStreamId"
+
+            $jobStreamResult = Invoke-RestMethod2 -method get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/streams/$jobStreamId`?&api-version=2019-06-01" -headers $header
+
+            if ($jobStreamResult.properties.streamText) {
+                Write-Verbose "Found it"
+                $item.summary = $jobStreamResult.properties.streamText
+            }
+        }
+    }
 
     # get exceptions
     $testJobStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
@@ -870,6 +974,9 @@ function Get-AzureAutomationRuntimeCustomModule {
 
     If not provided, all custom modules will be returned.
 
+    .PARAMETER simplified
+    Switch to return only name and version of successfully imported modules.
+
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
 
@@ -912,6 +1019,8 @@ function Get-AzureAutomationRuntimeCustomModule {
 
         [string] $moduleName,
 
+        [switch] $simplified,
+
         [hashtable] $header
     )
 
@@ -939,7 +1048,13 @@ function Get-AzureAutomationRuntimeCustomModule {
     }
     #endregion get missing arguments
 
-    Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -headers $header
+    $result = Invoke-RestMethod2 -method Get -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -headers $header
+
+    if ($simplified) {
+        $result | ? { $_.properties.provisioningState -eq 'Succeeded' } | select @{n = 'Name'; e = { $_.Name } }, @{n = 'Version'; e = { $version = $_.properties.version; if ($version -eq 'Unknown') { $null } else { $version } } }
+    } else {
+        $result
+    }
 }
 
 function Get-AzureAutomationRuntimeSelectedDefaultModule {
@@ -1020,7 +1135,16 @@ function Get-AzureAutomationRuntimeSelectedDefaultModule {
     }
     #endregion get missing arguments
 
-    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages
+    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | % {
+        $module = $_
+        $moduleName = $_ | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
+        $moduleVersion = $module.$moduleName
+
+        [PSCustomObject]@{
+            Name    = $moduleName
+            Version = $moduleVersion
+        }
+    }
 }
 
 function Get-AzureResource {
@@ -1230,122 +1354,6 @@ function Import-VariableFromStorage {
 
     # remove temp file
     $null = Remove-Item $cliXmlFile -Force
-}
-
-function Invoke-AzureAutomationRunbookTestJob {
-    <#
-    .SYNOPSIS
-    Invoke test run of the selected Runbook using selected Runtime.
-
-    .DESCRIPTION
-    Invoke test run of the selected Runbook using selected Runtime.
-
-    Runtime will be used only for test run, no permanent change to the Runbook will be made.
-
-    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
-
-    .PARAMETER runbookName
-    Runbook name you want to run.
-
-    .PARAMETER runtimeName
-    Runtime name you want to use for a test run.
-
-    .PARAMETER resourceGroupName
-    Resource group name.
-
-    .PARAMETER automationAccountName
-    Automation account name.
-
-    .PARAMETER header
-    Authentication header that can be created via New-AzureAutomationGraphToken.
-
-    .EXAMPLE
-    Connect-AzAccount
-
-    Set-AzContext -Subscription "IT_Testing"
-
-    Invoke-AzureAutomationRunbookTestJob
-
-    Invoke test run of the selected Runbook using selected Runtime.
-
-    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
-
-    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
-    #>
-
-    [CmdletBinding()]
-    param (
-        [string] $runbookName,
-
-        [string] $runtimeName,
-
-        [string] $resourceGroupName,
-
-        [string] $automationAccountName,
-
-        [hashtable] $header
-    )
-
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
-        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
-    }
-
-    #region get missing arguments
-    if (!$header) {
-        $header = New-AzureAutomationGraphToken
-    }
-
-    $subscriptionId = (Get-AzContext).Subscription.Id
-
-    while (!$resourceGroupName) {
-        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
-    }
-
-    while (!$automationAccountName) {
-        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
-    }
-
-    while (!$runbookName) {
-        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to start"
-    }
-
-    #region get runbook language
-    $runbook = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName -Name $runbookName -ErrorAction Stop
-
-    $runbookType = $runbook.RunbookType
-    if ($runbookType -eq 'python2') {
-        $programmingLanguage = 'Python'
-    } else {
-        $programmingLanguage = $runbookType
-    }
-    #endregion get runbook language
-
-    $currentRuntimeName = Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $runbookName -header $header -ErrorAction Stop
-
-    while (!$runtimeName) {
-        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage $programmingLanguage -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to test (currently used '$currentRuntimeName')"
-    }
-    #endregion get missing arguments
-
-    #region send web request
-    $body = @{
-        properties = @{
-            "runtimeEnvironment" = $runtimeName
-            "runOn"              = ""
-            "parameters"         = @{}
-        }
-    }
-
-    $body = $body | ConvertTo-Json
-
-    Write-Verbose $body
-
-    Write-Verbose "Invoking Runbook '$runbookName' test run using Runtime '$runtimeName'"
-
-    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2023-05-15-preview" -headers $header -body $body
-    #endregion send web request
-
-    Write-Verbose "To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus."
 }
 
 function New-AzureAutomationGraphToken {
@@ -2063,6 +2071,13 @@ function New-AzureAutomationRuntimeModule {
         }
     }
 
+    .PARAMETER dontWait
+    Switch for not waiting on module import to finish.
+    Will be ignored if:
+     - importing found module dependency (otherwise the "main" module import would fail)
+     - function detects that requested module is currently being imported (I expect it to be some explicitly imported dependency)
+    Beware that in case you explicitly import module A in version X.X.X and than some other module that depends on module A, but requires version Y.Y.Y, version X.X.X will be still imported. Because during the import process, you cannot tell which version is being imported a.k.a. you cannot check&fix it.
+
     .EXAMPLE
     Connect-AzAccount
 
@@ -2085,6 +2100,17 @@ function New-AzureAutomationRuntimeModule {
 
     Add module CommonStuff 1.0.18 to specified Automation runtime.
     If module exists, it will be replaced by selected version, if it is not, it will be added.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    New-AzureAutomationRuntimeModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff -moduleVersion 1.0.18 -dontWait
+
+    Add module CommonStuff 1.0.18 to specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+    Function will not wait for import of the module to finish!
     #>
 
     [CmdletBinding()]
@@ -2114,7 +2140,9 @@ function New-AzureAutomationRuntimeModule {
             "PnP.PowerShell" = @{
                 "5.1" = "1.12.0"
             }
-        }
+        },
+
+        [switch] $dontWait
     )
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
@@ -2317,6 +2345,7 @@ function New-AzureAutomationRuntimeModule {
     # check whether required module is present
     # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
     $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
+
     if ($moduleExists) {
         $moduleExistsVersion = $moduleExists.Properties.Version
         if ($moduleVersion -and $moduleVersion -ne $moduleExistsVersion) {
@@ -2331,135 +2360,308 @@ function New-AzureAutomationRuntimeModule {
         }
     }
 
-    _write " - Getting module $moduleName dependencies"
-    $moduleDependency = $moduleGalleryInfo.Dependencies | Sort-Object { $_.name }
+    $moduleIsBeingImported = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.Properties.ProvisioningState -eq "Creating") }
 
-    # dependency must be installed first
-    if ($moduleDependency) {
-        #TODO znacit si jake moduly jsou required (at uz tam jsou nebo musim doinstalovat) a kontrolovat, ze jeden neni required s ruznymi verzemi == konflikt protoze nainstalovana muze byt jen jedna
-        _write "  - Depends on: $($moduleDependency.Name -join ', ')"
-        foreach ($module in $moduleDependency) {
-            $requiredModuleName = $module.Name
-            $requiredModuleMinVersion = $module.MinimumVersion -replace "\[|]" # for some reason version can be like '[2.0.0-preview6]'
-            $requiredModuleMaxVersion = $module.MaximumVersion -replace "\[|]"
-            $requiredModuleReqVersion = $module.RequiredVersion -replace "\[|]"
-            $notInCorrectVersion = $false
+    if ($moduleIsBeingImported) {
+        # I expect this to be dependency explicitly imported with dontWait switch
+        # therefore I wait for it to finish and at the same time I expect it to has the correct version
+        _write " - Module $moduleName is being imported already. Wait for it to finish"
+    } else {
+        # module doesn't exist or has incorrect version a.k.a. it has to be imported
 
-            _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
+        _write " - Getting module $moduleName dependencies"
+        $moduleDependency = $moduleGalleryInfo.Dependencies | Sort-Object { $_.name }
 
-            # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
-            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
-            $existingRequiredModuleVersion = $existingRequiredModule.Properties.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
+        # dependency must be installed first
+        if ($moduleDependency) {
+            #TODO znacit si jake moduly jsou required (at uz tam jsou nebo musim doinstalovat) a kontrolovat, ze jeden neni required s ruznymi verzemi == konflikt protoze nainstalovana muze byt jen jedna
+            _write "  - Depends on: $($moduleDependency.Name -join ', ')"
+            foreach ($module in $moduleDependency) {
+                $requiredModuleName = $module.Name
+                $requiredModuleMinVersion = $module.MinimumVersion -replace "\[|]" # for some reason version can be like '[2.0.0-preview6]'
+                $requiredModuleMaxVersion = $module.MaximumVersion -replace "\[|]"
+                $requiredModuleReqVersion = $module.RequiredVersion -replace "\[|]"
+                $notInCorrectVersion = $false
 
-            # check that existing module version fits
-            if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
-                #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
-                if ($requiredModuleReqVersion -and (Compare-VersionString $requiredModuleReqVersion $existingRequiredModuleVersion "notEqual")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ((Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan") -or (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan"))) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMaxVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
+
+                # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
+                $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
+                $existingRequiredModuleVersion = $existingRequiredModule.Properties.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
+
+                # check that existing module version fits
+                if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
+                    #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
+                    if ($requiredModuleReqVersion -and (Compare-VersionString $requiredModuleReqVersion $existingRequiredModuleVersion "notEqual")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ((Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan") -or (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan"))) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMinVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMaxVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    }
+                }
+
+                if (!$existingRequiredModule -or $notInCorrectVersion) {
+                    if (!$existingRequiredModule) {
+                        _write "     - module is missing" "Yellow"
+                    }
+
+                    if ($notInCorrectVersion) {
+                        #TODO kontrola, ze jina verze modulu nerozbije zavislost nejakeho jineho existujiciho modulu
+                    }
+
+                    #region install required module first
+                    $param = @{
+                        moduleName            = $requiredModuleName
+                        resourceGroupName     = $resourceGroupName
+                        automationAccountName = $automationAccountName
+                        runtimeName           = $runtimeName
+                        indent                = $indent + 1
+                    }
+                    if ($requiredModuleMinVersion) {
+                        $param.moduleVersion = $requiredModuleMinVersion
+                        $param.moduleVersionType = 'MinimumVersion'
+                    }
+                    if ($requiredModuleMaxVersion) {
+                        $param.moduleVersion = $requiredModuleMaxVersion
+                        $param.moduleVersionType = 'MaximumVersion'
+                    }
+                    if ($requiredModuleReqVersion) {
+                        $param.moduleVersion = $requiredModuleReqVersion
+                        $param.moduleVersionType = 'RequiredVersion'
+                    }
+
+                    New-AzureAutomationRuntimeModule @param
+                    #endregion install required module first
+                } else {
+                    if ($existingRequiredModuleVersion) {
+                        _write "     - module (ver. $existingRequiredModuleVersion) is already present"
+                    } else {
+                        _write "     - module is already present"
+                    }
                 }
             }
+        } else {
+            _write "  - No dependency found"
+        }
 
-            if (!$existingRequiredModule -or $notInCorrectVersion) {
-                if (!$existingRequiredModule) {
-                    _write "     - module is missing" "Yellow"
-                }
+        _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
+        $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
 
-                if ($notInCorrectVersion) {
-                    #TODO kontrola, ze jina verze modulu nerozbije zavislost nejakeho jineho existujiciho modulu
-                }
+        $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
+        if ($pkgStatus.StatusCode -ne 200) {
+            # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
+            Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+            return
+        }
 
-                #region install required module first
-                $param = @{
-                    moduleName            = $requiredModuleName
-                    resourceGroupName     = $resourceGroupName
-                    automationAccountName = $automationAccountName
-                    runtimeName           = $runtimeName
-                    indent                = $indent + 1
+        #region send web request
+        $body = @{
+            "properties" = @{
+                "contentLink" = @{
+                    "uri" = $modulePkgUri
                 }
-                if ($requiredModuleMinVersion) {
-                    $param.moduleVersion = $requiredModuleMinVersion
-                    $param.moduleVersionType = 'MinimumVersion'
-                }
-                if ($requiredModuleMaxVersion) {
-                    $param.moduleVersion = $requiredModuleMaxVersion
-                    $param.moduleVersionType = 'MaximumVersion'
-                }
-                if ($requiredModuleReqVersion) {
-                    $param.moduleVersion = $requiredModuleReqVersion
-                    $param.moduleVersionType = 'RequiredVersion'
-                }
-
-                New-AzureAutomationRuntimeModule @param
-                #endregion install required module first
-            } else {
-                if ($existingRequiredModuleVersion) {
-                    _write "     - module (ver. $existingRequiredModuleVersion) is already present"
-                } else {
-                    _write "     - module is already present"
-                }
+                "version"     = $moduleVersion
             }
         }
-    } else {
-        _write "  - No dependency found"
+
+        $body = $body | ConvertTo-Json
+
+        Write-Verbose $body
+
+        $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+        #endregion send web request
     }
 
-    _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
-    $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
+    #region output dots while waiting on import to finish
+    $importingDependency = $false
+    if ((Get-PSCallStack)[1].Command -eq $MyInvocation.MyCommand) {
+        # recursive New-AzureAutomationRuntimeModule invocation
+        Write-Verbose "$($MyInvocation.MyCommand) was called by itself a.k.a dependency module is being imported a.k.a. if I skip it, dependant module will fail on import"
+        $importingDependency = $true
+    }
 
-    $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
-    if ($pkgStatus.StatusCode -ne 200) {
-        # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
-        Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+    if ($dontWait -and !$moduleIsBeingImported -and !$importingDependency) {
+        _write " - Don't wait for the upload to finish" "Yellow"
         return
+    } else {
+        $i = 0
+        _write "    ." -noNewLine
+        do {
+            Start-Sleep 5
+
+            if ($i % 3 -eq 0) {
+                _write "." -noNewLine -noIndent
+            }
+
+            ++$i
+        } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header -ErrorAction Stop | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
+
+        ""
+    }
+    #endregion output dots while waiting on import to finish
+
+    # output import result
+    if ($requiredModule.Properties.ProvisioningState -ne "Succeeded") {
+        Write-Error "Import failed. Check Azure Portal >> Automation Account >> Runtime Environments >> $runtimeName >> $moduleName details to get the reason."
+    } else {
+        _write " - Success" "Green"
+    }
+}
+
+function New-AzureAutomationRuntimeZIPModule {
+    <#
+    .SYNOPSIS
+    Function imports given archived PowerShell module (as a ZIP file) to the given Automation Runtime Environment.
+
+    .DESCRIPTION
+    Function imports given archived PowerShell module (as a ZIP file) to the given Automation Runtime Environment.
+
+    .PARAMETER runtimeName
+    Name of the runtime environment you want to retrieve.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER moduleZIPPath
+    Path to the ZIP file containing archived module folder.
+
+    Name of the ZIP will be used as name of the imported module!
+
+    If the module folder contains psd1 manifest file, specified version will be set automatically as a module version in Runtime modules list. Otherwise the version will be 'unknown'.
+
+    .PARAMETER dontWait
+    Switch for not waiting on module import to finish.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    New-AzureAutomationRuntimeZIPModule -moduleZIPPath "C:\DATA\helperFunctions.zip"
+
+    Imports module 'helperFunctions' to the specified Automation runtime.
+
+    If module exists, it will be replaced, if it is not, it will be added.
+
+    If module contains psd1 manifest file with specified version, such version will be set as module version in the Runtime module list. Otherwise the version will be 'unknown'.
+
+    Missing function arguments like $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Set-AzureAutomationRuntimeZIPModule")]
+    param (
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $moduleZIPPath,
+
+        [switch] $dontWait
+    )
+
+    $ErrorActionPreference = "Stop"
+    $InformationPreference = "Continue"
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    #region send web request
+    #region get missing arguments
+    $moduleName = (Split-Path $moduleZIPPath -Leaf) -replace "\.zip$"
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    # create auth token
+    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
+    if ($accessToken.Token) {
+        $header = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer {0}" -f $accessToken.Token
+        }
+    }
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage PowerShell -runtimeSource Custom -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to process"
+    }
+    #endregion get missing arguments
+
+    #region get upload URL
+    Write-Verbose "Getting upload URL"
+    $uploadUrl = Invoke-RestMethod -Method GET "https://s2.automation.ext.azure.com/api/Orchestrator/GenerateSasLinkUri?accountId=/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName&assetType=Module" -Headers $header
+    Write-Verbose $uploadUrl
+    #endregion get upload URL
+
+    #region upload module (ZIP) using upload URL
+    $uploadHeader = @{
+        'X-Ms-Blob-Type'                = "BlockBlob"
+        'X-Ms-Blob-Content-Disposition' = "filename=`"$(Split-Path $moduleZIPPath -Leaf)`""
+        'X-Ms-Blob-Content-Type'        = 'application/x-gzip'
+    }
+
+    Write-Information "Uploading ZIP file"
+    Invoke-RestMethod -Method PUT $uploadUrl -InFile $moduleZIPPath -Headers $uploadHeader
+    #endregion upload module (ZIP) using upload URL
+
+    #region importing uploaded module to the runtime
     $body = @{
         "properties" = @{
             "contentLink" = @{
-                "uri" = $modulePkgUri
+                "uri" = $uploadUrl
             }
-            "version"     = $moduleVersion
+            "version"     = "" # ignored when uploading a ZIP
         }
     }
-
     $body = $body | ConvertTo-Json
 
-    Write-Verbose $body
-
-    $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
-    #endregion send web request
+    Write-Information "Importing uploaded module (ZIP) to the Runtime"
+    Invoke-RestMethod -Method PUT "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -Body $body -Headers $header
+    #endregion importing uploaded module to the runtime
 
     #region output dots while waiting on import to finish
-    $i = 0
-    _write "    ." -noNewLine
-    do {
-        Start-Sleep 5
+    if ($dontWait) {
+        Write-Information "Skipping waiting on the ZIP file import to finish"
+        return
+    } else {
+        $i = 0
+        Write-Verbose "."
+        do {
+            Start-Sleep 5
 
-        if ($i % 3 -eq 0) {
-            _write "." -noNewLine -noIndent
-        }
+            if ($i % 3 -eq 0) {
+                Write-Verbose "."
+            }
 
-        ++$i
-    } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header -ErrorAction Stop | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
-
-    ""
+            ++$i
+        } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
+    }
     #endregion output dots while waiting on import to finish
 
     if ($requiredModule.Properties.ProvisioningState -ne "Succeeded") {
         Write-Error "Import failed. Check Azure Portal >> Automation Account >> Runtime Environments >> $runtimeName >> $moduleName details to get the reason."
     } else {
-        _write " - Success" "Green"
+        Write-Information "DONE"
     }
 }
 
@@ -2720,6 +2922,97 @@ function Set-AutomationVariable2 {
     }
 }
 
+function Set-AzureAutomationRunbookContent {
+    <#
+    .SYNOPSIS
+    Function sets Automation Runbook code content.
+
+    .DESCRIPTION
+    Function sets Automation Runbook code content.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER runbookName
+    Runbook name.
+
+    .PARAMETER content
+    String that should be set as a new runbook code.
+
+    .PARAMETER publish
+    Switch to publish the newly set content.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    $content = @'
+        Get-process notepad
+        restart-service spooler
+    '@
+
+    Set-AzureAutomationRunbookContent -runbookName someRunbook -ResourceGroupName Automations -AutomationAccountName someAutomationAccount -content $content
+
+    Sets given code as the new runbook content.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [string] $runbookName,
+
+        [Parameter(Mandatory = $true)]
+        [string] $content,
+
+        [switch] $publish,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    #region get missing arguments
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    # create auth token
+    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
+    if ($accessToken.Token) {
+        $header = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer {0}" -f $accessToken.Token
+        }
+    }
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to process"
+    }
+    #endregion get missing arguments
+
+    Write-Verbose "Setting new runbook code content"
+    Invoke-RestMethod2 "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/content?api-version=2015-10-31" -method PUT -headers $header -body $content
+
+    if ($publish) {
+        Write-Verbose "Publishing"
+        $null = Publish-AzAutomationRunbook -Name $runbookName -ResourceGroupName $resourceGroupName -AutomationAccountName $automationAccountName
+    }
+}
+
 function Set-AzureAutomationRunbookRuntime {
     <#
     .SYNOPSIS
@@ -2972,7 +3265,7 @@ function Set-AzureAutomationRuntimeDefaultModule {
         $defaultModuleName = $_.Key
         $defaultModuleVersion = $_.Value
 
-        $currentDefaultModuleVersion = $currentDefaultModule.$defaultModuleName
+        $currentDefaultModuleVersion = $currentDefaultModule | ? Name -EQ $defaultModuleName | select -ExpandProperty Version
 
         if ($defaultModuleVersion -eq $currentDefaultModuleVersion) {
             Write-Warning "Module '$defaultModuleName' already has version $defaultModuleVersion"
@@ -3132,6 +3425,254 @@ function Set-AzureAutomationRuntimeDescription {
 
     Invoke-RestMethod2 -method Patch -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName`?api-version=2023-05-15-preview" -body $body -headers $header
     #endregion send web request
+}
+
+function Start-AzureAutomationRunbookTestJob {
+    <#
+    .SYNOPSIS
+    Start selected Runbook test job using selected Runtime.
+
+    .DESCRIPTION
+    Start selected Runbook test job using selected Runtime.
+
+    Runtime will be used only for this test job, no permanent change to the Runbook will be made.
+
+    To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+
+    .PARAMETER runbookName
+    Runbook name you want to run.
+
+    .PARAMETER runtimeName
+    Runtime name you want to use for a test job.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER wait
+    Switch for waiting the Runbook test job to end and returning the job status.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Start-AzureAutomationRunbookTestJob
+
+    Start selected Runbook test job using selected Runtime.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+
+    To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+    #>
+
+    [CmdletBinding()]
+    [Alias("Invoke-AzureAutomationRunbookTestJob")]
+    param (
+        [string] $runbookName,
+
+        [string] $runtimeName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [switch] $wait,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    $InformationPreference = 'continue'
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to start"
+    }
+
+    #region get runbook language
+    $runbook = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName -Name $runbookName -ErrorAction Stop
+
+    $runbookType = $runbook.RunbookType
+    if ($runbookType -eq 'python2') {
+        $programmingLanguage = 'Python'
+    } else {
+        $programmingLanguage = $runbookType
+    }
+    #endregion get runbook language
+
+    $currentRuntimeName = Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $runbookName -header $header -ErrorAction Stop
+
+    while (!$runtimeName) {
+        $runtimeName = Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -programmingLanguage $programmingLanguage -header $header | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select environment you want to test (currently used '$currentRuntimeName')"
+    }
+    #endregion get missing arguments
+
+    #region send web request
+    $body = @{
+        properties = @{
+            "runtimeEnvironment" = $runtimeName
+            "runOn"              = ""
+            "parameters"         = @{}
+        }
+    }
+
+    $body = $body | ConvertTo-Json
+
+    Write-Verbose $body
+
+    Write-Information "Starting Runbook '$runbookName' test job using Runtime '$runtimeName'"
+
+    try {
+        $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2023-05-15-preview" -headers $header -body $body -ErrorAction Stop
+    } catch {
+        if ($_.ErrorDetails.Message -like "*Test job is already running.*") {
+            throw "Test job is currently running. Unable to start a new one."
+        } else {
+            throw $_
+        }
+    }
+    #endregion send web request
+
+    Write-Verbose "To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus."
+
+    if ($wait) {
+        Write-Information "Waiting for the Runbook '$runbookName' to finish"
+        Write-Information "Job status:"
+
+        $processedStatus = @()
+
+        do {
+            $testRunStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
+
+            if ($testRunStatus.Status -notin $processedStatus) {
+                $processedStatus += $testRunStatus.Status
+                Write-Information "`t$($testRunStatus.Status)"
+            }
+
+            Start-Sleep 2
+        } while ($testRunStatus.Status -notin "Stopped", "Completed", "Failed")
+
+        $testRunStatus
+    }
+}
+
+function Stop-AzureAutomationRunbookTestJob {
+    <#
+    .SYNOPSIS
+    Invoke test run of the selected Runbook using selected Runtime.
+
+    .DESCRIPTION
+    Invoke test run of the selected Runbook using selected Runtime.
+
+    Runtime will be used only for test run, no permanent change to the Runbook will be made.
+
+    .PARAMETER runbookName
+    Runbook name you want to run.
+
+    .PARAMETER resourceGroupName
+    Resource group name.
+
+    .PARAMETER automationAccountName
+    Automation account name.
+
+    .PARAMETER header
+    Authentication header that can be created via New-AzureAutomationGraphToken.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    Stop-AzureAutomationRunbookTestJob
+
+    Stop test run of the selected Runbook.
+
+    Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [string] $runbookName,
+
+        [string] $resourceGroupName,
+
+        [string] $automationAccountName,
+
+        [switch] $wait,
+
+        [hashtable] $header
+    )
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    $InformationPreference = 'continue'
+
+    #region get missing arguments
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
+    }
+
+    $subscriptionId = (Get-AzContext).Subscription.Id
+
+    while (!$resourceGroupName) {
+        $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
+    }
+
+    while (!$automationAccountName) {
+        $automationAccountName = Get-AzAutomationAccount -ResourceGroupName $resourceGroupName | select -ExpandProperty AutomationAccountName | Out-GridView -OutputMode Single -Title "Select automation account you want to process"
+    }
+
+    while (!$runbookName) {
+        $runbookName = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | select -ExpandProperty Name | Out-GridView -OutputMode Single -Title "Select runbook you want to stop"
+    }
+    #endregion get missing arguments
+
+    $testRunStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
+
+    if ($testRunStatus.Status -in "Stopped", "Completed", "Failed") {
+        Write-Warning "Runbook '$runbookName' test job isn't running"
+        return
+    }
+
+    Write-Information "Stopping Runbook '$runbookName' test job"
+
+    Invoke-RestMethod2 -method Post -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob/stop?api-version=2019-06-01" -headers $header
+
+    if ($wait) {
+        Write-Information -MessageData "Waiting for the Runbook '$runbookName' test job to stop"
+
+        do {
+            $testRunStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
+            Start-Sleep 5
+        } while ($testRunStatus.Status -ne "Stopped")
+
+        Write-Information -MessageData "Runbook '$runbookName' test job was stopped"
+    }
 }
 
 function Update-AzureAutomationModule {
@@ -3473,6 +4014,6 @@ function Update-AzureAutomationRunbookModule {
     }
 }
 
-Export-ModuleMember -function Copy-AzureAutomationRuntime, Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRunbookTestJobOutput, Get-AzureAutomationRunbookTestJobStatus, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, Invoke-AzureAutomationRunbookTestJob, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Update-AzureAutomationModule, Update-AzureAutomationRunbookModule
+Export-ModuleMember -function Copy-AzureAutomationRuntime, Export-VariableToStorage, Get-AutomationVariable2, Get-AzureAutomationRunbookContent, Get-AzureAutomationRunbookRuntime, Get-AzureAutomationRunbookTestJobOutput, Get-AzureAutomationRunbookTestJobStatus, Get-AzureAutomationRuntime, Get-AzureAutomationRuntimeAvailableDefaultModule, Get-AzureAutomationRuntimeCustomModule, Get-AzureAutomationRuntimeSelectedDefaultModule, Get-AzureResource, Import-VariableFromStorage, New-AzureAutomationGraphToken, New-AzureAutomationModule, New-AzureAutomationRuntime, New-AzureAutomationRuntimeModule, New-AzureAutomationRuntimeZIPModule, Remove-AzureAutomationRuntime, Remove-AzureAutomationRuntimeModule, Set-AutomationVariable2, Set-AzureAutomationRunbookContent, Set-AzureAutomationRunbookRuntime, Set-AzureAutomationRuntimeDefaultModule, Set-AzureAutomationRuntimeDescription, Start-AzureAutomationRunbookTestJob, Stop-AzureAutomationRunbookTestJob, Update-AzureAutomationModule, Update-AzureAutomationRunbookModule
 
-Export-ModuleMember -alias Get-AzureAutomationRuntimeAzModule, New-AzAutomationModule2, Set-AzureAutomationModule, Set-AzureAutomationRuntimeModule
+Export-ModuleMember -alias Get-AzureAutomationRuntimeAzModule, Invoke-AzureAutomationRunbookTestJob, New-AzAutomationModule2, Set-AzureAutomationModule, Set-AzureAutomationRuntimeModule, Set-AzureAutomationRuntimeZIPModule

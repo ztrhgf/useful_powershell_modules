@@ -1,26 +1,29 @@
-﻿function Invoke-AzureAutomationRunbookTestJob {
+﻿function Start-AzureAutomationRunbookTestJob {
     <#
     .SYNOPSIS
-    Invoke test run of the selected Runbook using selected Runtime.
+    Start selected Runbook test job using selected Runtime.
 
     .DESCRIPTION
-    Invoke test run of the selected Runbook using selected Runtime.
+    Start selected Runbook test job using selected Runtime.
 
-    Runtime will be used only for test run, no permanent change to the Runbook will be made.
+    Runtime will be used only for this test job, no permanent change to the Runbook will be made.
 
-    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+    To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
 
     .PARAMETER runbookName
     Runbook name you want to run.
 
     .PARAMETER runtimeName
-    Runtime name you want to use for a test run.
+    Runtime name you want to use for a test job.
 
     .PARAMETER resourceGroupName
     Resource group name.
 
     .PARAMETER automationAccountName
     Automation account name.
+
+    .PARAMETER wait
+    Switch for waiting the Runbook test job to end and returning the job status.
 
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
@@ -30,16 +33,17 @@
 
     Set-AzContext -Subscription "IT_Testing"
 
-    Invoke-AzureAutomationRunbookTestJob
+    Start-AzureAutomationRunbookTestJob
 
-    Invoke test run of the selected Runbook using selected Runtime.
+    Start selected Runbook test job using selected Runtime.
 
     Missing function arguments like $runbookName, $resourceGroupName or $automationAccountName will be interactively gathered through Out-GridView GUI.
 
-    To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
+    To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus.
     #>
 
     [CmdletBinding()]
+    [Alias("Invoke-AzureAutomationRunbookTestJob")]
     param (
         [string] $runbookName,
 
@@ -49,12 +53,16 @@
 
         [string] $automationAccountName,
 
+        [switch] $wait,
+
         [hashtable] $header
     )
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
+
+    $InformationPreference = 'continue'
 
     #region get missing arguments
     if (!$header) {
@@ -106,10 +114,38 @@
 
     Write-Verbose $body
 
-    Write-Verbose "Invoking Runbook '$runbookName' test run using Runtime '$runtimeName'"
+    Write-Information "Starting Runbook '$runbookName' test job using Runtime '$runtimeName'"
 
-    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2023-05-15-preview" -headers $header -body $body
+    try {
+        $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runbooks/$runbookName/draft/testJob?api-version=2023-05-15-preview" -headers $header -body $body -ErrorAction Stop
+    } catch {
+        if ($_.ErrorDetails.Message -like "*Test job is already running.*") {
+            throw "Test job is currently running. Unable to start a new one."
+        } else {
+            throw $_
+        }
+    }
     #endregion send web request
 
-    Write-Verbose "To get the test run results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus."
+    Write-Verbose "To get the test job results use Get-AzureAutomationRunbookTestJobOutput, to get overall status use Get-AzureAutomationRunbookTestJobStatus."
+
+    if ($wait) {
+        Write-Information "Waiting for the Runbook '$runbookName' to finish"
+        Write-Information "Job status:"
+
+        $processedStatus = @()
+
+        do {
+            $testRunStatus = Get-AzureAutomationRunbookTestJobStatus -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runbookName $runbookName -header $header
+
+            if ($testRunStatus.Status -notin $processedStatus) {
+                $processedStatus += $testRunStatus.Status
+                Write-Information "`t$($testRunStatus.Status)"
+            }
+
+            Start-Sleep 2
+        } while ($testRunStatus.Status -notin "Stopped", "Completed", "Failed")
+
+        $testRunStatus
+    }
 }

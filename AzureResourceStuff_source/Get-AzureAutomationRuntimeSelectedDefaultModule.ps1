@@ -76,5 +76,14 @@
     }
     #endregion get missing arguments
 
-    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages
+    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | % {
+        $module = $_
+        $moduleName = $_ | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
+        $moduleVersion = $module.$moduleName
+
+        [PSCustomObject]@{
+            Name    = $moduleName
+            Version = $moduleVersion
+        }
+    }
 }

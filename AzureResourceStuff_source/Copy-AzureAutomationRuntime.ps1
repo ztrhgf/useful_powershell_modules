@@ -135,9 +135,8 @@
         # transform $defaultPackageObj to hashtable
         $defaultPackage = @{}
 
-        $moduleNameList = $defaultPackageObj | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
-        $moduleNameList | % {
-            $defaultPackage.$_ = $defaultPackageObj.$_
+        $defaultPackageObj | % {
+            $defaultPackage.($_.Name) = $_.Version
         }
     } else {
         # no default modules needed

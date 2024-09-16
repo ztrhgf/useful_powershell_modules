@@ -1,5 +1,4 @@
-﻿# TODO upload WHL souboru pro PYTHON a zip pro PSH
-function New-AzureAutomationRuntimeModule {
+﻿function New-AzureAutomationRuntimeModule {
     <#
     .SYNOPSIS
     Function add/replace selected module in specified Azure Automation runtime by importing it from the PowerShell Gallery.
@@ -53,6 +52,13 @@ function New-AzureAutomationRuntimeModule {
         }
     }
 
+    .PARAMETER dontWait
+    Switch for not waiting on module import to finish.
+    Will be ignored if:
+     - importing found module dependency (otherwise the "main" module import would fail)
+     - function detects that requested module is currently being imported (I expect it to be some explicitly imported dependency)
+    Beware that in case you explicitly import module A in version X.X.X and than some other module that depends on module A, but requires version Y.Y.Y, version X.X.X will be still imported. Because during the import process, you cannot tell which version is being imported a.k.a. you cannot check&fix it.
+
     .EXAMPLE
     Connect-AzAccount
 
@@ -75,6 +81,17 @@ function New-AzureAutomationRuntimeModule {
 
     Add module CommonStuff 1.0.18 to specified Automation runtime.
     If module exists, it will be replaced by selected version, if it is not, it will be added.
+
+    .EXAMPLE
+    Connect-AzAccount
+
+    Set-AzContext -Subscription "IT_Testing"
+
+    New-AzureAutomationRuntimeModule -resourceGroupName "AdvancedLoggingRG" -automationAccountName "EnableO365AdvancedLogging" -runtimeName Custom_PSH_51 -moduleName CommonStuff -moduleVersion 1.0.18 -dontWait
+
+    Add module CommonStuff 1.0.18 to specified Automation runtime.
+    If module exists, it will be replaced by selected version, if it is not, it will be added.
+    Function will not wait for import of the module to finish!
     #>
 
     [CmdletBinding()]
@@ -104,7 +121,9 @@ function New-AzureAutomationRuntimeModule {
             "PnP.PowerShell" = @{
                 "5.1" = "1.12.0"
             }
-        }
+        },
+
+        [switch] $dontWait
     )
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
@@ -307,6 +326,7 @@ function New-AzureAutomationRuntimeModule {
     # check whether required module is present
     # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
     $moduleExists = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
+
     if ($moduleExists) {
         $moduleExistsVersion = $moduleExists.Properties.Version
         if ($moduleVersion -and $moduleVersion -ne $moduleExistsVersion) {
@@ -321,131 +341,154 @@ function New-AzureAutomationRuntimeModule {
         }
     }
 
-    _write " - Getting module $moduleName dependencies"
-    $moduleDependency = $moduleGalleryInfo.Dependencies | Sort-Object { $_.name }
+    $moduleIsBeingImported = $currentAutomationModules | ? { $_.Name -eq $moduleName -and ($_.Properties.ProvisioningState -eq "Creating") }
 
-    # dependency must be installed first
-    if ($moduleDependency) {
-        #TODO znacit si jake moduly jsou required (at uz tam jsou nebo musim doinstalovat) a kontrolovat, ze jeden neni required s ruznymi verzemi == konflikt protoze nainstalovana muze byt jen jedna
-        _write "  - Depends on: $($moduleDependency.Name -join ', ')"
-        foreach ($module in $moduleDependency) {
-            $requiredModuleName = $module.Name
-            $requiredModuleMinVersion = $module.MinimumVersion -replace "\[|]" # for some reason version can be like '[2.0.0-preview6]'
-            $requiredModuleMaxVersion = $module.MaximumVersion -replace "\[|]"
-            $requiredModuleReqVersion = $module.RequiredVersion -replace "\[|]"
-            $notInCorrectVersion = $false
-
-            _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
-
-            # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
-            $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
-            $existingRequiredModuleVersion = $existingRequiredModule.Properties.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
-
-            # check that existing module version fits
-            if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
-                #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
-                if ($requiredModuleReqVersion -and (Compare-VersionString $requiredModuleReqVersion $existingRequiredModuleVersion "notEqual")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ((Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan") -or (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan"))) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMinVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
-                } elseif ($requiredModuleMaxVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan")) {
-                    $notInCorrectVersion = $true
-                    _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
-                }
-            }
-
-            if (!$existingRequiredModule -or $notInCorrectVersion) {
-                if (!$existingRequiredModule) {
-                    _write "     - module is missing" "Yellow"
-                }
-
-                if ($notInCorrectVersion) {
-                    #TODO kontrola, ze jina verze modulu nerozbije zavislost nejakeho jineho existujiciho modulu
-                }
-
-                #region install required module first
-                $param = @{
-                    moduleName            = $requiredModuleName
-                    resourceGroupName     = $resourceGroupName
-                    automationAccountName = $automationAccountName
-                    runtimeName           = $runtimeName
-                    indent                = $indent + 1
-                }
-                if ($requiredModuleMinVersion) {
-                    $param.moduleVersion = $requiredModuleMinVersion
-                    $param.moduleVersionType = 'MinimumVersion'
-                }
-                if ($requiredModuleMaxVersion) {
-                    $param.moduleVersion = $requiredModuleMaxVersion
-                    $param.moduleVersionType = 'MaximumVersion'
-                }
-                if ($requiredModuleReqVersion) {
-                    $param.moduleVersion = $requiredModuleReqVersion
-                    $param.moduleVersionType = 'RequiredVersion'
-                }
-
-                New-AzureAutomationRuntimeModule @param
-                #endregion install required module first
-            } else {
-                if ($existingRequiredModuleVersion) {
-                    _write "     - module (ver. $existingRequiredModuleVersion) is already present"
-                } else {
-                    _write "     - module is already present"
-                }
-            }
-        }
+    if ($moduleIsBeingImported) {
+        # I expect this to be dependency explicitly imported with dontWait switch
+        # therefore I wait for it to finish and at the same time I expect it to has the correct version
+        _write " - Module $moduleName is being imported already. Wait for it to finish"
     } else {
-        _write "  - No dependency found"
-    }
+        # module doesn't exist or has incorrect version a.k.a. it has to be imported
 
-    _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
-    $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
+        _write " - Getting module $moduleName dependencies"
+        $moduleDependency = $moduleGalleryInfo.Dependencies | Sort-Object { $_.name }
 
-    $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
-    if ($pkgStatus.StatusCode -ne 200) {
-        # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
-        Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
-        return
-    }
+        # dependency must be installed first
+        if ($moduleDependency) {
+            #TODO znacit si jake moduly jsou required (at uz tam jsou nebo musim doinstalovat) a kontrolovat, ze jeden neni required s ruznymi verzemi == konflikt protoze nainstalovana muze byt jen jedna
+            _write "  - Depends on: $($moduleDependency.Name -join ', ')"
+            foreach ($module in $moduleDependency) {
+                $requiredModuleName = $module.Name
+                $requiredModuleMinVersion = $module.MinimumVersion -replace "\[|]" # for some reason version can be like '[2.0.0-preview6]'
+                $requiredModuleMaxVersion = $module.MaximumVersion -replace "\[|]"
+                $requiredModuleReqVersion = $module.RequiredVersion -replace "\[|]"
+                $notInCorrectVersion = $false
 
-    #region send web request
-    $body = @{
-        "properties" = @{
-            "contentLink" = @{
-                "uri" = $modulePkgUri
+                _write "   - Checking module $requiredModuleName (minVer: $requiredModuleMinVersion maxVer: $requiredModuleMaxVersion reqVer: $requiredModuleReqVersion)"
+
+                # there can be module in Failed state, just because update of such module failed, but if it has SizeInBytes set, it means its in working state
+                $existingRequiredModule = $currentAutomationModules | ? { $_.Name -eq $requiredModuleName -and ($_.Properties.ProvisioningState -eq "Succeeded" -or $_.Properties.SizeInBytes) }
+                $existingRequiredModuleVersion = $existingRequiredModule.Properties.Version # version always looks like n.n.n. suffixes like rc, beta etc are always cut off!
+
+                # check that existing module version fits
+                if ($existingRequiredModule -and ($requiredModuleMinVersion -or $requiredModuleMaxVersion -or $requiredModuleReqVersion)) {
+                    #TODO pokud nahrazuji existujici modul, tak bych se mel podivat, jestli jsou vsechny ostatni ok s jeho novou verzi
+                    if ($requiredModuleReqVersion -and (Compare-VersionString $requiredModuleReqVersion $existingRequiredModuleVersion "notEqual")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleReqVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMinVersion -and $requiredModuleMaxVersion -and ((Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan") -or (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan"))) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be: $requiredModuleMinVersion .. $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMinVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMinVersion "lessThan")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be > $requiredModuleMinVersion). Will be replaced" "Yellow"
+                    } elseif ($requiredModuleMaxVersion -and (Compare-VersionString $existingRequiredModuleVersion $requiredModuleMaxVersion "greaterThan")) {
+                        $notInCorrectVersion = $true
+                        _write "     - module exists, but not in the correct version (has: $existingRequiredModuleVersion, should be < $requiredModuleMaxVersion). Will be replaced" "Yellow"
+                    }
+                }
+
+                if (!$existingRequiredModule -or $notInCorrectVersion) {
+                    if (!$existingRequiredModule) {
+                        _write "     - module is missing" "Yellow"
+                    }
+
+                    if ($notInCorrectVersion) {
+                        #TODO kontrola, ze jina verze modulu nerozbije zavislost nejakeho jineho existujiciho modulu
+                    }
+
+                    #region install required module first
+                    $param = @{
+                        moduleName            = $requiredModuleName
+                        resourceGroupName     = $resourceGroupName
+                        automationAccountName = $automationAccountName
+                        runtimeName           = $runtimeName
+                        indent                = $indent + 1
+                    }
+                    if ($requiredModuleMinVersion) {
+                        $param.moduleVersion = $requiredModuleMinVersion
+                        $param.moduleVersionType = 'MinimumVersion'
+                    }
+                    if ($requiredModuleMaxVersion) {
+                        $param.moduleVersion = $requiredModuleMaxVersion
+                        $param.moduleVersionType = 'MaximumVersion'
+                    }
+                    if ($requiredModuleReqVersion) {
+                        $param.moduleVersion = $requiredModuleReqVersion
+                        $param.moduleVersionType = 'RequiredVersion'
+                    }
+
+                    New-AzureAutomationRuntimeModule @param
+                    #endregion install required module first
+                } else {
+                    if ($existingRequiredModuleVersion) {
+                        _write "     - module (ver. $existingRequiredModuleVersion) is already present"
+                    } else {
+                        _write "     - module is already present"
+                    }
+                }
             }
-            "version"     = $moduleVersion
+        } else {
+            _write "  - No dependency found"
         }
+
+        _write " - Uploading module $moduleName ($moduleVersion)" "Yellow"
+        $modulePkgUri = "https://devopsgallerystorage.blob.core.windows.net/packages/$($moduleName.ToLower()).$moduleVersion.nupkg"
+
+        $pkgStatus = Invoke-WebRequest -Uri $modulePkgUri -SkipHttpErrorCheck
+        if ($pkgStatus.StatusCode -ne 200) {
+            # don't exit the invocation, module can have as dependency module that doesn't exist in PSH Gallery
+            Write-Error "Module $moduleName (version $moduleVersion) doesn't exist in PSGallery. Error was $($pkgStatus.StatusDescription)"
+            return
+        }
+
+        #region send web request
+        $body = @{
+            "properties" = @{
+                "contentLink" = @{
+                    "uri" = $modulePkgUri
+                }
+                "version"     = $moduleVersion
+            }
+        }
+
+        $body = $body | ConvertTo-Json
+
+        Write-Verbose $body
+
+        $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+        #endregion send web request
     }
-
-    $body = $body | ConvertTo-Json
-
-    Write-Verbose $body
-
-    $null = Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
-    #endregion send web request
 
     #region output dots while waiting on import to finish
-    $i = 0
-    _write "    ." -noNewLine
-    do {
-        Start-Sleep 5
+    $importingDependency = $false
+    if ((Get-PSCallStack)[1].Command -eq $MyInvocation.MyCommand) {
+        # recursive New-AzureAutomationRuntimeModule invocation
+        Write-Verbose "$($MyInvocation.MyCommand) was called by itself a.k.a dependency module is being imported a.k.a. if I skip it, dependant module will fail on import"
+        $importingDependency = $true
+    }
 
-        if ($i % 3 -eq 0) {
-            _write "." -noNewLine -noIndent
-        }
+    if ($dontWait -and !$moduleIsBeingImported -and !$importingDependency) {
+        _write " - Don't wait for the upload to finish" "Yellow"
+        return
+    } else {
+        $i = 0
+        _write "    ." -noNewLine
+        do {
+            Start-Sleep 5
 
-        ++$i
-    } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header -ErrorAction Stop | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
+            if ($i % 3 -eq 0) {
+                _write "." -noNewLine -noIndent
+            }
 
-    ""
+            ++$i
+        } while (!($requiredModule = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtimeName -moduleName $moduleName -header $header -ErrorAction Stop | ? { $_.Properties.ProvisioningState -in "Succeeded", "Failed" }))
+
+        ""
+    }
     #endregion output dots while waiting on import to finish
 
+    # output import result
     if ($requiredModule.Properties.ProvisioningState -ne "Succeeded") {
         Write-Error "Import failed. Check Azure Portal >> Automation Account >> Runtime Environments >> $runtimeName >> $moduleName details to get the reason."
     } else {

@@ -1,25 +1,17 @@
 ﻿function Get-CodeGraphPermissionRequirement {
     <#
     .SYNOPSIS
-    Function for getting Graph API permissions (scopes) that are needed tu run selected code.
+    Function for getting Graph API permissions (scopes) that are needed to run selected code.
 
     Official Graph SDK commands AND direct Graph API calls are both processed :)
 
     .DESCRIPTION
-    Function for getting Graph API permissions (scopes) that are needed tu run selected code.
+    Function for getting Graph API permissions (scopes) that are needed to run selected code.
 
     All official Graph SDK commands (*-Mg*) AND commands making direct Graph API calls (Invoke-MsGraphRequest, Invoke-RestMethod, Invoke-WebRequest and their aliases) are extracted using 'Get-CodeDependency' function (DependencySearch module).
     Permissions required to use these commands are retrieved using official 'Find-MgGraphCommand' command then.
 
-    By default not all permissions are returned! But some optimizations are made to make the output more user friendly and to prefer lesser permissive permissions. You can change that using 'dontFilterPermissions' switch.
-    - if it is READ command (GET)
-        - READWRITE permissions that have corresponding READ permission are ignored
-        - directory.* permissions are ignored if any other permission is in place
-    - if it is MODIFYING command (POST, PUT, PATCH, DELETE)
-        - READ permissions that have corresponding READWRITE permission are ignored
-        - directory.* permissions are ignored if any other permission is in place
-
-    Beware that to read some sensitive data (like encrypted OMA Settings), you really need ReadWrite permission (because of security reasons)! In such cases this default behavior will not make you happy.
+    By default not all found permissions are returned, but just filtered subset, to make the output more readable and support principle of least privilege. Check parameter 'dontFilterPermissions' help for more details.
 
     .PARAMETER scriptPath
     Path to ps1 script that should be analyzed.
@@ -27,9 +19,9 @@
     .PARAMETER permType
     What type of permissions you want to retrieve.
 
-    Possible values: application, delegated.
+    Possible values: Application, DelegatedWork, DelegatedPersonal.
 
-    By default 'application'.
+    By default 'Application'.
 
     .PARAMETER availableModules
     To speed up repeated function invocations, save all available modules into variable and use it as value for this parameter.
@@ -40,27 +32,39 @@
     Switch to check for dependencies not just in the given code, but even in its dependencies (recursively). A.k.a. get the whole dependency tree.
 
     .PARAMETER dontFilterPermissions
-    Switch to output all found permissions.
+    Switch to output all found permissions a.k.a. not to make any filtering.
 
-    Otherwise just some filtering is made to output the most probably needed permissions.
+    Otherwise just privileges marked as IsLeastPrivilege (if found) are returned or the ones guessed as the least ones (filtered by following internal logic).
+    - if it is READ command (GET)
+        - READWRITE permissions that have corresponding READ permission are ignored
+        - directory.* permissions are ignored if any other permission is in place
+    - if it is MODIFYING command (POST, PUT, PATCH, DELETE)
+        - READ permissions that have corresponding READWRITE permission are ignored
+        - directory.* permissions are ignored if any other permission is in place
+
+    Beware that to read some sensitive data (like encrypted OMA Settings), you really need ReadWrite permission (because of security reasons)! In such cases, you need to select the 'dontFilterPermissions' parameter.
 
     .EXAMPLE
     Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 | Out-GridView
 
-    Returns Graph permissions required by selected code.
-    In case there are some indirect dependencies (like there is a function that has some inner Graph calls in its code), they won't be returned!
+    Returns Graph permissions of 'Application' type required by selected script.
+    In case there are some indirect dependencies (like there is used some external function that has some inner Graph calls in its code), they won't be analyzed/returned!
     Result will be showed in Out-GridView graphical window.
 
     .EXAMPLE
     # cache available modules to speed up repeated 'Get-CodeGraphPermissionRequirement' function invocations
     $availableModules = @(Get-Module -ListAvailable)
 
-    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -goDeep -availableModules $availableModules | Out-GridView
+    Get-CodeGraphPermissionRequirement -scriptPath C:\scripts\someGraphRelatedCode.ps1 -goDeep -availableModules $availableModules -dontFilterPermissions | Out-GridView
 
-    Returns ALL Graph permissions required to run selected code (direct and indirect).
+    Returns ALL 'Application' type Graph permissions required to run selected code (direct and indirect).
 
     .NOTES
-    Requires module 'Microsoft.Graph.Authentication' because of 'Find-MgGraphCommand' command.
+    Requires module 'Microsoft.Graph.Authentication' (at least version 2.18.0), because of 'Find-MgGraphCommand' command.
+
+    Be noted that it is impossible to tell whether found permissions for some command are all required, or just some subset of them (for least-privileged access). Consult the Microsoft Graph Permissions Reference documentation to identify the least-privileged permission for your use case :(
+
+    Direct API calls made via parameter splatting aren't detected. Its in my TODO list.
     #>
 
     [CmdletBinding()]
@@ -76,8 +80,8 @@
             })]
         [string] $scriptPath,
 
-        [ValidateSet('application', 'delegated')]
-        [string[]] $permType = "application",
+        [ValidateSet('Application', 'DelegatedWork', 'DelegatedPersonal')]
+        [string] $permType = 'Application',
 
         [System.Collections.ArrayList] $availableModules = @(),
 
@@ -86,8 +90,12 @@
         [switch] $dontFilterPermissions
     )
 
-    if (!(Get-Command "Find-MgGraphCommand" -ErrorAction SilentlyContinue)) {
+    $commandData = Get-Command "Find-MgGraphCommand" -ErrorAction SilentlyContinue
+    if (!$commandData) {
         throw "'Find-MgGraphCommand' command is missing. Install 'Microsoft.Graph.Authentication' module and run again"
+    } elseif ($commandData.Version -lt "2.18.0") {
+        # older versions returns different data
+        throw "At least version '2.18.0' of the 'Microsoft.Graph.Authentication' module is required for 'Find-MgGraphCommand' command to work properly."
     }
 
     if (!(Get-Command "Get-CodeDependency" -ErrorAction SilentlyContinue)) {
@@ -154,7 +162,7 @@
                     if ($invocationText -like "Invoke-MgGraphRequest *" -or $invocationText -like "Invoke-MsGraphRequest *") {
                         # Invoke-MgGraphRequest and Invoke-MsGraphRequest commands for sure uses Graph Api, hence output empty object to highlight I was unable to extract it
                         Write-Warning "Unable to extract URI from '$invocationText'. Skipping."
-                        '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { $null } }, @{n = 'Method'; e = { $null } }, @{n = 'Error'; e = { "Unable to extract URI" } }
+                        '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { $null } }, @{n = 'Method'; e = { $null } }, @{n = 'IsAdmin'; e = { $null } }, @{n = 'ErrorMsg'; e = { "Unable to extract URI" } }
                     } else {
                         Write-Verbose "Unable to extract URI from '$invocationText' or it is not a Graph URI. Skipping."
                     }
@@ -199,7 +207,7 @@
                     }
                 } catch {
                     Write-Warning "'Find-MgGraphCommand' was unable to find permissions for URI: '$uri', Method: $method, ApiVersion: $apiVersion"
-                    '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { $apiVersion } }, @{n = 'Method'; e = { $method } }, @{n = 'Error'; e = { "'Find-MgGraphCommand' was unable to find permissions for given URI, Method and ApiVersion" } }
+                    '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { $apiVersion } }, @{n = 'Method'; e = { $method } }, @{n = 'IsAdmin'; e = { $null } }, @{n = 'ErrorMsg'; e = { "'Find-MgGraphCommand' was unable to find permissions for given URI, Method and ApiVersion" } }
                     continue
                 }
             } else {
@@ -218,26 +226,10 @@
 
             if ($mgCommandPerm) {
                 # some Graph permissions are required
-                if ("application" -eq $permType) {
-                    $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $true
-                } elseif ("delegated" -eq $permType) {
-                    $mgCommandPerm = $mgCommandPerm | ? IsAdmin -EQ $false
-                } else {
-                    # no change to found permissions needed, both type should be returned
-                }
+
+                $mgCommandPerm = $mgCommandPerm | ? PermissionType -EQ $permType
 
                 #region helper functions
-                function _permType {
-                    # returns permission type
-                    param ($perm)
-
-                    if ($perm.IsAdmin) {
-                        return "Application"
-                    } else {
-                        return "Delegated"
-                    }
-                }
-
                 function _apiVersion {
                     if ($apiVersion) {
                         # URI invocation
@@ -261,64 +253,80 @@
 
                 if ($mgCommandPerm) {
                     if ($dontFilterPermissions) {
-                        $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                        Write-Verbose "Returning all found permissions of the '$permType' type: $($mgCommandPerm.Name)"
+
+                        $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $_.PermissionType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, IsAdmin, @{n = 'ErrorMsg'; e = { $null } }
                     } else {
-                        if ((_method $mgCommand) -eq "GET") {
-                            # the command just READs data
+                        $leastPrivilege = $mgCommandPerm | ? IsLeastPrivilege
 
-                            $mgCommandPerm = $mgCommandPerm | ? {
-                                $permission = $_.Name
-                                $isWritePermission = $permission -like "*.ReadWrite.*"
+                        if ($leastPrivilege) {
+                            # there is some permission marked as least privileged, output just that
 
-                                if ($permission -like "Directory.*") {
-                                    $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.Read.*" }
+                            Write-Verbose "Returning just 'IsLeastPrivilege' marked permissions of the '$permType' type: $($leastPrivilege.Name)"
 
-                                    if ($someOtherPermission) {
-                                        Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
-                                        return $false
-                                    }
-                                } elseif ($isWritePermission) {
-                                    $correspondingReadPermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.ReadWrite\.", ".Read.")
-
-                                    if ($correspondingReadPermission) {
-                                        # don't output, there is same but just READ permission in place
-                                        Write-Verbose "Skipping READWRITE permission $permission. There is some other READ permission in place ($($correspondingReadPermission.name))"
-                                        return $false
-                                    }
-                                }
-
-                                return $true
-                            }
-
-                            $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                            $leastPrivilege | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $_.PermissionType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, IsAdmin, @{n = 'ErrorMsg'; e = { $null } }
                         } else {
-                            # the command MODIFIES data
+                            # there isn't any permission marked as least privileged, do some filtering magic
 
-                            $mgCommandPerm = $mgCommandPerm | ? {
-                                $permission = $_.Name
-                                $isReadPermission = $permission -like "*.Read.*"
+                            Write-Verbose "Returning just least-privilege-best-guess subset of permissions of the '$permType' type: $($mgCommandPerm.Name)"
 
-                                if ($permission -like "Directory.*") {
-                                    $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.ReadWrite.*" }
+                            if ((_method $mgCommand) -eq "GET") {
+                                # the command just READs data
 
-                                    if ($someOtherPermission) {
-                                        Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
-                                        return $false
+                                $mgCommandPerm = $mgCommandPerm | ? {
+                                    $permission = $_.Name
+                                    $isWritePermission = $permission -like "*.ReadWrite.*"
+
+                                    if ($permission -like "Directory.*") {
+                                        $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.Read.*" }
+
+                                        if ($someOtherPermission) {
+                                            Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
+                                            return $false
+                                        }
+                                    } elseif ($isWritePermission) {
+                                        $correspondingReadPermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.ReadWrite\.", ".Read.")
+
+                                        if ($correspondingReadPermission) {
+                                            # don't output, there is same but just READ permission in place
+                                            Write-Verbose "Skipping READWRITE permission $permission. There is some other READ permission in place ($($correspondingReadPermission.name))"
+                                            return $false
+                                        }
                                     }
-                                } elseif ($isReadPermission) {
-                                    $correspondingWritePermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.Read\.", ".ReadWrite.")
 
-                                    if ($correspondingWritePermission) {
-                                        # don't output, there is same but READWRITE permission in place
-                                        Write-Verbose "Skipping READ permission $permission. There is some other READWRITE permission in place ($($correspondingWritePermission.name))"
-                                        return $false
-                                    }
+                                    return $true
                                 }
 
-                                return $true
-                            }
+                                $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $_.PermissionType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, IsAdmin, @{n = 'ErrorMsg'; e = { $null } }
+                            } else {
+                                # the command MODIFIES data
 
-                            $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { _permType $_ } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                                $mgCommandPerm = $mgCommandPerm | ? {
+                                    $permission = $_.Name
+                                    $isReadPermission = $permission -like "*.Read.*"
+
+                                    if ($permission -like "Directory.*") {
+                                        $someOtherPermission = $mgCommandPerm | ? { $_.Name -notlike "Directory.*" -and $_.Name -like "*.ReadWrite.*" }
+
+                                        if ($someOtherPermission) {
+                                            Write-Verbose "Skipping DIRECTORY permission $permission. There is some other least-priv permission in place ($($someOtherPermission.name))"
+                                            return $false
+                                        }
+                                    } elseif ($isReadPermission) {
+                                        $correspondingWritePermission = $mgCommandPerm | ? Name -EQ ($permission -replace "\.Read\.", ".ReadWrite.")
+
+                                        if ($correspondingWritePermission) {
+                                            # don't output, there is same but READWRITE permission in place
+                                            Write-Verbose "Skipping READ permission $permission. There is some other READWRITE permission in place ($($correspondingWritePermission.name))"
+                                            return $false
+                                        }
+                                    }
+
+                                    return $true
+                                }
+
+                                $mgCommandPerm | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $_.PermissionType } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion } }, @{n = 'Method'; e = { _method $mgCommand } }, IsAdmin, @{n = 'ErrorMsg'; e = { $null } }
+                            }
                         }
                     }
                 } else {
@@ -332,11 +340,9 @@
                     $cmd = $mgCommand
                 }
                 Write-Verbose "'$cmd' doesn't need any permissions?!"
-                '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion $mgCommand } }, @{n = 'Method'; e = { _method $mgCommand } }, @{n = 'Error'; e = { $null } }
+                '' | select @{n = 'Command'; e = { $mgCommand } }, Name, Description, FullDescription, @{n = 'Type'; e = { $null } }, @{n = 'InvokedAs'; e = { $invocationText } }, @{n = 'DependencyPath'; e = { $dependencyPath } }, @{n = 'ApiVersion'; e = { _apiVersion $mgCommand } }, @{n = 'Method'; e = { _method $mgCommand } }, IsAdmin, @{n = 'ErrorMsg'; e = { $null } }
             }
         }
-
-        Write-Warning "Be noted that it is impossible to tell whether found permissions for some command are all required, or just some subset of them (for least-privileged access). Consult the Microsoft Graph Permissions Reference documentation to identify the least-privileged permission for your use case :("
     } else {
         if ($goDeep) {
             Write-Warning "No Graph commands nor direct Graph API calls were found in '$scriptPath' or it's dependency tree"

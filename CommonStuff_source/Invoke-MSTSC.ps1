@@ -249,6 +249,7 @@ function Invoke-MSTSC {
                 $ProcessInfo.Arguments = "/generic:TERMSRV/$computer /user:$userName /pass:`"$password`""
                 $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
                 $ProcessInfo.RedirectStandardOutput = ".\NUL"
+                $ProcessInfo.UseShellExecute = $false
                 $Process.StartInfo = $ProcessInfo
                 [void]$Process.Start()
                 $null = $Process.WaitForExit()
@@ -307,6 +308,7 @@ function Invoke-MSTSC {
                 $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
                 $ProcessInfo.Arguments = "/delete:TERMSRV/$computer"
                 $ProcessInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+                $ProcessInfo.UseShellExecute = $false
                 $Process.StartInfo = $ProcessInfo
                 [void]$Process.Start()
                 $null = $Process.WaitForExit()

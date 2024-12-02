@@ -134,10 +134,17 @@
     "@
 
     # text definition of the ConvertTo-CompressedString function will be added to the command, so it doesn't matter whether it is available on the remote system
-    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertFrom-CompressedString
+    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertTo-CompressedString
 
     Get the data from the client as a compressed JSON string (to hopefully avoid 2048 chars limit).
     Result will be automatically decompressed and converted back from JSON to object.
+
+    .EXAMPLE
+    $command = 'Get-Content "C:\Windows\Temp\InstallPSHModuleFromStorageAccount_test.log" -Raw | ConvertTo-CompressedString'
+    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertTo-CompressedString
+
+    Get content of the log file.
+    Result will be automatically decompressed to the original text.
 
     .NOTES
     Keep in mind that only the last line of the command output is returned!
@@ -218,7 +225,7 @@
             return
         }
 
-        if (($string | Measure-Object -Character).Characters -gt 2048) {
+        if (($string | Measure-Object -Character).Characters -ge 2048) {
             Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
         }
 

@@ -15,22 +15,35 @@
     POSSIBLE VALUES:
     https://docs.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-available-reports
 
-    reportName	                            Associated Report in Microsoft Endpoint Manager
-    DeviceCompliance	                    Device Compliance Org
-    DeviceNonCompliance	                    Non-compliant devices
-    Devices	                                All devices list
-    DetectedAppsAggregate	                Detected Apps report
-    FeatureUpdatePolicyFailuresAggregate	Under Devices > Monitor > Failure for feature updates
-    DeviceFailuresByFeatureUpdatePolicy	    Under Devices > Monitor > Failure for feature updates > click on error
-    FeatureUpdateDeviceState	            Under Reports > Window Updates > Reports > Windows Feature Update Report 
-    UnhealthyDefenderAgents	                Under Endpoint Security > Antivirus > Win10 Unhealthy Endpoints
-    DefenderAgents	                        Under Reports > MicrosoftDefender > Reports > Agent Status
-    ActiveMalware	                        Under Endpoint Security > Antivirus > Win10 detected malware
-    Malware	                                Under Reports > MicrosoftDefender > Reports > Detected malware
-    AllAppsList	                            Under Apps > All Apps
-    AppInstallStatusAggregate	            Under Apps > Monitor > App install status
-    DeviceInstallStatusByApp	            Under Apps > All Apps > Select an individual app
-    UserInstallStatusAggregateByApp	        Under Apps > All Apps > Select an individual app
+    ### reportName:	                                Associated Report in Microsoft Intune:
+    DeviceCompliance	                            Device Compliance Org
+    DeviceNonCompliance	                            Non-compliant devices
+    Devices	                                        All devices list
+    FeatureUpdatePolicyFailuresAggregate	        Under Devices > Monitor > Failure for feature updates
+    DeviceFailuresByFeatureUpdatePolicy	            Under Devices > Monitor > Failure for feature updates > click on error
+    FeatureUpdateDeviceState	                    Under Reports > Window Updates > Reports > Windows Feature Update Report 
+    UnhealthyDefenderAgents	                        Under Endpoint Security > Antivirus > Win10 Unhealthy Endpoints
+    DefenderAgents	                                Under Reports > MicrosoftDefender > Reports > Agent Status
+    ActiveMalware	                                Under Endpoint Security > Antivirus > Win10 detected malware
+    Malware	                                        Under Reports > MicrosoftDefender > Reports > Detected malware
+    AllAppsList	                                    Under Apps > All Apps
+    AppInstallStatusAggregate	                    Under Apps > Monitor > App install status
+    DeviceInstallStatusByApp	                    Under Apps > All Apps > Select an individual app
+    UserInstallStatusAggregateByApp	                Under Apps > All Apps > Select an individual app
+    ComanagedDeviceWorkloads	                    Under Reports > Cloud attached devices > Reports > Co-Managed Workloads
+    ComanagementEligibilityTenantAttachedDevices	Under Reports > Cloud attached devices > Reports > Co-Management Eligibility
+    DeviceRunStatesByProactiveRemediation	        Under Reports > Endpoint Analytics > Proactive remediations > Select a remediation > Device status
+    DevicesWithInventory	                        Under Devices > All Devices > Export
+    FirewallStatus	                                Under Reports > Firewall > MDM Firewall status for Windows 10 and later
+    GPAnalyticsSettingMigrationReadiness	        Under Reports > Group policy analytics > Reports > Group policy migration readiness
+    QualityUpdateDeviceErrorsByPolicy	            Under Devices > Monitor > Windows Expedited update failures > Select a profile
+    QualityUpdateDeviceStatusByPolicy	            Under Reports > Windows updates > Reports > Windows Expedited Update Report
+    MAMAppProtectionStatus	                        Under Apps > Monitor > App protection status > App protection report: iOS, Android
+    MAMAppConfigurationStatus	                    Under Apps > Monitor > App protection status > App configuration report
+    DevicesByAppInv	                                Under Apps > Monitor > Discovered apps > Discovered app> Export 
+    AppInvByDevice	                                Under Devices > All Devices > Device > Discovered Apps 
+    AppInvAggregate	                                Under Apps > Monitor > Discovered apps > Export 
+    AppInvRawData	                                Under Apps > Monitor > Discovered apps > Export
 
     .PARAMETER header
     Authentication header.
@@ -88,7 +101,7 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DeviceCompliance', 'DeviceNonCompliance', 'Devices', 'DetectedAppsAggregate', 'FeatureUpdatePolicyFailuresAggregate', 'DeviceFailuresByFeatureUpdatePolicy', 'FeatureUpdateDeviceState', 'UnhealthyDefenderAgents', 'DefenderAgents', 'ActiveMalware', 'Malware', 'AllAppsList', 'AppInstallStatusAggregate', 'DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp')]
+        [ValidateSet('DeviceCompliance', 'DeviceNonCompliance', 'Devices', 'FeatureUpdatePolicyFailuresAggregate', 'DeviceFailuresByFeatureUpdatePolicy', 'FeatureUpdateDeviceState', 'UnhealthyDefenderAgents', 'DefenderAgents', 'ActiveMalware', 'Malware', 'AllAppsList', 'AppInstallStatusAggregate', 'DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp', 'ComanagedDeviceWorkloads', 'ComanagementEligibilityTenantAttachedDevices', 'DeviceRunStatesByProactiveRemediation', 'DevicesWithInventory', 'FirewallStatus', 'GPAnalyticsSettingMigrationReadiness', 'QualityUpdateDeviceErrorsByPolicy', 'QualityUpdateDeviceStatusByPolicy', 'MAMAppProtectionStatus', 'MAMAppConfigurationStatus', 'DevicesByAppInv', 'AppInvByDevice', 'AppInvAggregate', 'AppInvRawData')]
         [string] $reportName
         ,
         [hashtable] $header
@@ -110,10 +123,14 @@
     begin {
         $ErrorActionPreference = "Stop"
 
+        #region prepare header
         if (!$header) {
             # authenticate
             $header = New-GraphAPIAuthHeader -useMSAL
         }
+
+        $header.'content-type' = 'application/json'
+        #endregion prepare header
 
         #region prepare filter for FeatureUpdateDeviceState report if not available
         if ($reportName -eq 'FeatureUpdateDeviceState' -and (!$filter -or $filter -notmatch "^PolicyId eq ")) {
@@ -157,12 +174,13 @@
         $body = @{
             reportName = $reportName
             format     = "csv"
-            # select     = 'PolicyId', 'PolicyName', 'DeviceId'
         }
         if ($filter) { $body.filter = $filter }
+
         Write-Warning "Requesting the report $reportName"
+
         try {
-            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body ($body | ConvertTo-Json) -Method Post
         } catch {
             switch ($_) {
                 { $_ -like "*(400) Bad Request*" } { throw "Faulty request. There has to be some mistake in this request" }

@@ -1663,6 +1663,75 @@ function Get-HybridADJoinStatus {
     Invoke-Command @param
 }
 
+function Get-IntuneAppInstallSummaryReport {
+    <#
+    .SYNOPSIS
+    Function returns deploy status of all apps.
+
+    .DESCRIPTION
+    Function returns deploy status of all apps.
+
+    .EXAMPLE
+    Get-IntuneAppInstallSummaryReport
+
+    Returns deploy status of all apps.
+    #>
+
+    [CmdletBinding()]
+    param ()
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    $finalResult = [System.Collections.Generic.List[Object]]::new()
+
+    do {
+        $tmpFile = (Join-Path $env:TEMP (Get-Random))
+
+        $param = @{
+            OutFile     = $tmpFile
+            Top         = 25
+            ErrorAction = "Stop"
+        }
+        if ($finalResult.count) {
+            $param.skip = $finalResult.count
+        }
+
+        # command doesn't support -All hence we need to do pagination ourself
+        Get-MgBetaDeviceManagementReportAppInstallSummaryReport @param
+
+        $result = Get-Content $tmpFile -Raw | ConvertFrom-Json
+
+        Remove-Item $tmpFile -Force
+
+        $columnList = $result.Schema.Column
+
+        $result.Values | % {
+            $finalResult.add($_)
+        }
+
+        $totalCount = $result.TotalRowCount
+    } while ($finalResult.count -lt $totalCount)
+
+
+    # convert the returned array of values to psobject
+    $finalResult | % {
+        $valueList = $_
+        $property = [ordered]@{}
+        $i = 0
+        $columnList | % {
+            if ($_ -eq 'FailedDevicePercentage') {
+                $property.$_ = [Math]::Round($valueList[$i], 2)
+            } else {
+                $property.$_ = $valueList[$i]
+            }
+            ++$i
+        }
+        New-Object -TypeName PSObject -Property $property
+    }
+}
+
 function Get-IntuneAuditEvent {
     <#
     .SYNOPSIS
@@ -1822,6 +1891,124 @@ function Get-IntuneAuditEvent {
             ModifiedProperties = $_.Resources.ModifiedProperties | ? { $_.OldValue -ne $_.NewValue }
             OriginalObject     = $_
         }
+    }
+}
+
+function Get-IntuneConfPolicyAssignmentSummaryReport {
+    <#
+    .SYNOPSIS
+    Function returns assign status of all configuration policies.
+
+    .DESCRIPTION
+    Function returns assign status of all configuration policies.
+
+    .EXAMPLE
+    Get-IntuneConfPolicyAssignmentSummaryReport
+
+    Returns assign status of all configuration policies
+    #>
+
+    [CmdletBinding()]
+    param ()
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    $finalResult = [System.Collections.Generic.List[Object]]::new()
+
+    do {
+        $tmpFile = (Join-Path $env:TEMP (Get-Random))
+
+        $param = @{
+            OutFile     = $tmpFile
+            Top         = 25
+            ErrorAction = "Stop"
+        }
+        if ($finalResult.count) {
+            $param.skip = $finalResult.count
+        }
+
+        # command doesn't support -All hence we need to do pagination ourself
+        Get-MgBetaDeviceManagementReportConfigurationPolicyNonComplianceSummaryReport @param
+
+        $result = Get-Content $tmpFile -Raw | ConvertFrom-Json
+
+        Remove-Item $tmpFile -Force
+
+        $columnList = $result.Schema.Column
+
+        $result.Values | % {
+            $finalResult.add($_)
+        }
+
+        $totalCount = $result.TotalRowCount
+    } while ($finalResult.count -lt $totalCount)
+
+    # convert the returned array of values to psobject
+    $finalResult = $finalResult | % {
+        $valueList = $_
+        $property = [ordered]@{}
+        $i = 0
+        $columnList | % {
+            $property.$_ = $valueList[$i]
+            ++$i
+        }
+        New-Object -TypeName PSObject -Property $property
+    }
+
+    #region get total devices count per platforms used in the report
+    $platformDeviceCount = @{}
+
+    switch (($finalResult.UnifiedPolicyPlatformType | select -Unique)) {
+        { $_ -contains "Windows10" } {
+            Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company' and startswith(OSVersion,'10.')" -All -CountVariable windows10DeviceCount
+
+            $platformDeviceCount.Windows10 = $windows10DeviceCount
+        }
+
+        { $_ -contains "androidWorkProfile" } {
+            Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Android' and DeviceEnrollmentType eq 'UserEnrollment'" -All -CountVariable androidWorkProfileDeviceCount
+
+            $platformDeviceCount.androidWorkProfile = $androidWorkProfileDeviceCount
+        }
+
+        # {$_ -contains "Android"} {
+        #     Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Android' and DeviceEnrollmentType eq 'AndroidEnterpriseFullyManaged'" -All -CountVariable androidDeviceCount
+        # }
+
+        { $_ -contains "macOS" } {
+            Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'macOS'" -All -CountVariable macOSDeviceCount
+
+            $platformDeviceCount.macOS = $macOSDeviceCount
+        }
+
+        default {
+            Write-Warning "Undefined policy platform '$_'"
+        }
+    }
+    #endregion get total devices count per platforms used in the report
+
+    function _GetFailedDevicePercentage {
+        # calculates percentage of problematic devices per policy
+        param ($platform, $failedDeviceCount)
+
+        if ($failedDeviceCount -eq 0) { return 0 }
+
+        $allDeviceCount = $platformDeviceCount.$platform
+
+        if (!$allDeviceCount) {
+            Write-Warning "Missing '$platform' devices count. Unable to calculate the percentage."
+            return 0
+        }
+
+        [Math]::Round($failedDeviceCount / $allDeviceCount * 100, 2)
+    }
+
+    # return results enhanced with failure percentage
+    $finalResult | % {
+        $resultLine = $_
+        $resultLine | select *, @{n = 'FailedDevicePercentage'; e = { _GetFailedDevicePercentage -platform $resultLine.UnifiedPolicyPlatformType -failedDeviceCount $resultLine.NumberOfNonCompliantOrErrorDevices } }, @{n = 'ConflictedDevicePercentage'; e = { _GetFailedDevicePercentage -platform $resultLine.UnifiedPolicyPlatformType -failedDeviceCount $resultLine.NumberOfConflictDevices } }, @{n = 'NumberOfAllDevices'; e = { $platformDeviceCount.($resultLine.UnifiedPolicyPlatformType) } }
     }
 }
 
@@ -3977,22 +4164,35 @@ function Get-IntuneReport {
     POSSIBLE VALUES:
     https://docs.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-available-reports
 
-    reportName	                            Associated Report in Microsoft Endpoint Manager
-    DeviceCompliance	                    Device Compliance Org
-    DeviceNonCompliance	                    Non-compliant devices
-    Devices	                                All devices list
-    DetectedAppsAggregate	                Detected Apps report
-    FeatureUpdatePolicyFailuresAggregate	Under Devices > Monitor > Failure for feature updates
-    DeviceFailuresByFeatureUpdatePolicy	    Under Devices > Monitor > Failure for feature updates > click on error
-    FeatureUpdateDeviceState	            Under Reports > Window Updates > Reports > Windows Feature Update Report 
-    UnhealthyDefenderAgents	                Under Endpoint Security > Antivirus > Win10 Unhealthy Endpoints
-    DefenderAgents	                        Under Reports > MicrosoftDefender > Reports > Agent Status
-    ActiveMalware	                        Under Endpoint Security > Antivirus > Win10 detected malware
-    Malware	                                Under Reports > MicrosoftDefender > Reports > Detected malware
-    AllAppsList	                            Under Apps > All Apps
-    AppInstallStatusAggregate	            Under Apps > Monitor > App install status
-    DeviceInstallStatusByApp	            Under Apps > All Apps > Select an individual app
-    UserInstallStatusAggregateByApp	        Under Apps > All Apps > Select an individual app
+    ### reportName:	                                Associated Report in Microsoft Intune:
+    DeviceCompliance	                            Device Compliance Org
+    DeviceNonCompliance	                            Non-compliant devices
+    Devices	                                        All devices list
+    FeatureUpdatePolicyFailuresAggregate	        Under Devices > Monitor > Failure for feature updates
+    DeviceFailuresByFeatureUpdatePolicy	            Under Devices > Monitor > Failure for feature updates > click on error
+    FeatureUpdateDeviceState	                    Under Reports > Window Updates > Reports > Windows Feature Update Report 
+    UnhealthyDefenderAgents	                        Under Endpoint Security > Antivirus > Win10 Unhealthy Endpoints
+    DefenderAgents	                                Under Reports > MicrosoftDefender > Reports > Agent Status
+    ActiveMalware	                                Under Endpoint Security > Antivirus > Win10 detected malware
+    Malware	                                        Under Reports > MicrosoftDefender > Reports > Detected malware
+    AllAppsList	                                    Under Apps > All Apps
+    AppInstallStatusAggregate	                    Under Apps > Monitor > App install status
+    DeviceInstallStatusByApp	                    Under Apps > All Apps > Select an individual app
+    UserInstallStatusAggregateByApp	                Under Apps > All Apps > Select an individual app
+    ComanagedDeviceWorkloads	                    Under Reports > Cloud attached devices > Reports > Co-Managed Workloads
+    ComanagementEligibilityTenantAttachedDevices	Under Reports > Cloud attached devices > Reports > Co-Management Eligibility
+    DeviceRunStatesByProactiveRemediation	        Under Reports > Endpoint Analytics > Proactive remediations > Select a remediation > Device status
+    DevicesWithInventory	                        Under Devices > All Devices > Export
+    FirewallStatus	                                Under Reports > Firewall > MDM Firewall status for Windows 10 and later
+    GPAnalyticsSettingMigrationReadiness	        Under Reports > Group policy analytics > Reports > Group policy migration readiness
+    QualityUpdateDeviceErrorsByPolicy	            Under Devices > Monitor > Windows Expedited update failures > Select a profile
+    QualityUpdateDeviceStatusByPolicy	            Under Reports > Windows updates > Reports > Windows Expedited Update Report
+    MAMAppProtectionStatus	                        Under Apps > Monitor > App protection status > App protection report: iOS, Android
+    MAMAppConfigurationStatus	                    Under Apps > Monitor > App protection status > App configuration report
+    DevicesByAppInv	                                Under Apps > Monitor > Discovered apps > Discovered app> Export 
+    AppInvByDevice	                                Under Devices > All Devices > Device > Discovered Apps 
+    AppInvAggregate	                                Under Apps > Monitor > Discovered apps > Export 
+    AppInvRawData	                                Under Apps > Monitor > Discovered apps > Export
 
     .PARAMETER header
     Authentication header.
@@ -4050,7 +4250,7 @@ function Get-IntuneReport {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DeviceCompliance', 'DeviceNonCompliance', 'Devices', 'DetectedAppsAggregate', 'FeatureUpdatePolicyFailuresAggregate', 'DeviceFailuresByFeatureUpdatePolicy', 'FeatureUpdateDeviceState', 'UnhealthyDefenderAgents', 'DefenderAgents', 'ActiveMalware', 'Malware', 'AllAppsList', 'AppInstallStatusAggregate', 'DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp')]
+        [ValidateSet('DeviceCompliance', 'DeviceNonCompliance', 'Devices', 'FeatureUpdatePolicyFailuresAggregate', 'DeviceFailuresByFeatureUpdatePolicy', 'FeatureUpdateDeviceState', 'UnhealthyDefenderAgents', 'DefenderAgents', 'ActiveMalware', 'Malware', 'AllAppsList', 'AppInstallStatusAggregate', 'DeviceInstallStatusByApp', 'UserInstallStatusAggregateByApp', 'ComanagedDeviceWorkloads', 'ComanagementEligibilityTenantAttachedDevices', 'DeviceRunStatesByProactiveRemediation', 'DevicesWithInventory', 'FirewallStatus', 'GPAnalyticsSettingMigrationReadiness', 'QualityUpdateDeviceErrorsByPolicy', 'QualityUpdateDeviceStatusByPolicy', 'MAMAppProtectionStatus', 'MAMAppConfigurationStatus', 'DevicesByAppInv', 'AppInvByDevice', 'AppInvAggregate', 'AppInvRawData')]
         [string] $reportName
         ,
         [hashtable] $header
@@ -4072,10 +4272,14 @@ function Get-IntuneReport {
     begin {
         $ErrorActionPreference = "Stop"
 
+        #region prepare header
         if (!$header) {
             # authenticate
             $header = New-GraphAPIAuthHeader -useMSAL
         }
+
+        $header.'content-type' = 'application/json'
+        #endregion prepare header
 
         #region prepare filter for FeatureUpdateDeviceState report if not available
         if ($reportName -eq 'FeatureUpdateDeviceState' -and (!$filter -or $filter -notmatch "^PolicyId eq ")) {
@@ -4119,12 +4323,13 @@ function Get-IntuneReport {
         $body = @{
             reportName = $reportName
             format     = "csv"
-            # select     = 'PolicyId', 'PolicyName', 'DeviceId'
         }
         if ($filter) { $body.filter = $filter }
+
         Write-Warning "Requesting the report $reportName"
+
         try {
-            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body $body -Method Post
+            $result = Invoke-RestMethod -Headers $header -Uri "https://graph.microsoft.com/beta/deviceManagement/reports/exportJobs" -Body ($body | ConvertTo-Json) -Method Post
         } catch {
             switch ($_) {
                 { $_ -like "*(400) Bad Request*" } { throw "Faulty request. There has to be some mistake in this request" }
@@ -5681,10 +5886,17 @@ function Invoke-IntuneCommand {
     "@
 
     # text definition of the ConvertTo-CompressedString function will be added to the command, so it doesn't matter whether it is available on the remote system
-    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertFrom-CompressedString
+    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertTo-CompressedString
 
     Get the data from the client as a compressed JSON string (to hopefully avoid 2048 chars limit).
     Result will be automatically decompressed and converted back from JSON to object.
+
+    .EXAMPLE
+    $command = 'Get-Content "C:\Windows\Temp\InstallPSHModuleFromStorageAccount_test.log" -Raw | ConvertTo-CompressedString'
+    Invoke-IntuneCommand -command $command -deviceName PC-01 -prependCommandDefinition ConvertTo-CompressedString
+
+    Get content of the log file.
+    Result will be automatically decompressed to the original text.
 
     .NOTES
     Keep in mind that only the last line of the command output is returned!
@@ -5765,7 +5977,7 @@ function Invoke-IntuneCommand {
             return
         }
 
-        if (($string | Measure-Object -Character).Characters -gt 2048) {
+        if (($string | Measure-Object -Character).Characters -ge 2048) {
             Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
         }
 
@@ -8090,6 +8302,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAuditEvent, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Assign-IntuneWin32App, Deassign-IntuneWin32App, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy, Unassign-IntuneWin32App

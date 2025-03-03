@@ -129,14 +129,6 @@
         $userName = "Administrator"
     }
 
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }

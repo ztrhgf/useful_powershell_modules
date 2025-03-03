@@ -1,3 +1,172 @@
+function Copy-ToArcMachine {
+    <#
+    .SYNOPSIS
+    Copy-Item alternative for ARC machines.
+
+    .DESCRIPTION
+    Copy-Item alternative for ARC machines.
+
+    .PARAMETER path
+    Source path for the Copy-Item operation.
+
+    .PARAMETER destination
+    Destination path for the Copy-Item operation.
+
+    The folder structure has to already exist on the ARC machine! It won't be created automatically
+
+    .PARAMETER resourceGroupName
+    Nam of the resource group where the ARC machine is placed.
+
+    If both 'resourceGroupName' and 'machineName' parameters aren't provided, you will be asked through GUI to pick some of the existing ARC machines interactively.
+
+    .PARAMETER machineName
+    Name of the ARC machine.
+
+    If both 'resourceGroupName' and 'machineName' parameters aren't provided, you will be asked through GUI to pick some of the existing ARC machines interactively.
+
+    .PARAMETER userName
+    Name of the existing ARC-machine local user that will be used during SSH authentication.
+
+    By default $_localAdminName or 'administrator' if empty.
+
+    .PARAMETER privateKeyFile
+    Path to the SSH private key file.
+
+    Default will be used if not provided.
+
+    .PARAMETER keyVault
+    Name of the KeyVault where secret with private key is stored.
+
+    If provided, stored private key will be used instead of a local one.
+    It will be temporarily downloaded, used for the connection and then safely discarded.
+
+    By default $_arcSSHKeyVaultName.
+
+    .PARAMETER secretName
+    Name of the secret where private key is stored.
+
+    By default $_ITSSHSecretName.
+
+    .EXAMPLE
+    Copy-ToArcMachine -path "C:\tools\*" -destination "C:\tools\"
+
+    Copy a folder content to specified ARC machine destination folder (such folder has to exists already!).
+
+    .EXAMPLE
+    Copy-ToArcMachine -path "C:\tools\procmon.exe" -destination "C:\tools\"
+
+    Copy a file to specified ARC machine destination folder (such folder has to exists already!).
+
+    .NOTES
+    Prerequisites:
+        1. SSH has to be configured & running on the ARC machine
+            https://learn.microsoft.com/en-us/azure/azure-arc/servers/ssh-arc-overview?tabs=azure-powershell
+            https://learn.microsoft.com/en-us/azure/azure-arc/servers/ssh-arc-powershell-remoting?tabs=azure-powershell
+        2. Default connectivity endpoint must be created
+            Invoke-AzRestMethod -Method put -Path /subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.HybridCompute/machines/<machineName>/providers/Microsoft.HybridConnectivity/endpoints/default?api-version=2023-03-15 -Payload '{"properties": {"type": "default"}}'
+        3. Service Configuration in the Connectivity Endpoint on the Arc-enabled server must be set to allow SSH connection to a specific port
+            Invoke-AzRestMethod -Method put -Path /subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.HybridCompute/machines/<machineName>/providers/Microsoft.HybridConnectivity/endpoints/default/serviceconfigurations/SSH?api-version=2023-03-15 -Payload '{"properties": {"serviceName": "SSH", "port": 22}}'
+        4. Public SSH key has to be set on the server and private key has to be on your device
+
+    Debugging:
+        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('keyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateScript( {
+                if (Test-Path -Path $_) {
+                    $true
+                } else {
+                    throw "'$_' doesn't exist"
+                }
+            })]
+        [string] $path,
+
+        [Parameter(Mandatory = $true)]
+        [string] $destination,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $resourceGroupName,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $machineName,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $userName = $_localAdminName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
+        [ValidateScript( {
+                if (Test-Path -Path $_ -PathType Leaf) {
+                    $true
+                } else {
+                    throw "'$_' file doesn't exist"
+                }
+            })]
+        [string] $privateKeyFile,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "KeyVault")]
+        [string] $keyVault = $_arcSSHKeyVaultName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "KeyVault")]
+        [string] $secretName = $_ITSSHSecretName
+    )
+
+    #region checks
+    if (!$userName) {
+        $userName = "Administrator"
+    }
+
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
+    }
+
+    if (($resourceGroupName -and !$machineName) -or (!$resourceGroupName -and $machineName)) {
+        throw "Set both 'resourceGroupName' and 'machineName' parameters or none of them"
+    }
+    #endregion checks
+
+    # get missing parameter values
+    while (!$resourceGroupName -and !$machineName) {
+        if (!$arcMachineList) {
+            $arcMachineList = Get-ArcMachineOverview
+        }
+
+        $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
+
+        $resourceGroupName = $selected.resourceGroup
+        $machineName = $selected.name
+    }
+
+    # get existing sessions
+    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
+
+    # use existing session if possible or create a new one
+    if ($existingSession) {
+        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
+        $session = $existingSession
+    } else {
+        Write-Verbose "Creating new session"
+        $PSBoundParameters2 = @{
+            resourceGroupName = $resourceGroupName
+            machineName       = $machineName
+        }
+        # add explicitly specified parameters if any
+        $PSBoundParameters.GetEnumerator() | ? Key -NotIn "Path", "Destination" | % {
+            $PSBoundParameters2.($_.Key) = $_.Value
+        }
+        $session = New-ArcPSSession @PSBoundParameters2 -ErrorAction Stop
+    }
+
+    Copy-Item -Path $path -Destination $destination -ToSession $session -Force
+
+    # session cleanup
+    if (!$existingSession) {
+        Remove-PSSession -Session $session
+    }
+}
+
 function Enter-ArcPSSession {
     <#
     .SYNOPSIS
@@ -132,14 +301,6 @@ function Enter-ArcPSSession {
         $userName = "Administrator"
     }
 
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
@@ -161,119 +322,130 @@ function Enter-ArcPSSession {
         $machineName = $selected.name
     }
 
-    if ($keyVault -and $secretName) {
-        # private key saved in the KeyVault should be used for authentication instead of existing local private key
+    # get existing sessions
+    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
 
-        # remove the parameter path validation
+    # use existing session if possible or create a new one
+    if ($existingSession) {
+        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
+        Enter-PSSession -Session $existingSession
+    } else {
+        # new session has to be created
+
+        if ($keyVault -and $secretName) {
+            # private key saved in the KeyVault should be used for authentication instead of existing local private key
+
+            # remove the parameter path validation
         (Get-Variable privateKeyFile).Attributes.Clear()
 
-        # where the key will be saved
-        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+            # where the key will be saved
+            $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
 
-        # saving private key to temp file
-        Write-Verbose "Saving private key to the '$privateKeyFile'"
-        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+            # saving private key to temp file
+            Write-Verbose "Saving private key to the '$privateKeyFile'"
+            Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
 
-        # remove the private key ASAP
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($privateKeyFile)
+            # remove the private key ASAP
+            $null = Start-Job -Name "cleanup" -ScriptBlock {
+                param ($privateKeyFile)
 
-            # I have to wait a little bit so the Enter-AzVM is being run
-            Start-Sleep 5
+                # I have to wait a little bit so the Enter-AzVM is being run
+                Start-Sleep 5
 
-            #region helper functions
-            function Remove-FileSecure {
-                <#
-                .SYNOPSIS
-                Function for secure overwrite and deletion of file(s).
-                It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
+                #region helper functions
+                function Remove-FileSecure {
+                    <#
+                    .SYNOPSIS
+                    Function for secure overwrite and deletion of file(s).
+                    It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
 
-                .DESCRIPTION
-                Function for secure overwrite and deletion of file(s).
-                It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
+                    .DESCRIPTION
+                    Function for secure overwrite and deletion of file(s).
+                    It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
 
-                .PARAMETER File
-                Path to file that should be overwritten.
+                    .PARAMETER File
+                    Path to file that should be overwritten.
 
-                .OUTPUTS
-                Boolean. True if successful else False.
+                    .OUTPUTS
+                    Boolean. True if successful else False.
 
-                .NOTES
-                https://gallery.technet.microsoft.com/scriptcenter/Secure-File-Remove-by-110adb68
-                #>
+                    .NOTES
+                    https://gallery.technet.microsoft.com/scriptcenter/Secure-File-Remove-by-110adb68
+                    #>
 
-                [CmdletBinding()]
-                [OutputType([boolean])]
-                param(
-                    [Parameter(Mandatory = $true, ValueFromPipeline = $true )]
-                    [System.IO.FileInfo] $File
-                )
+                    [CmdletBinding()]
+                    [OutputType([boolean])]
+                    param(
+                        [Parameter(Mandatory = $true, ValueFromPipeline = $true )]
+                        [System.IO.FileInfo] $File
+                    )
 
-                BEGIN {
-                    $r = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-                }
-
-                PROCESS {
-                    $retObj = $null
-
-                    if ((Test-Path $file -PathType Leaf) -and $pscmdlet.ShouldProcess($file)) {
-                        $f = $file
-                        if ( !($f -is [System.IO.FileInfo]) ) {
-                            $f = New-Object System.IO.FileInfo($file)
-                        }
-
-                        $l = $f.length
-
-                        $s = $f.OpenWrite()
-
-                        try {
-                            $w = New-Object system.diagnostics.stopwatch
-                            $w.Start()
-
-                            [long]$i = 0
-                            $b = New-Object byte[](1024 * 1024)
-                            while ( $i -lt $l ) {
-                                $r.GetBytes($b)
-
-                                $rest = $l - $i
-
-                                if ( $rest -gt (1024 * 1024) ) {
-                                    $s.Write($b, 0, $b.length)
-                                    $i += $b.LongLength
-                                } else {
-                                    $s.Write($b, 0, $rest)
-                                    $i += $rest
-                                }
-                            }
-                            $w.Stop()
-                        } finally {
-                            $s.Close()
-
-                            $null = Remove-Item $f.FullName -Force -Confirm:$false -ErrorAction Stop
-                        }
-                    } else {
-                        Write-Warning "$($f.FullName) wasn't found"
-                        return $false
+                    BEGIN {
+                        $r = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
                     }
 
-                    return $true
+                    PROCESS {
+                        $retObj = $null
+
+                        if ((Test-Path $file -PathType Leaf) -and $pscmdlet.ShouldProcess($file)) {
+                            $f = $file
+                            if ( !($f -is [System.IO.FileInfo]) ) {
+                                $f = New-Object System.IO.FileInfo($file)
+                            }
+
+                            $l = $f.length
+
+                            $s = $f.OpenWrite()
+
+                            try {
+                                $w = New-Object system.diagnostics.stopwatch
+                                $w.Start()
+
+                                [long]$i = 0
+                                $b = New-Object byte[](1024 * 1024)
+                                while ( $i -lt $l ) {
+                                    $r.GetBytes($b)
+
+                                    $rest = $l - $i
+
+                                    if ( $rest -gt (1024 * 1024) ) {
+                                        $s.Write($b, 0, $b.length)
+                                        $i += $b.LongLength
+                                    } else {
+                                        $s.Write($b, 0, $rest)
+                                        $i += $rest
+                                    }
+                                }
+                                $w.Stop()
+                            } finally {
+                                $s.Close()
+
+                                $null = Remove-Item $f.FullName -Force -Confirm:$false -ErrorAction Stop
+                            }
+                        } else {
+                            Write-Warning "$($f.FullName) wasn't found"
+                            return $false
+                        }
+
+                        return $true
+                    }
                 }
-            }
-            #endregion helper functions
+                #endregion helper functions
 
-            Remove-FileSecure $privateKeyFile
-        } -ArgumentList $privateKeyFile
-    }
+                Remove-FileSecure $privateKeyFile
+            } -ArgumentList $privateKeyFile
+        }
 
-    $param = @{
-        ResourceGroupName = $resourceGroupName
-        Name              = $machineName
-        LocalUser         = $userName
+        $param = @{
+            ResourceGroupName = $resourceGroupName
+            Name              = $machineName
+            LocalUser         = $userName
+        }
+        if ($privateKeyFile) {
+            $param.PrivateKeyFile = $privateKeyFile
+        }
+        Enter-AzVM @param
     }
-    if ($privateKeyFile) {
-        $param.PrivateKeyFile = $privateKeyFile
-    }
-    Enter-AzVM @param
 }
 
 function Get-ARCExtensionAvailableVersion {
@@ -593,14 +765,6 @@ function Invoke-ArcRDP {
         $userName = "Administrator"
     }
 
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
@@ -835,7 +999,7 @@ function New-ArcPSSession {
 
     Default value is 'Microsoft.HybridCompute/machines'.
 
-    .PARAMETER keyFile
+    .PARAMETER privateKeyFile
     Path to the SSH private key file.
 
     Default will be used if not provided.
@@ -876,7 +1040,7 @@ function New-ArcPSSession {
 
 
     .EXAMPLE
-    $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -keyFile "C:\Users\admin\.ssh\id_ecdsa_servers"
+    $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -privateKeyFile "C:\Users\admin\.ssh\id_ecdsa_servers"
 
     1. Connection to the selected machine will be made via
         - SSH using local user 'root'
@@ -896,7 +1060,7 @@ function New-ArcPSSession {
         4. Public SSH key has to be set on the server and private key has to be on your device
 
     Debugging:
-        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('keyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -921,7 +1085,7 @@ function New-ArcPSSession {
                     throw "'$_' file doesn't exist"
                 }
             })]
-        [string] $keyFile,
+        [string] $privateKeyFile,
 
         [Parameter(Mandatory = $true, ParameterSetName = "KeyVault")]
         [string] $keyVault = $_arcSSHKeyVaultName,
@@ -933,14 +1097,6 @@ function New-ArcPSSession {
     #region checks
     if (!$userName) {
         $userName = "Administrator"
-    }
-
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
     }
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
@@ -960,22 +1116,32 @@ function New-ArcPSSession {
         $machineName = $selected.name
     }
 
+    # get existing sessions
+    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
+
+    # use existing session if possible or create a new one
+    if ($existingSession) {
+        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
+        return $existingSession
+    }
+
     $proxyConfig = Export-AzSshConfig -ResourceGroupName $resourceGroupName -Name $machineName -LocalUser $userName -ResourceType $machineType -ConfigFilePath "$env:temp\sshconfig.config" -Force -ErrorAction Stop
 
     $options = @{ProxyCommand = ('"' + ($proxyConfig.ProxyCommand -replace '"') + '"') }
 
+    # use KeyVault private key instead of local one
     if ($keyVault -and $secretName) {
         # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
         # remove the parameter path validation
-        (Get-Variable keyFile).Attributes.Clear()
+        (Get-Variable privateKeyFile).Attributes.Clear()
 
         # where the key will be saved
-        $keyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
 
         # saving private key to temp file
-        Write-Verbose "Saving private key to the '$keyFile'"
-        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $keyFile -Force
+        Write-Verbose "Saving private key to the '$privateKeyFile'"
+        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
     }
 
     $param = @{
@@ -983,8 +1149,8 @@ function New-ArcPSSession {
         UserName = $userName
         Options  = $options
     }
-    if ($keyFile) {
-        $param.keyfilepath = $keyFile
+    if ($privateKeyFile) {
+        $param.keyfilepath = $privateKeyFile
     }
 
     try {
@@ -1072,10 +1238,10 @@ function New-ArcPSSession {
             }
             #endregion helper functions
 
-            Remove-FileSecure $keyFile
+            Remove-FileSecure $privateKeyFile
         }
     }
 }
 
-Export-ModuleMember -function Enter-ArcPSSession, Get-ARCExtensionAvailableVersion, Get-ARCExtensionOverview, Get-ArcMachineOverview, Invoke-ArcRDP, New-ArcPSSession
+Export-ModuleMember -function Copy-ToArcMachine, Enter-ArcPSSession, Get-ARCExtensionAvailableVersion, Get-ARCExtensionOverview, Get-ArcMachineOverview, Invoke-ArcRDP, New-ArcPSSession
 

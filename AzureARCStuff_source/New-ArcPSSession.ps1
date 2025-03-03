@@ -33,7 +33,7 @@
 
     Default value is 'Microsoft.HybridCompute/machines'.
 
-    .PARAMETER keyFile
+    .PARAMETER privateKeyFile
     Path to the SSH private key file.
 
     Default will be used if not provided.
@@ -74,7 +74,7 @@
 
 
     .EXAMPLE
-    $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -keyFile "C:\Users\admin\.ssh\id_ecdsa_servers"
+    $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -privateKeyFile "C:\Users\admin\.ssh\id_ecdsa_servers"
 
     1. Connection to the selected machine will be made via
         - SSH using local user 'root'
@@ -94,7 +94,7 @@
         4. Public SSH key has to be set on the server and private key has to be on your device
 
     Debugging:
-        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('keyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -119,7 +119,7 @@
                     throw "'$_' file doesn't exist"
                 }
             })]
-        [string] $keyFile,
+        [string] $privateKeyFile,
 
         [Parameter(Mandatory = $true, ParameterSetName = "KeyVault")]
         [string] $keyVault = $_arcSSHKeyVaultName,
@@ -131,14 +131,6 @@
     #region checks
     if (!$userName) {
         $userName = "Administrator"
-    }
-
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
     }
 
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
@@ -158,22 +150,32 @@
         $machineName = $selected.name
     }
 
+    # get existing sessions
+    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
+
+    # use existing session if possible or create a new one
+    if ($existingSession) {
+        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
+        return $existingSession
+    }
+
     $proxyConfig = Export-AzSshConfig -ResourceGroupName $resourceGroupName -Name $machineName -LocalUser $userName -ResourceType $machineType -ConfigFilePath "$env:temp\sshconfig.config" -Force -ErrorAction Stop
 
     $options = @{ProxyCommand = ('"' + ($proxyConfig.ProxyCommand -replace '"') + '"') }
 
+    # use KeyVault private key instead of local one
     if ($keyVault -and $secretName) {
         # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
         # remove the parameter path validation
-        (Get-Variable keyFile).Attributes.Clear()
+        (Get-Variable privateKeyFile).Attributes.Clear()
 
         # where the key will be saved
-        $keyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
 
         # saving private key to temp file
-        Write-Verbose "Saving private key to the '$keyFile'"
-        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $keyFile -Force
+        Write-Verbose "Saving private key to the '$privateKeyFile'"
+        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
     }
 
     $param = @{
@@ -181,8 +183,8 @@
         UserName = $userName
         Options  = $options
     }
-    if ($keyFile) {
-        $param.keyfilepath = $keyFile
+    if ($privateKeyFile) {
+        $param.keyfilepath = $privateKeyFile
     }
 
     try {
@@ -270,7 +272,7 @@
             }
             #endregion helper functions
 
-            Remove-FileSecure $keyFile
+            Remove-FileSecure $privateKeyFile
         }
     }
 }

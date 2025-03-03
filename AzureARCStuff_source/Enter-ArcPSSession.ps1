@@ -132,14 +132,6 @@
         $userName = "Administrator"
     }
 
-    if (!(Get-Module Az.Ssh) -and !(Get-Module Az.Ssh -ListAvailable)) {
-        throw "Module Az.Ssh is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
-    if (!(Get-Module Az.Ssh.ArcProxy) -and !(Get-Module Az.Ssh.ArcProxy -ListAvailable)) {
-        throw "Module Az.Ssh.ArcProxy is missing. Function $($MyInvocation.MyCommand) cannot continue"
-    }
-
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
@@ -161,117 +153,128 @@
         $machineName = $selected.name
     }
 
-    if ($keyVault -and $secretName) {
-        # private key saved in the KeyVault should be used for authentication instead of existing local private key
+    # get existing sessions
+    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
 
-        # remove the parameter path validation
+    # use existing session if possible or create a new one
+    if ($existingSession) {
+        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
+        Enter-PSSession -Session $existingSession
+    } else {
+        # new session has to be created
+
+        if ($keyVault -and $secretName) {
+            # private key saved in the KeyVault should be used for authentication instead of existing local private key
+
+            # remove the parameter path validation
         (Get-Variable privateKeyFile).Attributes.Clear()
 
-        # where the key will be saved
-        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+            # where the key will be saved
+            $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
 
-        # saving private key to temp file
-        Write-Verbose "Saving private key to the '$privateKeyFile'"
-        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+            # saving private key to temp file
+            Write-Verbose "Saving private key to the '$privateKeyFile'"
+            Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
 
-        # remove the private key ASAP
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($privateKeyFile)
+            # remove the private key ASAP
+            $null = Start-Job -Name "cleanup" -ScriptBlock {
+                param ($privateKeyFile)
 
-            # I have to wait a little bit so the Enter-AzVM is being run
-            Start-Sleep 5
+                # I have to wait a little bit so the Enter-AzVM is being run
+                Start-Sleep 5
 
-            #region helper functions
-            function Remove-FileSecure {
-                <#
-                .SYNOPSIS
-                Function for secure overwrite and deletion of file(s).
-                It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
+                #region helper functions
+                function Remove-FileSecure {
+                    <#
+                    .SYNOPSIS
+                    Function for secure overwrite and deletion of file(s).
+                    It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
 
-                .DESCRIPTION
-                Function for secure overwrite and deletion of file(s).
-                It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
+                    .DESCRIPTION
+                    Function for secure overwrite and deletion of file(s).
+                    It will overwrite file(s) in a secure way by using a cryptographically strong sequence of random values using .NET functions.
 
-                .PARAMETER File
-                Path to file that should be overwritten.
+                    .PARAMETER File
+                    Path to file that should be overwritten.
 
-                .OUTPUTS
-                Boolean. True if successful else False.
+                    .OUTPUTS
+                    Boolean. True if successful else False.
 
-                .NOTES
-                https://gallery.technet.microsoft.com/scriptcenter/Secure-File-Remove-by-110adb68
-                #>
+                    .NOTES
+                    https://gallery.technet.microsoft.com/scriptcenter/Secure-File-Remove-by-110adb68
+                    #>
 
-                [CmdletBinding()]
-                [OutputType([boolean])]
-                param(
-                    [Parameter(Mandatory = $true, ValueFromPipeline = $true )]
-                    [System.IO.FileInfo] $File
-                )
+                    [CmdletBinding()]
+                    [OutputType([boolean])]
+                    param(
+                        [Parameter(Mandatory = $true, ValueFromPipeline = $true )]
+                        [System.IO.FileInfo] $File
+                    )
 
-                BEGIN {
-                    $r = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-                }
-
-                PROCESS {
-                    $retObj = $null
-
-                    if ((Test-Path $file -PathType Leaf) -and $pscmdlet.ShouldProcess($file)) {
-                        $f = $file
-                        if ( !($f -is [System.IO.FileInfo]) ) {
-                            $f = New-Object System.IO.FileInfo($file)
-                        }
-
-                        $l = $f.length
-
-                        $s = $f.OpenWrite()
-
-                        try {
-                            $w = New-Object system.diagnostics.stopwatch
-                            $w.Start()
-
-                            [long]$i = 0
-                            $b = New-Object byte[](1024 * 1024)
-                            while ( $i -lt $l ) {
-                                $r.GetBytes($b)
-
-                                $rest = $l - $i
-
-                                if ( $rest -gt (1024 * 1024) ) {
-                                    $s.Write($b, 0, $b.length)
-                                    $i += $b.LongLength
-                                } else {
-                                    $s.Write($b, 0, $rest)
-                                    $i += $rest
-                                }
-                            }
-                            $w.Stop()
-                        } finally {
-                            $s.Close()
-
-                            $null = Remove-Item $f.FullName -Force -Confirm:$false -ErrorAction Stop
-                        }
-                    } else {
-                        Write-Warning "$($f.FullName) wasn't found"
-                        return $false
+                    BEGIN {
+                        $r = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
                     }
 
-                    return $true
+                    PROCESS {
+                        $retObj = $null
+
+                        if ((Test-Path $file -PathType Leaf) -and $pscmdlet.ShouldProcess($file)) {
+                            $f = $file
+                            if ( !($f -is [System.IO.FileInfo]) ) {
+                                $f = New-Object System.IO.FileInfo($file)
+                            }
+
+                            $l = $f.length
+
+                            $s = $f.OpenWrite()
+
+                            try {
+                                $w = New-Object system.diagnostics.stopwatch
+                                $w.Start()
+
+                                [long]$i = 0
+                                $b = New-Object byte[](1024 * 1024)
+                                while ( $i -lt $l ) {
+                                    $r.GetBytes($b)
+
+                                    $rest = $l - $i
+
+                                    if ( $rest -gt (1024 * 1024) ) {
+                                        $s.Write($b, 0, $b.length)
+                                        $i += $b.LongLength
+                                    } else {
+                                        $s.Write($b, 0, $rest)
+                                        $i += $rest
+                                    }
+                                }
+                                $w.Stop()
+                            } finally {
+                                $s.Close()
+
+                                $null = Remove-Item $f.FullName -Force -Confirm:$false -ErrorAction Stop
+                            }
+                        } else {
+                            Write-Warning "$($f.FullName) wasn't found"
+                            return $false
+                        }
+
+                        return $true
+                    }
                 }
-            }
-            #endregion helper functions
+                #endregion helper functions
 
-            Remove-FileSecure $privateKeyFile
-        } -ArgumentList $privateKeyFile
-    }
+                Remove-FileSecure $privateKeyFile
+            } -ArgumentList $privateKeyFile
+        }
 
-    $param = @{
-        ResourceGroupName = $resourceGroupName
-        Name              = $machineName
-        LocalUser         = $userName
+        $param = @{
+            ResourceGroupName = $resourceGroupName
+            Name              = $machineName
+            LocalUser         = $userName
+        }
+        if ($privateKeyFile) {
+            $param.PrivateKeyFile = $privateKeyFile
+        }
+        Enter-AzVM @param
     }
-    if ($privateKeyFile) {
-        $param.PrivateKeyFile = $privateKeyFile
-    }
-    Enter-AzVM @param
 }

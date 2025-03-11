@@ -138,7 +138,7 @@
     }
     #endregion checks
 
-    # get missing parameter values
+    #region get missing parameter values
     while (!$resourceGroupName -and !$machineName) {
         if (!$arcMachineList) {
             $arcMachineList = Get-ArcMachineOverview
@@ -149,6 +149,7 @@
         $resourceGroupName = $selected.resourceGroup
         $machineName = $selected.name
     }
+    #endregion get missing parameter values
 
     #region RDP autologon
     if ($rdpCredential -or $rdpUserName) {
@@ -198,12 +199,12 @@
     #region cleanup
     if ($keyVault -and $secretName) {
         # remove the private key ASAP
-        Write-Verbose "SSH key will be removed in 5 seconds"
+        Write-Verbose "SSH key will be removed in 7 seconds"
         $null = Start-Job -Name "cleanup" -ScriptBlock {
             param ($privateKeyFile)
 
-            # I have to wait a little bit so the Enter-AzVM is being run
-            Start-Sleep 5
+            # we need to wait with deleting the file until function Enter-AzVM has been executed
+            Start-Sleep 7
 
             #region helper functions
             function Remove-FileSecure {
@@ -291,12 +292,12 @@
 
     if ($rdpCredential -or $rdpUserName) {
         # remove saved credentials from Cred. Manager ASAP
-        Write-Verbose "RDP password will be removed from CredMan in 5 seconds"
+        Write-Verbose "RDP password will be removed from CredMan in 7 seconds"
         $null = Start-Job -Name "cleanup" -ScriptBlock {
             param ($computer)
 
-            # I have to wait a little bit so the Enter-AzVM is being run
-            Start-Sleep 5
+            # we need to wait with deleting the credentials until function Enter-AzVM has been executed
+            Start-Sleep 7
 
             $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
             $Process = New-Object System.Diagnostics.Process

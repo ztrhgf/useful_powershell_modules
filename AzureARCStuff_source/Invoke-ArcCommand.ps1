@@ -1,15 +1,25 @@
-﻿function Enter-ArcPSSession {
+﻿function Invoke-ArcCommand {
     <#
     .SYNOPSIS
-    Enter interactive remote session to ARC machine via arc-ssh-proxy.
+    Invoke-Command (via arc-ssh-proxy) proxy functions for ARC machines.
+    Enables you to run command against your ARC machines via arc-ssh-proxy.
 
     .DESCRIPTION
-    Enter interactive remote session to ARC machine via arc-ssh-proxy.
+    Invoke-Command (via arc-ssh-proxy) proxy functions for ARC machines.
+    Enables you to run command against your ARC machines via arc-ssh-proxy.
 
-    1. SSH session via ARC agent will be created
-    2. PS remote session via created SSH session will be made & entered
+    .PARAMETER connectionConfig
+    PSCustomObject(s) where two properties have to be defined:
+     - MachineName (ARC machine name)
+     - ResourceGroupName (RG where the machine is located)
 
-    Check NOTES for more details.
+    Can be used to invoke command against multiple ARC machines (unlike parameters 'machineName' and 'resourceGroupName' which can target only one)
+
+    .PARAMETER scriptBlock
+    Scriptblock to run on ARC machine(s).
+
+    .PARAMETER argumentList
+    Argument list that should be passed to scriptBlock.
 
     .PARAMETER resourceGroupName
     Nam of the resource group where the ARC machine is placed.
@@ -45,44 +55,36 @@
     By default $_ITSSHSecretName.
 
     .EXAMPLE
-    Enter-ArcPSSession
+    Invoke-ArcCommand -scriptBlock {hostname} -Verbose
 
-    1. GUI with available ARC machines will be shown to pick one.
-    2. Connection to the selected machine will be made via
-        - SSH using local user 'administrator'
-        - followed by creation of the remote PowerShell interactive session (through created SSH session).
-
-    If $_arcSSHKeyVaultName and $_ITSSHSecretName are set then private SSH key will be temporarily retrieved from the selected KeyVault.
-    Otherwise locally stored private key (c:\Users\<user>\.ssh\id_ecdsa) will be used.
+    Run specified command against interactively selected arc machine(s) via arc-ssh-proxy session(s).
 
     .EXAMPLE
-    Enter-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01
+    Invoke-ArcCommand -scriptBlock {hostname} -machineName 'ARC-01' -resourceGroupName 'RG' -Verbose
 
-    1. Connection to the selected machine will be made via
-        - SSH using local user 'administrator'
-        - followed by creation of the remote PowerShell interactive session (through created SSH session).
-
-    If $_arcSSHKeyVaultName and $_ITSSHSecretName are set then private SSH key will be temporarily retrieved from the selected KeyVault.
-    Otherwise locally stored private key (c:\Users\<user>\.ssh\id_ecdsa) will be used.
+    Run specified command against specified ARC machine via arc-ssh-proxy session(s).
 
     .EXAMPLE
-    Enter-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -privateKeyFile "C:\Users\admin\.ssh\id_ecdsa_servers" -userName root
+    $connectionConfig = @(
+        [PSCustomObject]@{
+            MachineName       = 'ARC-01'
+            ResourceGroupName = 'RG'
+        },
 
-    1. Connection to the selected machine will be made via
-        - SSH using local user 'root'
-        - followed by creation of the remote PowerShell interactive session (through created SSH session).
+        [PSCustomObject]@{
+            MachineName       = 'ARC-02'
+            ResourceGroupName = 'RG'
+        },
 
-    Specified private SSH key will be used to authenticate.
+        [PSCustomObject]@{
+            MachineName       = 'ARC-B13'
+            ResourceGroupName = 'RGXXX'
+        }
+    )
 
-    .EXAMPLE
-    Enter-ArcPSSession -keyVault KeyVaultArc -secretName AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY
+    Invoke-ArcCommand -scriptBlock {hostname} -connectionConfig $connectionConfig -Verbose
 
-    1. GUI with available ARC machines will be shown to pick one.
-    2. Connection to the selected machine will be made via
-        - SSH using local user 'administrator' and temporary private key (retrieved from the KeyVault)
-        - followed by creation of the remote PowerShell interactive session (through created SSH session).
-
-    The specified KeyVault and secret will be used to temporarily retrieve the SSH private key
+    Run specified command against ARC machines specified in the $connectionConfig via arc-ssh-proxy session(s).
 
     .NOTES
     Prerequisites:
@@ -96,14 +98,25 @@
         4. Public SSH key has to be set on the server and private key has to be on your device
 
     Debugging:
-        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('keyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
     param (
+        [Parameter(Mandatory = $true, ParameterSetName = "MultipleMachines")]
+        [ValidateNotNullOrEmpty()]
+        [PSCustomObject[]] $connectionConfig,
+
+        [Parameter(Mandatory = $true)]
+        [ScriptBlock] $scriptBlock,
+
+        $argumentList,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $resourceGroupName,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $machineName,
 
@@ -132,6 +145,16 @@
         $userName = "Administrator"
     }
 
+    if ($connectionConfig) {
+        foreach ($config in $connectionConfig) {
+            $property = $config | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
+
+            if ($config.count -ne 2 -or ('MachineName' -notin $property -or 'ResourceGroupName' -notin $property)) {
+                throw "Connection object isn't in the correct format. It has to be PSCustomObject with two properties: 'MachineName' and 'ResourceGroupName'"
+            }
+        }
+    }
+
     if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
@@ -142,22 +165,34 @@
     #endregion checks
 
     #region get missing parameter values
-    while (!$resourceGroupName -and !$machineName) {
-        if (!$arcMachineList) {
-            $arcMachineList = Get-ArcMachineOverview
+    if ($resourceGroupName -and $machineName) {
+        $connectionConfig = [PSCustomObject]@{
+            MachineName       = $machineName
+            ResourceGroupName = $resourceGroupName
         }
+    } else {
+        while (!$connectionConfig) {
+            if (!$arcMachineList) {
+                $arcMachineList = Get-ArcMachineOverview
 
-        $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
+                if (!$arcMachineList) {
+                    throw "Unable to find any ARC machines"
+                }
+            }
 
-        $resourceGroupName = $selected.resourceGroup
-        $machineName = $selected.name
+            $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Multiple | % {
+                $connectionConfig += [PSCustomObject]@{
+                    MachineName       = $_.Name
+                    ResourceGroupName = $_.ResourceGroup
+                }
+            }
+        }
     }
     #endregion get missing parameter values
 
     #region get/create ARC session(s)
     $PSBoundParameters2 = @{
-        resourceGroupName = $resourceGroupName
-        machineName       = $machineName
+        ConnectionConfig = $connectionConfig
     }
     # add explicitly specified parameters if any
     $PSBoundParameters.GetEnumerator() | ? Key -In "UserName", "MachineType", "PrivateKeyFile", "KeyVault", "SecretName" | % {
@@ -166,6 +201,14 @@
     $arcSession = New-ArcPSSession @PSBoundParameters2
     #endregion get/create ARC session(s)
 
-    #TODO any benefit of using Enter-AzVM?
-    Enter-PSSession -Session $arcSession
+    # invoke the command on the ARC machine(s)
+    $param = @{
+        Session     = $arcSession
+        ScriptBlock = $scriptBlock
+    }
+    if ($argumentList) {
+        $param.ArgumentList = $argumentList
+    }
+
+    Invoke-Command @param
 }

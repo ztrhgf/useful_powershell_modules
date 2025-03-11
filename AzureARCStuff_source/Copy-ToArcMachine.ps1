@@ -1,10 +1,12 @@
 ﻿function Copy-ToArcMachine {
     <#
     .SYNOPSIS
-    Copy-Item alternative for ARC machines.
+    Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
+    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
 
     .DESCRIPTION
-    Copy-Item alternative for ARC machines.
+    Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
+    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
 
     .PARAMETER path
     Source path for the Copy-Item operation.
@@ -127,10 +129,14 @@
     }
     #endregion checks
 
-    # get missing parameter values
+    #region get missing parameter values
     while (!$resourceGroupName -and !$machineName) {
         if (!$arcMachineList) {
             $arcMachineList = Get-ArcMachineOverview
+
+            if (!$arcMachineList) {
+                throw "Unable to find any ARC machines"
+            }
         }
 
         $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
@@ -138,31 +144,19 @@
         $resourceGroupName = $selected.resourceGroup
         $machineName = $selected.name
     }
+    #endregion get missing parameter values
 
-    # get existing sessions
-    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
-
-    # use existing session if possible or create a new one
-    if ($existingSession) {
-        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
-        $session = $existingSession
-    } else {
-        Write-Verbose "Creating new session"
-        $PSBoundParameters2 = @{
-            resourceGroupName = $resourceGroupName
-            machineName       = $machineName
-        }
-        # add explicitly specified parameters if any
-        $PSBoundParameters.GetEnumerator() | ? Key -NotIn "Path", "Destination" | % {
-            $PSBoundParameters2.($_.Key) = $_.Value
-        }
-        $session = New-ArcPSSession @PSBoundParameters2 -ErrorAction Stop
+    #region get/create ARC session(s)
+    $PSBoundParameters2 = @{
+        resourceGroupName = $resourceGroupName
+        machineName       = $machineName
     }
-
-    Copy-Item -Path $path -Destination $destination -ToSession $session -Force
-
-    # session cleanup
-    if (!$existingSession) {
-        Remove-PSSession -Session $session
+    # add explicitly specified parameters if any
+    $PSBoundParameters.GetEnumerator() | ? Key -In "UserName", "MachineType", "PrivateKeyFile", "KeyVault", "SecretName" | % {
+        $PSBoundParameters2.($_.Key) = $_.Value
     }
+    $arcSession = New-ArcPSSession @PSBoundParameters2
+    #endregion get/create ARC session(s)
+
+    Copy-Item -Path $path -Destination $destination -ToSession $arcSession -Force
 }

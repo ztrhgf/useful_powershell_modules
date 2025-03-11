@@ -1,4 +1,6 @@
-﻿function New-ArcPSSession {
+﻿#Requires -PSEdition Core
+
+function New-ArcPSSession {
     <#
     .SYNOPSIS
     Enter interactive remote session to ARC machine via arc-ssh-proxy.
@@ -10,6 +12,13 @@
     2. PS remote session via created SSH session will be made
 
     Check NOTES for more details.
+
+    .PARAMETER connectionConfig
+    PSCustomObject(s) where two properties have to be defined:
+     - MachineName (ARC machine name)
+     - ResourceGroupName (RG where the machine is located)
+
+    Can be used to invoke command against multiple ARC machines (unlike parameters 'machineName' and 'resourceGroupName' which can target only one)
 
     .PARAMETER resourceGroupName
     Nam of the resource group where the ARC machine is placed.
@@ -56,7 +65,7 @@
 
     1. GUI with available ARC machines will be shown to pick one.
     2. Connection to the selected machine will be made via
-        - SSH using local user 'administrator'
+        - SSH using local user 'Administrator'
         - followed by creation of the remote PowerShell session (through created SSH session).
 
     If $_arcSSHKeyVaultName and $_ITSSHSecretName are set then private SSH key will be temporarily retrieved from the selected KeyVault.
@@ -66,7 +75,7 @@
     $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01
 
     1. Connection to the specified machine will be made via
-        - SSH using local user 'administrator'
+        - SSH using local user 'Administrator'
         - followed by creation of the remote PowerShell session (through created SSH session).
 
     If $_arcSSHKeyVaultName and $_ITSSHSecretName are set then private SSH key will be temporarily retrieved from the selected KeyVault.
@@ -77,10 +86,32 @@
     $session = New-ArcPSSession -resourceGroupName arcMachines -machineName arcServer01 -privateKeyFile "C:\Users\admin\.ssh\id_ecdsa_servers"
 
     1. Connection to the selected machine will be made via
-        - SSH using local user 'root'
+        - SSH using local user 'Administrator'
         - followed by creation of the remote PowerShell session (through created SSH session).
 
     Specified private SSH key will be used to authenticate.
+
+    .EXAMPLE
+    $connectionConfig = @(
+        [PSCustomObject]@{
+            MachineName       = 'testo-noad-srv'
+            ResourceGroupName = 'ARC_Machines'
+        },
+
+        [PSCustomObject]@{
+            MachineName       = 'WIN-OQ0E0OHUK4H'
+            ResourceGroupName = 'ARC_Machines'
+        }
+    )
+
+    $arcSessions = New-ArcPSSession -connectionConfig $connectionConfig
+
+    1. Connection to the specified machines will be made via
+        - SSH using local user 'Administrator'
+        - followed by creation of the remote PowerShell sessions (through created SSH session).
+
+    If $_arcSSHKeyVaultName and $_ITSSHSecretName are set then private SSH key will be temporarily retrieved from the selected KeyVault.
+    Otherwise locally stored private key (c:\Users\<user>\.ssh\id_ecdsa) will be used.
 
     .NOTES
     Prerequisites:
@@ -99,11 +130,17 @@
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
     param (
+        [Parameter(Mandatory = $true, ParameterSetName = "MultipleMachines")]
+        [ValidateNotNullOrEmpty()]
+        [PSCustomObject[]] $connectionConfig,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $resourceGroupName,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
-        [string] $machineName,
+        [string[]] $machineName,
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
@@ -138,60 +175,178 @@
     }
     #endregion checks
 
-    # get missing parameter values
-    while (!$resourceGroupName -and !$machineName) {
-        if (!$arcMachineList) {
-            $arcMachineList = Get-ArcMachineOverview
+    #region get missing parameter values
+    if ($resourceGroupName -and $machineName) {
+        $connectionConfig = [PSCustomObject]@{
+            MachineName       = $machineName
+            ResourceGroupName = $resourceGroupName
+        }
+    } else {
+        while (!$connectionConfig) {
+            if (!$arcMachineList) {
+                $arcMachineList = Get-ArcMachineOverview
+
+                if (!$arcMachineList) {
+                    throw "Unable to find any ARC machines"
+                }
+            }
+
+            $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Multiple | % {
+                $connectionConfig += [PSCustomObject]@{
+                    MachineName       = $_.Name
+                    ResourceGroupName = $_.ResourceGroup
+                }
+            }
+        }
+    }
+    #endregion get missing parameter values
+
+    #region helper functions
+    function Get-ArcPSSession {
+        <#
+        .SYNOPSIS
+        Function returns opened SSH PSSession for selected ARC machine.
+
+        .DESCRIPTION
+        Function returns opened SSH PSSession for selected ARC machine.
+        It uses specific session name format when searching for the sessions (I create ARC sessions with name "$resourceGroupName_$machineName").
+
+        .PARAMETER resourceGroupName
+        Resource group name where ARC machine is located.
+
+        .PARAMETER machineName
+        Name of the ARC machine.
+
+        .PARAMETER PSSessionList
+        If provided, just specified sessions will be searched for instead of retrieval of all existing sessions.
+
+        .EXAMPLE
+        $session = Get-ArcPSSession -resourceGroupName $resourceGroupName -machineName $machineName
+
+        Returns existing usable SSH PSSession for selected ARC machine.
+        .EXAMPLE
+        $existingSession = Get-PSSession | ? { $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | Group-Object -Property Name | % { $_.Group | select -First 1 }
+        $session = Get-ArcPSSession -resourceGroupName $resourceGroupName -machineName $machineName -PSSessionList $existingSession
+
+        Returns PSSession matching selected ARC machine from the given session list.
+        #>
+
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string] $resourceGroupName,
+
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string] $machineName,
+
+            [System.Management.Automation.Runspaces.PSSession[]] $PSSessionList
+        )
+
+        if ($PSSessionList) {
+            $existingSession = $PSSessionList
+        } else {
+            $existingSession = Get-PSSession | ? { $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | Group-Object -Property Name | % { $_.Group | select -First 1 }
         }
 
-        $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
-
-        $resourceGroupName = $selected.resourceGroup
-        $machineName = $selected.name
+        $existingSession | ? { $_.ComputerName -eq $machineName -and $_.Name -eq "$resourceGroupName`_$machineName" }
     }
-
-    # get existing sessions
-    $existingSession = Get-PSSession | ? { $_.ComputerName -eq $machineName -and $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | select -First 1
-
-    # use existing session if possible or create a new one
-    if ($existingSession) {
-        Write-Verbose "Reusing existing session '$($existingSession.Name)'"
-        return $existingSession
-    }
-
-    $proxyConfig = Export-AzSshConfig -ResourceGroupName $resourceGroupName -Name $machineName -LocalUser $userName -ResourceType $machineType -ConfigFilePath "$env:temp\sshconfig.config" -Force -ErrorAction Stop
-
-    $options = @{ProxyCommand = ('"' + ($proxyConfig.ProxyCommand -replace '"') + '"') }
-
-    # use KeyVault private key instead of local one
-    if ($keyVault -and $secretName) {
-        # private key saved in the KeyVault should be used for authentication instead of existing local private key
-
-        # remove the parameter path validation
-        (Get-Variable privateKeyFile).Attributes.Clear()
-
-        # where the key will be saved
-        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
-
-        # saving private key to temp file
-        Write-Verbose "Saving private key to the '$privateKeyFile'"
-        Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
-    }
-
-    $param = @{
-        HostName = $machineName
-        UserName = $userName
-        Options  = $options
-    }
-    if ($privateKeyFile) {
-        $param.keyfilepath = $privateKeyFile
-    }
+    #endregion helper functions
 
     try {
-        New-PSSession @param
+        # get existing usable SSH sessions
+        $existingSession = Get-PSSession | ? { $_.Transport -eq "SSH" -and $_.State -eq "Opened" } | Group-Object -Property Name | % { $_.Group | select -First 1 }
+
+        #region determine if some session needs to be created
+        $missingSession = $false
+
+        foreach ($config in $connectionConfig) {
+            $machineName = $config.MachineName
+            $resourceGroupName = $config.ResourceGroupName
+
+            if (!(Get-ArcPSSession -resourceGroupName $resourceGroupName -machineName $machineName -PSSessionList $existingSession)) {
+                $missingSession = $true
+                break
+            }
+        }
+        #endregion determine if some session needs to be created
+
+        # use KeyVault private key instead of local one
+        if ($missingSession -and ($keyVault -and $secretName)) {
+            # private key saved in the KeyVault should be used for authentication instead of existing local private key
+
+            # remove the parameter path validation
+            (Get-Variable privateKeyFile).Attributes.Clear()
+
+            # where the key will be saved
+            $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+
+            # saving private key to temp file
+            Write-Verbose "Saving private key to the '$privateKeyFile'"
+            Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+        } else {
+            Write-Verbose "Default private SSH key will be used"
+        }
+
+        #region return usable and/or newly created sessions
+        # create ssh proxy config for missing sessions
+        $connectionConfig | % -Parallel {
+            $config = $_
+            [string]$machineName = $config.MachineName
+            $resourceGroupName = $config.ResourceGroupName
+            $configPath = "$env:temp\sshconfig_$resourceGroupName`_$machineName.config"
+
+            $VerbosePreference = $using:VerbosePreference
+
+            $exstSession = $using:existingSession | ? { $_.ComputerName -eq $machineName -and $_.Name -eq "$resourceGroupName`_$machineName" }
+
+            # use existing session if possible or create a new one
+            if (!$exstSession) {
+                Write-Verbose "Creating new ssh proxy configuration for '$machineName'"
+                $proxyConfig = Export-AzSshConfig -ResourceGroupName $resourceGroupName -Name $machineName -LocalUser $using:userName -ResourceType $using:machineType -ConfigFilePath $configPath -Force -Overwrite
+            }
+        }
+
+        # pssessions cannot be created in the separate runspace (-Parallel), therefore this second foreach cycle
+        foreach ($config in $connectionConfig) {
+            $machineName = $config.MachineName
+            $resourceGroupName = $config.ResourceGroupName
+            $configPath = "$env:temp\sshconfig_$resourceGroupName`_$machineName.config"
+
+            $exstSession = Get-ArcPSSession -resourceGroupName $resourceGroupName -machineName $machineName -PSSessionList $existingSession
+
+            # use existing session if possible or create a new one
+            if ($exstSession) {
+                Write-Verbose "Reusing existing session '$($exstSession.Name)' for '$machineName' machine"
+                $exstSession
+            } else {
+                Write-Verbose "Creating new session for connecting to '$machineName'"
+                if (!(Test-Path $configPath -ea SilentlyContinue)) {
+                    Write-Error "There is no proxy configuration created for '$machineName' ($resourceGroupName). Skipping!"
+                    continue
+                }
+                $proxyCommand = Get-Content $configPath | Select-String -Pattern "ProxyCommand"
+                $proxyCommand = $proxyCommand -replace "\s*ProxyCommand\s*"
+                $options = @{ProxyCommand = ('"' + ($proxyCommand -replace '"') + '"') }
+
+                $param = @{
+                    Name     = "$resourceGroupName`_$machineName"
+                    HostName = $machineName
+                    UserName = $userName
+                    Options  = $options
+                }
+                if ($privateKeyFile) {
+                    $param.keyfilepath = $privateKeyFile
+                }
+
+                New-PSSession @param
+            }
+        }
+        #endregion return usable and/or newly created sessions
     } finally {
         # safely delete stored private key
-        if ($keyVault -and $secretName) {
+        if ($missingSession -and ($keyVault -and $secretName)) {
             #region helper functions
             function Remove-FileSecure {
                 <#
@@ -272,6 +427,7 @@
             }
             #endregion helper functions
 
+            Write-Verbose "Removing SSH key '$privateKeyFile'"
             Remove-FileSecure $privateKeyFile
         }
     }

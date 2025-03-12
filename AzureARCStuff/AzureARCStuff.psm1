@@ -1328,7 +1328,7 @@ function New-ArcPSSession {
         $missingSession = $false
 
         foreach ($config in $connectionConfig) {
-            $machineName = $config.MachineName
+            [string]$machineName = $config.MachineName
             $resourceGroupName = $config.ResourceGroupName
 
             if (!(Get-ArcPSSession -resourceGroupName $resourceGroupName -machineName $machineName -PSSessionList $existingSession)) {
@@ -1346,7 +1346,7 @@ function New-ArcPSSession {
             (Get-Variable privateKeyFile).Attributes.Clear()
 
             # where the key will be saved
-            $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+            $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
 
             # saving private key to temp file
             Write-Verbose "Saving private key to the '$privateKeyFile'"
@@ -1376,7 +1376,7 @@ function New-ArcPSSession {
 
         # pssessions cannot be created in the separate runspace (-Parallel), therefore this second foreach cycle
         foreach ($config in $connectionConfig) {
-            $machineName = $config.MachineName
+            [string]$machineName = $config.MachineName
             $resourceGroupName = $config.ResourceGroupName
             $configPath = "$env:temp\sshconfig_$resourceGroupName`_$machineName.config"
 
@@ -1411,7 +1411,7 @@ function New-ArcPSSession {
         }
         #endregion return usable and/or newly created sessions
     } finally {
-        # safely delete stored private key
+        # sensitive files cleanup
         if ($missingSession -and ($keyVault -and $secretName)) {
             #region helper functions
             function Remove-FileSecure {
@@ -1495,6 +1495,11 @@ function New-ArcPSSession {
 
             Write-Verbose "Removing SSH key '$privateKeyFile'"
             Remove-FileSecure $privateKeyFile
+
+            Get-ChildItem "$env:temp\az_ssh_config" -Recurse -File | % {
+                Write-Verbose "Removing SSH relay information '$($_.FullName)'"
+                Remove-FileSecure $_.FullName
+            }
         }
     }
 }

@@ -160,7 +160,7 @@ PrivateData = @{
                                                        - change in permission filtering logic, change in the returned output (error messages), ...
             1.1.1
                 EDIT
-                    New-GraphAPIAuthHeader - support for Az 4.x
+                    New-GraphAPIAuthHeader - support for Az 5.x (SecureString returned by Get-AzAccessToken)
                 '
 
         # Prerelease string of this module

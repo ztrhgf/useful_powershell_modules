@@ -7,8 +7,6 @@
     Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
     It is the same data as downloaded csv from https://dev.azure.com/<organizationName>/_settings/organizationAad.
 
-    Function uses MSAL to authenticate (requires MSAL.PS module).
-
     .PARAMETER tenantId
     (optional) ID of your Azure tenant.
     Of omitted, tenantId from MSAL auth. ticket will be used.
@@ -32,8 +30,7 @@
     $header = New-AzureDevOpsAuthHeader -ErrorAction Stop
 
     if (!$tenantId) {
-        $tenantId = $msalToken.tenantId
-        Write-Verbose "Set TenantId to $tenantId (retrieved from MSAL token)"
+        throw "'tenantId' parameter cannot be empty"
     }
 
     # URL retrieved thanks to developer mod at page https://dev.azure.com/<organizationName>/_settings/organizationAad

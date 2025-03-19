@@ -133,9 +133,6 @@ function Get-AzureAuditAggregatedSignInEvent {
     Get-AzureAuditAggregatedSignInEvent -type summarizedServicePrincipal -appId 'aca0ba6e-7b50-4aa1-af0e-327222ba584c'
 
     Get all 'Service principal sign-ins' events for selected enterprise app aggregated by 1 day.
-
-    .NOTES
-    Token can be created using (Get-AzAccessToken -ResourceTypeName AadGraph).token.
     #>
 
     [CmdletBinding()]
@@ -173,11 +170,12 @@ function Get-AzureAuditAggregatedSignInEvent {
         [string] $aggregationWindow = '1d'
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -ErrorAction Stop
+    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -AsSecureString -ErrorAction Stop
+    $token = [PSCredential]::New('dummy', $accessToken.Token).GetNetworkCredential().Password
 
     if (!$tenantId) {
         $tenantId = $accessToken.TenantId
@@ -234,7 +232,7 @@ function Get-AzureAuditAggregatedSignInEvent {
 
     $header = @{
         "Content-Type" = "application/json"
-        Authorization  = "Bearer $($accessToken.token)"
+        Authorization  = "Bearer $token"
     }
 
     Invoke-GraphAPIRequest -uri $url -header $header
@@ -253,7 +251,7 @@ function Get-AzureAuditSignInEvent {
     It is CasE SENSitivE!
 
     .PARAMETER appId
-    AppId of the app you want to get sign-in logs for.
+    AppId of the app(s) you want to get sign-in logs for.
 
     .PARAMETER from
     Date when the search should start.
@@ -288,7 +286,7 @@ function Get-AzureAuditSignInEvent {
     param (
         [string] $userPrincipalName,
 
-        [string] $appId,
+        [string[]] $appId,
 
         [ValidateScript({
                 if (($_.getType().name -eq "string" -and [DateTime]::Parse($_)) -or ($_.getType().name -eq "dateTime")) {
@@ -330,7 +328,14 @@ function Get-AzureAuditSignInEvent {
         $filter += "UserPrincipalName eq '$userPrincipalName'"
     }
     if ($appId) {
-        $filter += "AppId eq '$appId'"
+        $appIdFilter = ""
+        $appId | % {
+            if ($appIdFilter) {
+                $appIdFilter += " or "
+            }
+            $appIdFilter += "AppId eq '$_'"
+        }
+        $filter += "($appIdFilter)"
     }
     if ($from) {
         # Azure logs use UTC time
@@ -374,8 +379,6 @@ function Get-AzureDevOpsOrganizationOverview {
     Function for getting list of all Azure DevOps organizations that uses your AzureAD directory.
     It is the same data as downloaded csv from https://dev.azure.com/<organizationName>/_settings/organizationAad.
 
-    Function uses MSAL to authenticate (requires MSAL.PS module).
-
     .PARAMETER tenantId
     (optional) ID of your Azure tenant.
     Of omitted, tenantId from MSAL auth. ticket will be used.
@@ -399,8 +402,7 @@ function Get-AzureDevOpsOrganizationOverview {
     $header = New-AzureDevOpsAuthHeader -ErrorAction Stop
 
     if (!$tenantId) {
-        $tenantId = $msalToken.tenantId
-        Write-Verbose "Set TenantId to $tenantId (retrieved from MSAL token)"
+        throw "'tenantId' parameter cannot be empty"
     }
 
     # URL retrieved thanks to developer mod at page https://dev.azure.com/<organizationName>/_settings/organizationAad

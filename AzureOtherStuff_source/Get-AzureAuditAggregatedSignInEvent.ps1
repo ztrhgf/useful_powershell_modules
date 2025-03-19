@@ -44,9 +44,6 @@ function Get-AzureAuditAggregatedSignInEvent {
     Get-AzureAuditAggregatedSignInEvent -type summarizedServicePrincipal -appId 'aca0ba6e-7b50-4aa1-af0e-327222ba584c'
 
     Get all 'Service principal sign-ins' events for selected enterprise app aggregated by 1 day.
-
-    .NOTES
-    Token can be created using (Get-AzAccessToken -ResourceTypeName AadGraph).token.
     #>
 
     [CmdletBinding()]
@@ -84,11 +81,12 @@ function Get-AzureAuditAggregatedSignInEvent {
         [string] $aggregationWindow = '1d'
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
-    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -ErrorAction Stop
+    $accessToken = Get-AzAccessToken -ResourceUri 'https://graph.windows.net' -AsSecureString -ErrorAction Stop
+    $token = [PSCredential]::New('dummy', $accessToken.Token).GetNetworkCredential().Password
 
     if (!$tenantId) {
         $tenantId = $accessToken.TenantId
@@ -145,7 +143,7 @@ function Get-AzureAuditAggregatedSignInEvent {
 
     $header = @{
         "Content-Type" = "application/json"
-        Authorization  = "Bearer $($accessToken.token)"
+        Authorization  = "Bearer $token"
     }
 
     Invoke-GraphAPIRequest -uri $url -header $header

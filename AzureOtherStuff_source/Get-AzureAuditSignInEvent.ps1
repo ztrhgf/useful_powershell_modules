@@ -11,7 +11,7 @@
     It is CasE SENSitivE!
 
     .PARAMETER appId
-    AppId of the app you want to get sign-in logs for.
+    AppId of the app(s) you want to get sign-in logs for.
 
     .PARAMETER from
     Date when the search should start.
@@ -46,7 +46,7 @@
     param (
         [string] $userPrincipalName,
 
-        [string] $appId,
+        [string[]] $appId,
 
         [ValidateScript({
                 if (($_.getType().name -eq "string" -and [DateTime]::Parse($_)) -or ($_.getType().name -eq "dateTime")) {
@@ -88,7 +88,14 @@
         $filter += "UserPrincipalName eq '$userPrincipalName'"
     }
     if ($appId) {
-        $filter += "AppId eq '$appId'"
+        $appIdFilter = ""
+        $appId | % {
+            if ($appIdFilter) {
+                $appIdFilter += " or "
+            }
+            $appIdFilter += "AppId eq '$_'"
+        }
+        $filter += "($appIdFilter)"
     }
     if ($from) {
         # Azure logs use UTC time

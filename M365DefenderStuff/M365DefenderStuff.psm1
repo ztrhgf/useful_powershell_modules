@@ -721,15 +721,15 @@ function New-M365DefenderAuthHeader {
     }
 
     if ($identity) {
-        # connecting using managed identity
+        # connecting using authenticated managed identity
 
         if (!(Get-Command "Get-AzAccessToken" -ea SilentlyContinue)) {
             throw "'Get-AzAccessToken' command is missing (module Az.Accounts). Unable to continue"
         }
 
         $sourceAppIdUri = 'https://api.securitycenter.microsoft.com/.default'
-        $response = Get-AzAccessToken -ResourceUri $sourceAppIdUri
-        $token = $response.token
+        $secureToken = (Get-AzAccessToken -ResourceUri $sourceAppIdUri -AsSecureString).Token
+        $token = [PSCredential]::New('dummy', $secureToken).GetNetworkCredential().Password
 
         if (!$token) {
             throw "Unable to obtain an auth. token. Are you authenticated using managed identity via 'Connect-AzAccount -Identity'?"
@@ -751,8 +751,8 @@ function New-M365DefenderAuthHeader {
             $token = $authResponse.access_token
         } else {
             # connecting using existing Azure session
-            $AccessToken = Get-AzAccessToken -ResourceUri 'https://api.securitycenter.microsoft.com' -ErrorAction Stop
-            $token = $AccessToken.token
+            $secureToken = (Get-AzAccessToken -ResourceUri 'https://api.securitycenter.microsoft.com' -AsSecureString -ErrorAction Stop).Token
+            $token = [PSCredential]::New('dummy', $secureToken).GetNetworkCredential().Password
         }
 
         if (!$token) {

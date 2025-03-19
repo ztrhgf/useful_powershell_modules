@@ -28,7 +28,7 @@
     Save given hashtable to variable myVar.
 
     .NOTES
-    Same as original Get-AutomationVariable command, can be used only inside a Runbook!
+    Same as original Set-AutomationVariable command, can be used only inside a Runbook!
     #>
 
     [CmdletBinding()]
@@ -39,7 +39,7 @@
         $value
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "Authentication needed. Please call 'Connect-AzAccount -Identity'."
     }
 

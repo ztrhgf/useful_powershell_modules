@@ -52,7 +52,7 @@
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -76,7 +76,7 @@
     }
     #endregion get missing arguments
 
-    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | % {
+    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | ? { $_ | Get-Member -MemberType NoteProperty } | % {
         $module = $_
         $moduleName = $_ | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
         $moduleVersion = $module.$moduleName

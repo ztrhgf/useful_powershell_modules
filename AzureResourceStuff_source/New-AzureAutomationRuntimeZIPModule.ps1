@@ -59,7 +59,7 @@
     $ErrorActionPreference = "Stop"
     $InformationPreference = "Continue"
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -69,13 +69,7 @@
     $subscriptionId = (Get-AzContext).Subscription.Id
 
     # create auth token
-    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
-    if ($accessToken.Token) {
-        $header = @{
-            'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
-        }
-    }
+    $header = New-AzureAutomationGraphToken
 
     while (!$resourceGroupName) {
         $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"

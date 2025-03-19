@@ -58,7 +58,7 @@
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -143,7 +143,7 @@
                 Write-Information "`t$($testRunStatus.Status)"
             }
 
-            Start-Sleep 2
+            Start-Sleep 5
         } while ($testRunStatus.Status -notin "Stopped", "Completed", "Failed")
 
         $testRunStatus

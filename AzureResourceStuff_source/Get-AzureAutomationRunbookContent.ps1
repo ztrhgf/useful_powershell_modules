@@ -35,7 +35,7 @@
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -43,12 +43,8 @@
     $subscriptionId = (Get-AzContext).Subscription.Id
 
     # create auth token
-    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
-    if ($accessToken.Token) {
-        $header = @{
-            'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
-        }
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
     }
 
     while (!$resourceGroupName) {

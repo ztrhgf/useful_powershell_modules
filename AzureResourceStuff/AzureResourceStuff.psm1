@@ -76,7 +76,7 @@ function Copy-AzureAutomationRuntime {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -338,7 +338,7 @@ function Get-AutomationVariable2 {
         [string] $name
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "Authentication needed. Please call 'Connect-AzAccount -Identity'."
     }
 
@@ -394,7 +394,7 @@ function Get-AzureAutomationRunbookContent {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -402,12 +402,8 @@ function Get-AzureAutomationRunbookContent {
     $subscriptionId = (Get-AzContext).Subscription.Id
 
     # create auth token
-    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
-    if ($accessToken.Token) {
-        $header = @{
-            'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
-        }
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
     }
 
     while (!$resourceGroupName) {
@@ -478,7 +474,7 @@ function Get-AzureAutomationRunbookRuntime {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -567,7 +563,7 @@ function Get-AzureAutomationRunbookTestJobOutput {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -690,7 +686,7 @@ function Get-AzureAutomationRunbookTestJobStatus {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -794,7 +790,7 @@ function Get-AzureAutomationRuntime {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -894,7 +890,7 @@ function Get-AzureAutomationRuntimeAvailableDefaultModule {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -1024,7 +1020,7 @@ function Get-AzureAutomationRuntimeCustomModule {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -1111,7 +1107,7 @@ function Get-AzureAutomationRuntimeSelectedDefaultModule {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -1135,7 +1131,7 @@ function Get-AzureAutomationRuntimeSelectedDefaultModule {
     }
     #endregion get missing arguments
 
-    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | % {
+    Get-AzureAutomationRuntime -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -runtimeName $runtimeName -header $header | select -ExpandProperty properties | select -ExpandProperty defaultPackages | ? { $_ | Get-Member -MemberType NoteProperty } | % {
         $module = $_
         $moduleName = $_ | Get-Member -MemberType NoteProperty | select -ExpandProperty Name
         $moduleVersion = $module.$moduleName
@@ -1186,7 +1182,7 @@ function Get-AzureResource {
         [switch] $selectCurrentSubscription
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -1382,15 +1378,17 @@ function New-AzureAutomationGraphToken {
 
     $body = $body | ConvertTo-Json
 
-    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeEnvironmentName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
 
     #>
 
-    $accessToken = Get-AzAccessToken -ResourceUrl "https://management.azure.com" -ErrorAction Stop
-    if ($accessToken.Token) {
+    $secureToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com" -AsSecureString -ErrorAction Stop -WarningAction SilentlyContinue).Token
+    $token = [PSCredential]::New('dummy', $secureToken).GetNetworkCredential().Password
+
+    if ($token) {
         $header = @{
             'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
+            'Authorization' = "Bearer $token"
         }
 
         return $header
@@ -1529,7 +1527,7 @@ function New-AzureAutomationModule {
         }
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -1922,6 +1920,7 @@ function New-AzureAutomationRuntime {
         [ValidateSet('PowerShell', 'Python')]
         [string] $runtimeLanguage,
 
+        [Parameter(Mandatory = $true)]
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
 
@@ -1952,7 +1951,7 @@ function New-AzureAutomationRuntime {
 
     #region checks
     if ($defaultPackage -and $runtimeLanguage -ne 'PowerShell') {
-        Write-Warning "Parameter 'defaultModuleData' can be defined only for 'PowerShell' runtime language. Will be ignored."
+        Write-Warning "Parameter 'defaultPackage' can be defined only for 'PowerShell' runtime language. Will be ignored."
         $defaultPackage = @{}
     }
 
@@ -1961,7 +1960,7 @@ function New-AzureAutomationRuntime {
     }
     #endregion checks
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2145,7 +2144,7 @@ function New-AzureAutomationRuntimeModule {
         [switch] $dontWait
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2576,7 +2575,7 @@ function New-AzureAutomationRuntimeZIPModule {
     $ErrorActionPreference = "Stop"
     $InformationPreference = "Continue"
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2586,13 +2585,7 @@ function New-AzureAutomationRuntimeZIPModule {
     $subscriptionId = (Get-AzContext).Subscription.Id
 
     # create auth token
-    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
-    if ($accessToken.Token) {
-        $header = @{
-            'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
-        }
-    }
+    $header = New-AzureAutomationGraphToken
 
     while (!$resourceGroupName) {
         $resourceGroupName = Get-AzResourceGroup | select -ExpandProperty ResourceGroupName | Out-GridView -OutputMode Single -Title "Select resource group you want to process"
@@ -2717,7 +2710,7 @@ function Remove-AzureAutomationRuntime {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2821,7 +2814,7 @@ function Remove-AzureAutomationRuntimeModule {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2893,7 +2886,7 @@ function Set-AutomationVariable2 {
     Save given hashtable to variable myVar.
 
     .NOTES
-    Same as original Get-AutomationVariable command, can be used only inside a Runbook!
+    Same as original Set-AutomationVariable command, can be used only inside a Runbook!
     #>
 
     [CmdletBinding()]
@@ -2904,7 +2897,7 @@ function Set-AutomationVariable2 {
         $value
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "Authentication needed. Please call 'Connect-AzAccount -Identity'."
     }
 
@@ -2975,7 +2968,7 @@ function Set-AzureAutomationRunbookContent {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -2983,12 +2976,8 @@ function Set-AzureAutomationRunbookContent {
     $subscriptionId = (Get-AzContext).Subscription.Id
 
     # create auth token
-    $accessToken = Get-AzAccessToken -ResourceTypeName "Arm"
-    if ($accessToken.Token) {
-        $header = @{
-            'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
-        }
+    if (!$header) {
+        $header = New-AzureAutomationGraphToken
     }
 
     while (!$resourceGroupName) {
@@ -3060,7 +3049,7 @@ function Set-AzureAutomationRunbookRuntime {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3226,7 +3215,7 @@ function Set-AzureAutomationRuntimeDefaultModule {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3389,7 +3378,7 @@ function Set-AzureAutomationRuntimeDescription {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3487,7 +3476,7 @@ function Start-AzureAutomationRunbookTestJob {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3572,7 +3561,7 @@ function Start-AzureAutomationRunbookTestJob {
                 Write-Information "`t$($testRunStatus.Status)"
             }
 
-            Start-Sleep 2
+            Start-Sleep 5
         } while ($testRunStatus.Status -notin "Stopped", "Completed", "Failed")
 
         $testRunStatus
@@ -3626,7 +3615,7 @@ function Stop-AzureAutomationRunbookTestJob {
         [hashtable] $header
     )
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3702,7 +3691,7 @@ function Update-AzureAutomationModule {
         throw "Choose allModule or allCustomModule"
     }
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3842,6 +3831,11 @@ function Update-AzureAutomationRunbookModule {
     .PARAMETER runtimeName
     Name of the runtime environment you want to retrieve.
 
+    .PARAMETER safely
+    Switch to create copy of the runtime before updating its modules.
+    Such "copy" will be set as the new runtime for all affected runbooks before update process starts.
+    After update process finishes, affected runbooks will be switched back to the updated runtime and runtime copy will be deleted.
+
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
 
@@ -3896,6 +3890,8 @@ function Update-AzureAutomationRunbookModule {
 
         [string[]] $runtimeName,
 
+        [switch] $safely,
+
         [hashtable] $header
     )
 
@@ -3903,7 +3899,7 @@ function Update-AzureAutomationRunbookModule {
         throw "Choose moduleName or allCustomModule"
     }
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -3931,7 +3927,7 @@ function Update-AzureAutomationRunbookModule {
     #endregion get missing arguments
 
     foreach ($runtName in $runtimeName) {
-        "Processing Runtime '$runtName' (ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
+        "Processing Runtime '$runtName' (AutomationAccountName $automationAccountName ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
 
         $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtName -header $header -ErrorAction Stop
 
@@ -3956,6 +3952,24 @@ function Update-AzureAutomationRunbookModule {
         if (!$automationModulesToUpdate) {
             Write-Warning "No module match the selected update criteria. Skipping"
             continue
+        }
+
+        if ($safely) {
+            $bkpRuntName = $runtName + "_" + (Get-Random)
+            "Creating runtime '$runtName' backup named '$bkpRuntName'"
+            $null = Copy-AzureAutomationRuntime -runtimeName $runtName -newRuntimeName $bkpRuntName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -ErrorAction Stop
+
+            # get all existing runbooks
+            $runbookList = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | ? RunbookType -EQ "PowerShell" | select -ExpandProperty Name
+
+            # find out which runbooks use runtime thats being updated
+            $affectedRunbookList = $runbookList | ? { (Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $_ -header $header).Name -eq $runtName }
+
+            # change runtime to the backup (old one) before updating the modules for each affected runbook
+            $affectedRunbookList | % {
+                "Changing runtime used in '$_' runbook to '$bkpRuntName'"
+                Set-AzureAutomationRunbookRuntime -runtimeName $bkpRuntName -runbookName $_ -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
+            }
         }
 
         foreach ($module in $automationModulesToUpdate) {
@@ -4010,6 +4024,17 @@ function Update-AzureAutomationRunbookModule {
 
             "Updating module $($module.Name) $($module.Version) >> $requiredModuleVersion"
             New-AzureAutomationRuntimeModule @param
+        }
+
+        if ($safely) {
+            # change runtime from the backup (old one) created before updating the modules, to the original one
+            $affectedRunbookList | % {
+                "Changing runtime used in '$_' runbook back to '$runtName'"
+                $null = Set-AzureAutomationRunbookRuntime -runtimeName $runtName -runbookName $_ -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
+            }
+
+            "Removing backup runtime '$bkpRuntName'"
+            $null = Remove-AzureAutomationRuntime -runtimeName $bkpRuntName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
         }
     }
 }

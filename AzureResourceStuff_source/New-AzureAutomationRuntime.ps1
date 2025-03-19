@@ -95,6 +95,7 @@
         [ValidateSet('PowerShell', 'Python')]
         [string] $runtimeLanguage,
 
+        [Parameter(Mandatory = $true)]
         [ArgumentCompleter( {
                 param ($Command, $Parameter, $WordToComplete, $CommandAst, $FakeBoundParams)
 
@@ -125,7 +126,7 @@
 
     #region checks
     if ($defaultPackage -and $runtimeLanguage -ne 'PowerShell') {
-        Write-Warning "Parameter 'defaultModuleData' can be defined only for 'PowerShell' runtime language. Will be ignored."
+        Write-Warning "Parameter 'defaultPackage' can be defined only for 'PowerShell' runtime language. Will be ignored."
         $defaultPackage = @{}
     }
 
@@ -134,7 +135,7 @@
     }
     #endregion checks
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 

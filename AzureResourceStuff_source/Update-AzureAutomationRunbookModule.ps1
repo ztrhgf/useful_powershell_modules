@@ -32,6 +32,11 @@
     .PARAMETER runtimeName
     Name of the runtime environment you want to retrieve.
 
+    .PARAMETER safely
+    Switch to create copy of the runtime before updating its modules.
+    Such "copy" will be set as the new runtime for all affected runbooks before update process starts.
+    After update process finishes, affected runbooks will be switched back to the updated runtime and runtime copy will be deleted.
+
     .PARAMETER header
     Authentication header that can be created via New-AzureAutomationGraphToken.
 
@@ -86,6 +91,8 @@
 
         [string[]] $runtimeName,
 
+        [switch] $safely,
+
         [hashtable] $header
     )
 
@@ -93,7 +100,7 @@
         throw "Choose moduleName or allCustomModule"
     }
 
-    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
+    if (!(Get-Command 'Get-AzAccessToken' -ErrorAction silentlycontinue) -or !($azAccessToken = Get-AzAccessToken -WarningAction SilentlyContinue -ErrorAction SilentlyContinue) -or $azAccessToken.ExpiresOn -lt [datetime]::now) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-AzAccount."
     }
 
@@ -121,7 +128,7 @@
     #endregion get missing arguments
 
     foreach ($runtName in $runtimeName) {
-        "Processing Runtime '$runtName' (ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
+        "Processing Runtime '$runtName' (AutomationAccountName $automationAccountName ResourceGroup: '$resourceGroupName' Subscription: '$subscription')"
 
         $currentAutomationCustomModules = Get-AzureAutomationRuntimeCustomModule -automationAccountName $automationAccountName -ResourceGroup $resourceGroupName -runtimeName $runtName -header $header -ErrorAction Stop
 
@@ -146,6 +153,24 @@
         if (!$automationModulesToUpdate) {
             Write-Warning "No module match the selected update criteria. Skipping"
             continue
+        }
+
+        if ($safely) {
+            $bkpRuntName = $runtName + "_" + (Get-Random)
+            "Creating runtime '$runtName' backup named '$bkpRuntName'"
+            $null = Copy-AzureAutomationRuntime -runtimeName $runtName -newRuntimeName $bkpRuntName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header -ErrorAction Stop
+
+            # get all existing runbooks
+            $runbookList = Get-AzAutomationRunbook -AutomationAccountName $automationAccountName -ResourceGroupName $resourceGroupName | ? RunbookType -EQ "PowerShell" | select -ExpandProperty Name
+
+            # find out which runbooks use runtime thats being updated
+            $affectedRunbookList = $runbookList | ? { (Get-AzureAutomationRunbookRuntime -automationAccountName $automationAccountName -resourceGroupName $resourceGroupName -runbookName $_ -header $header).Name -eq $runtName }
+
+            # change runtime to the backup (old one) before updating the modules for each affected runbook
+            $affectedRunbookList | % {
+                "Changing runtime used in '$_' runbook to '$bkpRuntName'"
+                Set-AzureAutomationRunbookRuntime -runtimeName $bkpRuntName -runbookName $_ -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
+            }
         }
 
         foreach ($module in $automationModulesToUpdate) {
@@ -200,6 +225,17 @@
 
             "Updating module $($module.Name) $($module.Version) >> $requiredModuleVersion"
             New-AzureAutomationRuntimeModule @param
+        }
+
+        if ($safely) {
+            # change runtime from the backup (old one) created before updating the modules, to the original one
+            $affectedRunbookList | % {
+                "Changing runtime used in '$_' runbook back to '$runtName'"
+                $null = Set-AzureAutomationRunbookRuntime -runtimeName $runtName -runbookName $_ -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
+            }
+
+            "Removing backup runtime '$bkpRuntName'"
+            $null = Remove-AzureAutomationRuntime -runtimeName $bkpRuntName -resourceGroupName $resourceGroupName -automationAccountName $automationAccountName -header $header
         }
     }
 }

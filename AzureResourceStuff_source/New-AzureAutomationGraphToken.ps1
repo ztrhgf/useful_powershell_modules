@@ -25,15 +25,17 @@ function New-AzureAutomationGraphToken {
 
     $body = $body | ConvertTo-Json
 
-    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeEnvironmentName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
+    Invoke-RestMethod2 -method Put -uri "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/runtimeEnvironments/$runtimeName/packages/$moduleName`?api-version=2023-05-15-preview" -body $body -headers $header
 
     #>
 
-    $accessToken = Get-AzAccessToken -ResourceUrl "https://management.azure.com" -ErrorAction Stop
-    if ($accessToken.Token) {
+    $secureToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com" -AsSecureString -ErrorAction Stop -WarningAction SilentlyContinue).Token
+    $token = [PSCredential]::New('dummy', $secureToken).GetNetworkCredential().Password
+
+    if ($token) {
         $header = @{
             'Content-Type'  = 'application/json'
-            'Authorization' = "Bearer {0}" -f $accessToken.Token
+            'Authorization' = "Bearer $token"
         }
 
         return $header

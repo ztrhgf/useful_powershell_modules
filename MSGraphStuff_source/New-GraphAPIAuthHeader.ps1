@@ -241,7 +241,8 @@ function New-GraphAPIAuthHeader {
 
         try {
             # test if connection already exists
-            $azConnectionToken = Get-AzAccessToken -ResourceTypeName MSGraph -ea Stop
+            $azConnectionToken = Get-AzAccessToken -ResourceTypeName MSGraph -AsSecureString -ErrorAction Stop
+            $token = [PSCredential]::New('dummy', $azConnectionToken.Token).GetNetworkCredential().Password
 
             # use AZ connection
 
@@ -249,7 +250,7 @@ function New-GraphAPIAuthHeader {
 
             $authHeader = @{
                 ExpiresOn     = $azConnectionToken.ExpiresOn
-                Authorization = $azConnectionToken.token
+                Authorization = $token
             }
 
             return $authHeader

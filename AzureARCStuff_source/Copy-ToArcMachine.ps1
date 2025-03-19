@@ -2,11 +2,11 @@
     <#
     .SYNOPSIS
     Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
-    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
+    Enables you to copy item(s) to your ARC machine(s) via arc-ssh-proxy.
 
     .DESCRIPTION
     Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
-    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
+    Enables you to copy item(s) to your ARC machine(s) via arc-ssh-proxy.
 
     .PARAMETER path
     Source path for the Copy-Item operation.
@@ -14,7 +14,14 @@
     .PARAMETER destination
     Destination path for the Copy-Item operation.
 
-    The folder structure has to already exist on the ARC machine! It won't be created automatically
+    The folder structure has to already exist on the ARC machine! It won't be created automatically.
+
+    .PARAMETER connectionConfig
+    PSCustomObject(s) where two properties have to be defined:
+     - MachineName (ARC machine name)
+     - ResourceGroupName (RG where the machine is located)
+
+    Can be used to copy files against multiple ARC machines (unlike parameters 'machineName' and 'resourceGroupName' which can target only one).
 
     .PARAMETER resourceGroupName
     Nam of the resource group where the ARC machine is placed.
@@ -30,6 +37,13 @@
     Name of the existing ARC-machine local user that will be used during SSH authentication.
 
     By default $_localAdminName or 'administrator' if empty.
+
+    .PARAMETER machineType
+    Type of the ARC machine.
+
+    Possible values are: 'Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines'
+
+    Default value is 'Microsoft.HybridCompute/machines'.
 
     .PARAMETER privateKeyFile
     Path to the SSH private key file.
@@ -89,14 +103,23 @@
         [Parameter(Mandatory = $true)]
         [string] $destination,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "MultipleMachines")]
+        [ValidateNotNullOrEmpty()]
+        [PSCustomObject[]] $connectionConfig,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $resourceGroupName,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $machineName,
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
+
+        [ValidateSet('Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines')]
+        [string] $machineType = 'Microsoft.HybridCompute/machines',
 
         [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
         [ValidateScript( {
@@ -130,26 +153,34 @@
     #endregion checks
 
     #region get missing parameter values
-    while (!$resourceGroupName -and !$machineName) {
-        if (!$arcMachineList) {
-            $arcMachineList = Get-ArcMachineOverview
-
+    if ($resourceGroupName -and $machineName) {
+        $connectionConfig = [PSCustomObject]@{
+            MachineName       = $machineName
+            ResourceGroupName = $resourceGroupName
+        }
+    } else {
+        while (!$connectionConfig) {
             if (!$arcMachineList) {
-                throw "Unable to find any ARC machines"
+                $arcMachineList = Get-ArcMachineOverview
+
+                if (!$arcMachineList) {
+                    throw "Unable to find any ARC machines"
+                }
+            }
+
+            $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Multiple | % {
+                $connectionConfig += [PSCustomObject]@{
+                    MachineName       = $_.Name
+                    ResourceGroupName = $_.ResourceGroup
+                }
             }
         }
-
-        $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
-
-        $resourceGroupName = $selected.resourceGroup
-        $machineName = $selected.name
     }
     #endregion get missing parameter values
 
     #region get/create ARC session(s)
     $PSBoundParameters2 = @{
-        resourceGroupName = $resourceGroupName
-        machineName       = $machineName
+        ConnectionConfig = $connectionConfig
     }
     # add explicitly specified parameters if any
     $PSBoundParameters.GetEnumerator() | ? Key -In "UserName", "MachineType", "PrivateKeyFile", "KeyVault", "SecretName" | % {
@@ -158,5 +189,9 @@
     $arcSession = New-ArcPSSession @PSBoundParameters2
     #endregion get/create ARC session(s)
 
-    Copy-Item -Path $path -Destination $destination -ToSession $arcSession -Force
+    # copy file(s) the command on the ARC machine(s)
+    $arcSession | % {
+        Write-Verbose "Copy items to the '$($_.ComputerName)'"
+        Copy-Item -Path $path -Destination $destination -ToSession $_ -Force
+    }
 }

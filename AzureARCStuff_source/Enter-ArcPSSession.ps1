@@ -26,6 +26,13 @@
 
     By default $_localAdminName or 'administrator' if empty.
 
+    .PARAMETER machineType
+    Type of the ARC machine.
+
+    Possible values are: 'Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines'
+
+    Default value is 'Microsoft.HybridCompute/machines'.
+
     .PARAMETER privateKeyFile
     Path to the SSH private key file.
 
@@ -109,6 +116,9 @@
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
+
+        [ValidateSet('Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines')]
+        [string] $machineType = 'Microsoft.HybridCompute/machines',
 
         [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
         [ValidateScript( {

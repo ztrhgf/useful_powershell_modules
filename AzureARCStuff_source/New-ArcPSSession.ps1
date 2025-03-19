@@ -272,21 +272,25 @@ function New-ArcPSSession {
         }
         #endregion determine if some session needs to be created
 
-        # use KeyVault private key instead of local one
-        if ($missingSession -and ($keyVault -and $secretName)) {
-            # private key saved in the KeyVault should be used for authentication instead of existing local private key
+        if ($missingSession) {
+            # use KeyVault SSH private key instead of the local one
+            if ($keyVault -and $secretName) {
+                # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
-            # remove the parameter path validation
-            (Get-Variable privateKeyFile).Attributes.Clear()
+                # remove the parameter path validation
+                (Get-Variable privateKeyFile).Attributes.Clear()
 
-            # where the key will be saved
-            $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
+                # where the key will be saved
+                $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
 
-            # saving private key to temp file
-            Write-Verbose "Saving private key to the '$privateKeyFile'"
-            Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+                # saving private key to temp file
+                Write-Verbose "Saving SSH private key to the '$privateKeyFile'"
+                Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+            } else {
+                Write-Verbose "Default private SSH key will be used"
+            }
         } else {
-            Write-Verbose "Default private SSH key will be used"
+            Write-Verbose "All required sessions already exist"
         }
 
         #region return usable and/or newly created sessions

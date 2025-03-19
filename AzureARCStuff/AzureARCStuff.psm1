@@ -2,11 +2,11 @@ function Copy-ToArcMachine {
     <#
     .SYNOPSIS
     Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
-    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
+    Enables you to copy item(s) to your ARC machine(s) via arc-ssh-proxy.
 
     .DESCRIPTION
     Copy-Item (via arc-ssh-proxy) proxy function for ARC machines.
-    Enables you to copy item(s) to your ARC machines via arc-ssh-proxy.
+    Enables you to copy item(s) to your ARC machine(s) via arc-ssh-proxy.
 
     .PARAMETER path
     Source path for the Copy-Item operation.
@@ -14,7 +14,14 @@ function Copy-ToArcMachine {
     .PARAMETER destination
     Destination path for the Copy-Item operation.
 
-    The folder structure has to already exist on the ARC machine! It won't be created automatically
+    The folder structure has to already exist on the ARC machine! It won't be created automatically.
+
+    .PARAMETER connectionConfig
+    PSCustomObject(s) where two properties have to be defined:
+     - MachineName (ARC machine name)
+     - ResourceGroupName (RG where the machine is located)
+
+    Can be used to copy files against multiple ARC machines (unlike parameters 'machineName' and 'resourceGroupName' which can target only one).
 
     .PARAMETER resourceGroupName
     Nam of the resource group where the ARC machine is placed.
@@ -30,6 +37,13 @@ function Copy-ToArcMachine {
     Name of the existing ARC-machine local user that will be used during SSH authentication.
 
     By default $_localAdminName or 'administrator' if empty.
+
+    .PARAMETER machineType
+    Type of the ARC machine.
+
+    Possible values are: 'Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines'
+
+    Default value is 'Microsoft.HybridCompute/machines'.
 
     .PARAMETER privateKeyFile
     Path to the SSH private key file.
@@ -89,14 +103,23 @@ function Copy-ToArcMachine {
         [Parameter(Mandatory = $true)]
         [string] $destination,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "MultipleMachines")]
+        [ValidateNotNullOrEmpty()]
+        [PSCustomObject[]] $connectionConfig,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $resourceGroupName,
 
+        [Parameter(Mandatory = $true, ParameterSetName = "OneMachine")]
         [ValidateNotNullOrEmpty()]
         [string] $machineName,
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
+
+        [ValidateSet('Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines')]
+        [string] $machineType = 'Microsoft.HybridCompute/machines',
 
         [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
         [ValidateScript( {
@@ -130,26 +153,34 @@ function Copy-ToArcMachine {
     #endregion checks
 
     #region get missing parameter values
-    while (!$resourceGroupName -and !$machineName) {
-        if (!$arcMachineList) {
-            $arcMachineList = Get-ArcMachineOverview
-
+    if ($resourceGroupName -and $machineName) {
+        $connectionConfig = [PSCustomObject]@{
+            MachineName       = $machineName
+            ResourceGroupName = $resourceGroupName
+        }
+    } else {
+        while (!$connectionConfig) {
             if (!$arcMachineList) {
-                throw "Unable to find any ARC machines"
+                $arcMachineList = Get-ArcMachineOverview
+
+                if (!$arcMachineList) {
+                    throw "Unable to find any ARC machines"
+                }
+            }
+
+            $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Multiple | % {
+                $connectionConfig += [PSCustomObject]@{
+                    MachineName       = $_.Name
+                    ResourceGroupName = $_.ResourceGroup
+                }
             }
         }
-
-        $selected = $arcMachineList | select name, resourceGroup, status | Out-GridView -Title "Select ARC machine to connect" -OutputMode Single
-
-        $resourceGroupName = $selected.resourceGroup
-        $machineName = $selected.name
     }
     #endregion get missing parameter values
 
     #region get/create ARC session(s)
     $PSBoundParameters2 = @{
-        resourceGroupName = $resourceGroupName
-        machineName       = $machineName
+        ConnectionConfig = $connectionConfig
     }
     # add explicitly specified parameters if any
     $PSBoundParameters.GetEnumerator() | ? Key -In "UserName", "MachineType", "PrivateKeyFile", "KeyVault", "SecretName" | % {
@@ -158,7 +189,11 @@ function Copy-ToArcMachine {
     $arcSession = New-ArcPSSession @PSBoundParameters2
     #endregion get/create ARC session(s)
 
-    Copy-Item -Path $path -Destination $destination -ToSession $arcSession -Force
+    # copy file(s) the command on the ARC machine(s)
+    $arcSession | % {
+        Write-Verbose "Copy items to the '$($_.ComputerName)'"
+        Copy-Item -Path $path -Destination $destination -ToSession $_ -Force
+    }
 }
 
 function Enter-ArcPSSession {
@@ -188,6 +223,13 @@ function Enter-ArcPSSession {
     Name of the existing ARC-machine local user that will be used during SSH authentication.
 
     By default $_localAdminName or 'administrator' if empty.
+
+    .PARAMETER machineType
+    Type of the ARC machine.
+
+    Possible values are: 'Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines'
+
+    Default value is 'Microsoft.HybridCompute/machines'.
 
     .PARAMETER privateKeyFile
     Path to the SSH private key file.
@@ -272,6 +314,9 @@ function Enter-ArcPSSession {
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
+
+        [ValidateSet('Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines')]
+        [string] $machineType = 'Microsoft.HybridCompute/machines',
 
         [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
         [ValidateScript( {
@@ -558,6 +603,13 @@ function Invoke-ArcCommand {
 
     By default $_localAdminName or 'administrator' if empty.
 
+    .PARAMETER machineType
+    Type of the ARC machine.
+
+    Possible values are: 'Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines'
+
+    Default value is 'Microsoft.HybridCompute/machines'.
+
     .PARAMETER privateKeyFile
     Path to the SSH private key file.
 
@@ -644,6 +696,9 @@ function Invoke-ArcCommand {
 
         [ValidateNotNullOrEmpty()]
         [string] $userName = $_localAdminName,
+
+        [ValidateSet('Microsoft.HybridCompute/machines', 'Microsoft.Compute/virtualMachines', 'Microsoft.ConnectedVMwarevSphere/virtualMachines', 'Microsoft.ScVmm/virtualMachines', 'Microsoft.AzureStackHCI/virtualMachines')]
+        [string] $machineType = 'Microsoft.HybridCompute/machines',
 
         [Parameter(Mandatory = $true, ParameterSetName = "PrivateKeyFile")]
         [ValidateScript( {
@@ -822,7 +877,9 @@ function Invoke-ArcRDP {
         4. Public SSH key has to be set on the server and private key has to be on your device
 
     Debugging:
-        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+        If you receive:
+            - "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+            - "no such identity: <pathToSSHPrivateKey>: No such file or directory" and you are asked to enter credentials. SSH authentication was made after the private key was automatically deleted. Try to run the function again or increase the value in $cleanupWaitTime variable.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -900,7 +957,7 @@ function Invoke-ArcRDP {
 
         # save user login and password for autologon using cmdkey (to store it in Cred. Manager)
         $computer = "localhost"
-        Write-Verbose "Saving credentials for $computer and $user to CredMan"
+        Write-Verbose "Saving credentials for host: $computer user: $user to CredMan"
         $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
         $Process = New-Object System.Diagnostics.Process
         $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
@@ -918,7 +975,7 @@ function Invoke-ArcRDP {
     }
     #endregion RDP autologon
 
-    # download private key from the KeyVault
+    # download SSH private key from the KeyVault
     if ($keyVault -and $secretName) {
         # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
@@ -926,22 +983,24 @@ function Invoke-ArcRDP {
         (Get-Variable privateKeyFile).Attributes.Clear()
 
         # where the key will be saved
-        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+        $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
 
         # saving private key to temp file
-        Write-Verbose "Saving private key to the '$privateKeyFile'"
+        Write-Verbose "Saving SSH private key to the '$privateKeyFile'"
         Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
     }
 
     #region cleanup
+    $cleanupWaitTime = 10
+
     if ($keyVault -and $secretName) {
         # remove the private key ASAP
-        Write-Verbose "SSH key will be removed in 7 seconds"
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($privateKeyFile)
+        Write-Verbose "SSH key will be removed in $cleanupWaitTime seconds"
+        $null = Start-Job -Name "cleanup_pvk" -ScriptBlock {
+            param ($privateKeyFile, $cleanupWaitTime)
 
             # we need to wait with deleting the file until function Enter-AzVM has been executed
-            Start-Sleep 7
+            Start-Sleep $cleanupWaitTime
 
             #region helper functions
             function Remove-FileSecure {
@@ -1024,17 +1083,17 @@ function Invoke-ArcRDP {
             #endregion helper functions
 
             Remove-FileSecure $privateKeyFile
-        } -ArgumentList $privateKeyFile
+        } -ArgumentList $privateKeyFile, $cleanupWaitTime
     }
 
     if ($rdpCredential -or $rdpUserName) {
         # remove saved credentials from Cred. Manager ASAP
-        Write-Verbose "RDP password will be removed from CredMan in 7 seconds"
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($computer)
+        Write-Verbose "RDP credentials will be removed from CredMan in $cleanupWaitTime seconds"
+        $null = Start-Job -Name "cleanup_rdp" -ScriptBlock {
+            param ($computer, $cleanupWaitTime)
 
             # we need to wait with deleting the credentials until function Enter-AzVM has been executed
-            Start-Sleep 7
+            Start-Sleep $cleanupWaitTime
 
             $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
             $Process = New-Object System.Diagnostics.Process
@@ -1048,9 +1107,9 @@ function Invoke-ArcRDP {
             $null = $Process.WaitForExit()
 
             if ($Process.ExitCode -ne 0) {
-                throw 'Removal of credentials failed. Remove them manually from  Cred. Manager!'
+                throw "Removal of RDP credentials for host '$computer' failed. Remove them manually from Credential Manager!"
             }
-        } -ArgumentList $computer
+        } -ArgumentList $computer, $cleanupWaitTime
     }
     #endregion cleanup
 
@@ -1338,21 +1397,25 @@ function New-ArcPSSession {
         }
         #endregion determine if some session needs to be created
 
-        # use KeyVault private key instead of local one
-        if ($missingSession -and ($keyVault -and $secretName)) {
-            # private key saved in the KeyVault should be used for authentication instead of existing local private key
+        if ($missingSession) {
+            # use KeyVault SSH private key instead of the local one
+            if ($keyVault -and $secretName) {
+                # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
-            # remove the parameter path validation
-            (Get-Variable privateKeyFile).Attributes.Clear()
+                # remove the parameter path validation
+                (Get-Variable privateKeyFile).Attributes.Clear()
 
-            # where the key will be saved
-            $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
+                # where the key will be saved
+                $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
 
-            # saving private key to temp file
-            Write-Verbose "Saving private key to the '$privateKeyFile'"
-            Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+                # saving private key to temp file
+                Write-Verbose "Saving SSH private key to the '$privateKeyFile'"
+                Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
+            } else {
+                Write-Verbose "Default private SSH key will be used"
+            }
         } else {
-            Write-Verbose "Default private SSH key will be used"
+            Write-Verbose "All required sessions already exist"
         }
 
         #region return usable and/or newly created sessions

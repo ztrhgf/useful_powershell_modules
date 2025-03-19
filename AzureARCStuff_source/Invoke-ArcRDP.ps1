@@ -85,7 +85,9 @@
         4. Public SSH key has to be set on the server and private key has to be on your device
 
     Debugging:
-        If you receive "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+        If you receive:
+            - "Permission denied (publickey,keyboard-interactive)." it is bad/missing private key on your computer ('privateKeyFile' parameter) or specified local username ('userName' parameter) doesn't match existing one.
+            - "no such identity: <pathToSSHPrivateKey>: No such file or directory" and you are asked to enter credentials. SSH authentication was made after the private key was automatically deleted. Try to run the function again or increase the value in $cleanupWaitTime variable.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -163,7 +165,7 @@
 
         # save user login and password for autologon using cmdkey (to store it in Cred. Manager)
         $computer = "localhost"
-        Write-Verbose "Saving credentials for $computer and $user to CredMan"
+        Write-Verbose "Saving credentials for host: $computer user: $user to CredMan"
         $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
         $Process = New-Object System.Diagnostics.Process
         $ProcessInfo.FileName = "$($env:SystemRoot)\system32\cmdkey.exe"
@@ -181,7 +183,7 @@
     }
     #endregion RDP autologon
 
-    # download private key from the KeyVault
+    # download SSH private key from the KeyVault
     if ($keyVault -and $secretName) {
         # private key saved in the KeyVault should be used for authentication instead of existing local private key
 
@@ -189,22 +191,24 @@
         (Get-Variable privateKeyFile).Attributes.Clear()
 
         # where the key will be saved
-        $privateKeyFile = Join-Path $env:TEMP ("spk" + (Get-Random))
+        $privateKeyFile = Join-Path $env:TEMP ("spk_" + $secretName)
 
         # saving private key to temp file
-        Write-Verbose "Saving private key to the '$privateKeyFile'"
+        Write-Verbose "Saving SSH private key to the '$privateKeyFile'"
         Get-AzureKeyVaultMVSecret -name $secretName -vaultName $keyVault -ErrorAction Stop | Out-File $privateKeyFile -Force
     }
 
     #region cleanup
+    $cleanupWaitTime = 10
+
     if ($keyVault -and $secretName) {
         # remove the private key ASAP
-        Write-Verbose "SSH key will be removed in 7 seconds"
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($privateKeyFile)
+        Write-Verbose "SSH key will be removed in $cleanupWaitTime seconds"
+        $null = Start-Job -Name "cleanup_pvk" -ScriptBlock {
+            param ($privateKeyFile, $cleanupWaitTime)
 
             # we need to wait with deleting the file until function Enter-AzVM has been executed
-            Start-Sleep 7
+            Start-Sleep $cleanupWaitTime
 
             #region helper functions
             function Remove-FileSecure {
@@ -287,17 +291,17 @@
             #endregion helper functions
 
             Remove-FileSecure $privateKeyFile
-        } -ArgumentList $privateKeyFile
+        } -ArgumentList $privateKeyFile, $cleanupWaitTime
     }
 
     if ($rdpCredential -or $rdpUserName) {
         # remove saved credentials from Cred. Manager ASAP
-        Write-Verbose "RDP password will be removed from CredMan in 7 seconds"
-        $null = Start-Job -Name "cleanup" -ScriptBlock {
-            param ($computer)
+        Write-Verbose "RDP credentials will be removed from CredMan in $cleanupWaitTime seconds"
+        $null = Start-Job -Name "cleanup_rdp" -ScriptBlock {
+            param ($computer, $cleanupWaitTime)
 
             # we need to wait with deleting the credentials until function Enter-AzVM has been executed
-            Start-Sleep 7
+            Start-Sleep $cleanupWaitTime
 
             $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
             $Process = New-Object System.Diagnostics.Process
@@ -311,9 +315,9 @@
             $null = $Process.WaitForExit()
 
             if ($Process.ExitCode -ne 0) {
-                throw 'Removal of credentials failed. Remove them manually from  Cred. Manager!'
+                throw "Removal of RDP credentials for host '$computer' failed. Remove them manually from Credential Manager!"
             }
-        } -ArgumentList $computer
+        } -ArgumentList $computer, $cleanupWaitTime
     }
     #endregion cleanup
 

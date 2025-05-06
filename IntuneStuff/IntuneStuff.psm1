@@ -5877,14 +5877,17 @@ function Get-UserSIDForUserAzureID {
 function Invoke-IntuneCommand {
     <#
     .SYNOPSIS
-    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
-    Command result is returned too.
+    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected device(s) and returns the output (this part is a bit complicated therefore check DESCRIPTION for more details).
 
     .DESCRIPTION
-    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected devices.
-    Command result is returned. Function automatically tries to decompress the output (using ConvertFrom-CompressedString) and convert back JSON (using ConvertFrom-Json) to original object. The result of this saved in special property named 'ProcessedOutput'.
+    Function mimics Invoke-Command, but for Intune managed Windows clients a.k.a. invokes given code on selected device(s) and returns the output.
 
-    On-demand remediation feature is used behind the scene!
+    Because Intune on-demand remediation feature is used behind the scene, there are some limitations regarding the returned output:
+    - only the last line of your command output is returned and its length is limited to 2048 chars!
+        - thanks to Intune remediation built-in restrictions
+    - you must use 'Write-Output' instead of 'Write-Host'!
+    - if you wish to transform the result back into an object, ensure that your command returns a single compressed JSON string
+        - function automatically tries to decompress the output (using ConvertFrom-CompressedString) and then converts back the JSON string (using ConvertFrom-Json) to the original object. The result of this operation is saved in special property named 'ProcessedOutput'.
 
     Invocation time line:
     - create the remediation = a few seconds
@@ -6023,24 +6026,17 @@ function Invoke-IntuneCommand {
     Result will be automatically decompressed to the original text.
 
     .NOTES
-    Keep in mind that only the last line of the command output is returned!
-
-    Returned output is limited to 2048 chars!
-
     Permission requirements:
     - DeviceManagementConfiguration.Read.All
     - DeviceManagementManagedDevices.Read.All
     - DeviceManagementManagedDevices.PrivilegedOperations.All
 
-    Requirements:
+    General requirements:
     - https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations#script-requirements
     - https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations#prerequisites-for-running-a-remediation-script-on-demand
 
-    Don't use Write-Host, but Write-Output to get some text back.
 
-    If you wish to transform the result back into an object, ensure that your command returns a single result, specifically the compressed JSON.
-
-    If your command throws an error, the whole invocation takes more time, because a dummy remediation command (exit 0) will be run too (because we are using remediation and if the detection part fails, the remediation part takes place).
+    If your command throws an error, the whole invocation takes more time, because if detection part of the Intune remediation script fails, the remediation part (dummy 'exit 0' in our case) will be run automatically too.
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
@@ -6151,7 +6147,7 @@ function Invoke-IntuneCommand {
         $deviceName | % {
             $device = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id, OperatingSystem, ManagementAgent
             if ($device) {
-                if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -eq "mdm") {
+                if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
                     $deviceList.($device.Id) = $_
                 } else {
                     Write-Warning "Device '$_' isn't Windows client or isn't managed by Intune"
@@ -6163,8 +6159,7 @@ function Invoke-IntuneCommand {
     } else {
         # unable to filter using DeviceEnrollmentType property?!
         Write-Warning "Running against ALL Windows managed clients!"
-        Get-MgDeviceManagementManagedDevice -All -Filter "operatingSystem eq 'Windows' and managementAgent eq 'mdm'" -Property Id, DeviceName | % {
-            $deviceList.($_.Id) = $_.DeviceName
+        Get-MgDeviceManagementManagedDevice -All -Filter "operatingSystem eq 'Windows'" -Property Id, DeviceName, ManagementAgent | ? ManagementAgent -In 'mdm', 'configurationManagerClientMdm' | % { $deviceList.($_.Id) = $_.DeviceName
         }
     }
 

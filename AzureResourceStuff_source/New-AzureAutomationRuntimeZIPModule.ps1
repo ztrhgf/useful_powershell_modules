@@ -86,7 +86,10 @@
 
     #region get upload URL
     Write-Verbose "Getting upload URL"
-    $uploadUrl = Invoke-RestMethod -Method GET "https://s2.automation.ext.azure.com/api/Orchestrator/GenerateSasLinkUri?accountId=/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName&assetType=Module" -Headers $header
+    $body = @{
+        "assetType" = "Module"
+    }
+    $uploadUrl = Invoke-RestMethod -Method POST "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.Automation/automationAccounts/$automationAccountName/generateSasLinkUri?api-version=2021-04-01" -Headers $header -Body ($body | ConvertTo-Json)
     Write-Verbose $uploadUrl
     #endregion get upload URL
 

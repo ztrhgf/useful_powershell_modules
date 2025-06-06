@@ -115,7 +115,7 @@
 
     $url | % {
         # fix common mistake where there are multiple slashes
-        $_ = $_ -replace "/{1,}", "/"
+        $_ = $_ -replace "(?<!^https:)/{2,}", "/"
 
         #region url validity checks
         if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {

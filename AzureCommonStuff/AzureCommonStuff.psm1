@@ -386,7 +386,10 @@ function Invoke-AzureBatchRequest {
 
     By default batch-request-related properties like batch status, headers, nextlink, etc are stripped.
 
-    To be able to filter returned objects by their originated request, new property 'RequestId' is added.
+    To be able to filter returned objects by their originated request, new property 'RequestName' is added.
+
+    .PARAMETER dontAddRequestName
+    Switch to avoid adding extra 'RequestName' property to the "beautified" results.
 
     .EXAMPLE
     $batch = (
@@ -430,11 +433,20 @@ function Invoke-AzureBatchRequest {
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
         [PSObject[]]$batchRequest,
 
-        [switch] $dontBeautifyResult
+        [switch] $dontBeautifyResult,
+
+        [Alias("dontAddRequestId")]
+        [switch] $dontAddRequestName
     )
 
     begin {
-        Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+        if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
+            Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+        }
+
+        if ($dontBeautifyResult -and $dontAddRequestName) {
+            Write-Verbose "'dontAddRequestName' parameter will be ignored, 'RequestName' property is not being added when 'dontBeautifyResult' parameter is used"
+        }
 
         # api batch requests are limited to 20 requests
         $chunkSize = 20
@@ -444,17 +456,6 @@ function Invoke-AzureBatchRequest {
         $extraRequestChunk = [System.Collections.ArrayList]::new()
         # throttled requests that have to be repeated after given time
         $throttledRequestChunk = [System.Collections.ArrayList]::new()
-
-        # check url validity
-        $batchRequest.URL | % {
-            if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {
-                throw "url '$_' has to be relative (without the whole 'https://management.azure.com' part) or absolute!"
-            }
-
-            if ($_ -notlike "*/subscriptions/*" -and $_ -notlike "*/providers/Microsoft.Management/managementGroups/*" -and $_ -notlike "*/providers/Microsoft.ResourceGraph/*" -and $_ -notlike "*/resources/*" -and $_ -notlike "*/locations/*" -and $_ -notlike "*/tenants/*" -and $_ -notlike "*/bulkdelete/*") {
-                throw "url '$_' is not valid. Is should starts with:`n'/subscriptions/{subscriptionId}'`n'/providers/Microsoft.Management/managementGroups/{entityId}'`n'/providers/Microsoft.ResourceGraph/{action}'`n'/resources, /locations, /tenants, /bulkdelete'!"
-            }
-        }
 
         function _processChunk {
             <#
@@ -510,12 +511,18 @@ function Invoke-AzureBatchRequest {
 
                 $responses
             } else {
-                # return just actually requested data without batch-related properties and enhance the returned object with 'RequestId' property for easier filtering
+                # return just actually requested data without batch-related properties and enhance the returned object with 'RequestName' property for easier filtering
 
                 foreach ($response in $responses) {
+                    # properties to return
+                    $property = @("*")
+                    if (!$dontAddRequestName) {
+                        $property += @{n = 'RequestName'; e = { $response.Name } }
+                    }
+
                     if ($response.content.value) {
                         # the result is stored in 'value' property
-                        $response.content.value | select -Property *, @{n = 'RequestId'; e = { $response.Name } }
+                        $response.content.value | select -Property $property
                     } else {
                         # the result is stored in 'value' property, but no results were returned, skipping
                     }
@@ -599,6 +606,17 @@ function Invoke-AzureBatchRequest {
     }
 
     process {
+        # check url validity
+        $batchRequest.URL | % {
+            if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {
+                throw "url '$_' has to be relative (without the whole 'https://management.azure.com' part) or absolute!"
+            }
+
+            if ($_ -notlike "*/subscriptions/*" -and $_ -notlike "*/providers/Microsoft.Management/managementGroups/*" -and $_ -notlike "*/providers/Microsoft.ResourceGraph/*" -and $_ -notlike "*/resources/*" -and $_ -notlike "*/locations/*" -and $_ -notlike "*/tenants/*" -and $_ -notlike "*/bulkdelete/*") {
+                throw "url '$_' is not valid. Is should starts with:`n'/subscriptions/{subscriptionId}'`n'/providers/Microsoft.Management/managementGroups/{entityId}'`n'/providers/Microsoft.ResourceGraph/{action}'`n'/resources, /locations, /tenants, /bulkdelete'!"
+            }
+        }
+
         foreach ($request in $batchRequest) {
             $null = $requestChunk.Add($request)
 
@@ -770,7 +788,7 @@ function New-AzureBatchRequest {
 
     $url | % {
         # fix common mistake where there are multiple slashes
-        $_ = $_ -replace "/{1,}", "/"
+        $_ = $_ -replace "(?<!^https:)/{2,}", "/"
 
         #region url validity checks
         if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {

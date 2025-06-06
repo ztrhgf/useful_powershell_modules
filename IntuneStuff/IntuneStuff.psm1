@@ -2237,6 +2237,192 @@ function Get-IntuneDeviceComplianceStatus {
     }
 }
 
+function Get-IntuneDeviceHardware {
+    <#
+    .SYNOPSIS
+    Function returns data similar to Intune device Hardware tab.
+
+    .DESCRIPTION
+    Function returns data similar to Intune device Hardware tab.
+
+    .PARAMETER deviceId
+    Intune device ID(s).
+
+    If not provided, all Windows devices will be processed.
+
+    .EXAMPLE
+    Connect-MgGraph
+
+    Get-IntuneDeviceHardware -deviceId cc924194-f2c8-496c-9943-e6e74278ace5, 7f70a48e-cf9f-4d11-8a12-04c1e436dc1e
+
+    Returns hardware data for selected devices.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [guid[]]$deviceId
+    )
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    # get general info
+    $generalProperty = "Id", "DeviceName", "operatingSystem" , "osVersion"
+
+    # Get list of devices
+    $deviceList = @()
+
+    if (!$deviceId) {
+        Write-Warning "Processing all Windows Intune devices!"
+        $deviceList = Get-MgDeviceManagementManagedDevice -All -Filter "OperatingSystem eq 'Windows'" -Property $generalProperty
+    } else {
+        $deviceId | % {
+            Get-MgDeviceManagementManagedDevice -ManagedDeviceId $_ -Property $generalProperty | % {
+                $deviceList += $_
+            }
+        }
+    }
+
+    # get hardware info (must be gathered device by device otherwise returned values are null!)
+    Write-Verbose "Get devices ($($deviceList.count)) HW data"
+    $deviceListHardwareInfo = New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/manageddevices('<placeholder>')?`$select=id,devicename,hardwareinformation,activationLockBypassCode,iccid,udid,roleScopeTagIds,ethernetMacAddress,processorArchitecture,physicalMemoryInBytes,bootstrapTokenEscrowed" -placeholder $deviceList.Id | Invoke-GraphBatchRequest -graphVersion beta
+
+    foreach ($device in $deviceList) {
+        $deviceId = $device.Id
+        $deviceName = $device.DeviceName
+
+        Write-Verbose "Processing $deviceName ($deviceId)"
+
+        $hardwareInfo = $deviceListHardwareInfo | ? Id -EQ $deviceId
+
+        # make sure only required properties are returned
+        $device = $device | select $generalProperty
+
+        # add top-level HW properties
+        'ethernetMacAddress', 'processorArchitecture', 'physicalMemoryInBytes' | % {
+            $device | Add-Member -MemberType NoteProperty -Name $_ -Value $hardwareInfo.$_
+        }
+
+        # add nested HW properties
+        $hardwareInfo.hardwareInformation | gm -MemberType NoteProperty | select -ExpandProperty Name | % {
+            $device | Add-Member -MemberType NoteProperty -Name $_ -Value $hardwareInfo.hardwareInformation.$_
+        }
+
+        $device
+    }
+}
+
+function Get-IntuneDeviceOnDemandProactiveRemediationStatus {
+    [CmdletBinding(DefaultParameterSetName = 'DeviceName')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "DeviceName")]
+        [string[]] $deviceName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "DeviceId")]
+        [string[]] $deviceId
+    )
+
+    #region get device ids
+    $deviceName = $deviceName | select -Unique
+
+    $deviceIdList = @()
+
+    if ($deviceName) {
+        $deviceName | % {
+            $device = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id, OperatingSystem, ManagementAgent
+            if ($device.count -gt 1) {
+                Write-Warning "There are multiple devices with name '$_'. Use ID instead. Skipping"
+            } elseif ($device.count -eq 1) {
+                if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
+                    $deviceList.($device.Id) = $_
+                } else {
+                    Write-Warning "Device '$_' isn't Windows client or isn't managed by Intune"
+                }
+            } else {
+                Write-Warning "Device '$_' doesn't exist"
+            }
+        }
+    } else {
+        #TODO kontrola ze jde o windows device
+        $deviceIdList = $deviceId
+    }
+    #endregion get device ids
+
+    if (!$deviceIdList) {
+        Write-Warning "No clients to check left"
+        return
+    }
+
+    foreach ($devId in $deviceIdList) {
+        $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $devId -Property DeviceName, Id, DeviceActionResults, LastSyncDateTime
+        $onDemandRemediationData = $deviceDetails.DeviceActionResults | ? ActionName -EQ 'initiateOnDemandProactiveRemediation'
+
+        $deviceDetails | select DeviceName, Id, @{n = 'ActionState'; e = { $onDemandRemediationData.ActionState } }, @{n = 'StartDateTimeUTC'; e = { $onDemandRemediationData.StartDateTime } }, @{n = 'LastUpdatedDateTimeUTC'; e = { $onDemandRemediationData.LastUpdatedDateTime } }, @{n = 'LastSyncDateTimeUTC'; e = { $_.LastSyncDateTime } }
+    }
+}
+
+function Get-IntuneDiscoveredApp {
+    <#
+    .SYNOPSIS
+    Function to retrieve discovered apps on specified/all Intune devices.
+
+    .DESCRIPTION
+    Function to retrieve discovered apps on specified/all Intune devices.
+
+    .PARAMETER deviceName
+    Name of the device you want to process.
+
+    .PARAMETER deviceId
+    Id(s) of the devices you want to process.
+
+    .PARAMETER appName
+    Filtering to return just devices where app with given name (matched using: -like '*appName*') was found.
+
+    If not set, all processed devices will be returned.
+
+    .EXAMPLE
+    Get-IntuneDiscoveredApp -deviceName pc-01
+
+    Return apps discovered on pc-01
+
+    .EXAMPLE
+    Get-IntuneDiscoveredApp -appName node.js
+
+    Return all devices where node.js app was discovered.
+    #>
+
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    param (
+        [Parameter(Mandatory = $true, ParameterSetName = "DeviceName")]
+        [string] $deviceName,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "DeviceId")]
+        [string[]] $deviceId,
+
+        [string] $appName = "*"
+    )
+
+    if ($deviceName) {
+        $deviceId = (Get-MgBetaDeviceManagementManagedDevice -Filter "DeviceName eq '$deviceName'" -Property Id).Id
+
+        if (!$deviceId) {
+            throw "No device was found matching '$deviceName' name"
+        }
+    }
+
+    if (!$deviceId) {
+        Write-Warning "Getting detected apps for all devices!"
+        $deviceId = (Get-MgBetaDeviceManagementManagedDevice -Property id -All).Id
+
+        if (!$deviceId) {
+            throw "No device was found"
+        }
+    }
+
+    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -inputObject $deviceId | Invoke-GraphBatchRequest -graphVersion beta | ? { $_.DetectedApps.DisplayName -like "*$appName*" }
+}
+
 function Get-IntuneEnrollmentStatus {
     <#
     .SYNOPSIS
@@ -5899,7 +6085,12 @@ function Invoke-IntuneCommand {
     .PARAMETER deviceName
     Name of the Intune device(s) you want to run the command on.
 
-    If not provided, run command against ALL Windows managed devices.
+    If not provided nor 'deviceId', run command against ALL Windows managed devices.
+
+    .PARAMETER deviceId
+    ID of the Intune device(s) you want to run the command on.
+
+    If not provided nor 'deviceName', run command against ALL Windows managed devices.
 
     .PARAMETER command
     String representing the command you want to run on the devices.
@@ -6043,6 +6234,8 @@ function Invoke-IntuneCommand {
     param (
         [string[]] $deviceName,
 
+        [string[]] $deviceId,
+
         [Parameter(Mandatory = $true, ParameterSetName = "Default")]
         [string] $command,
 
@@ -6084,6 +6277,10 @@ function Invoke-IntuneCommand {
 
     if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    if ($deviceName -and $deviceId) {
+        throw "Use 'deviceName' or 'deviceId' parameter"
     }
 
     #region helper functions
@@ -6138,19 +6335,35 @@ function Invoke-IntuneCommand {
     #endregion helper functions
 
     #region prepare
-    #region get device ids
     $deviceName = $deviceName | select -Unique
+    $deviceId = $deviceId | select -Unique
 
+    #region get device ids & check validity
     $deviceList = @{}
 
     if ($deviceName) {
         $deviceName | % {
             $device = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id, OperatingSystem, ManagementAgent
-            if ($device) {
+            if ($device.count -gt 1) {
+                Write-Warning "There are multiple devices with name '$_'. Use ID instead. Skipping"
+            } elseif ($device.count -eq 1) {
                 if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
                     $deviceList.($device.Id) = $_
                 } else {
-                    Write-Warning "Device '$_' isn't Windows client or isn't managed by Intune"
+                    Write-Warning "Device '$_' ($($device.Id)) isn't Windows client or isn't managed by Intune"
+                }
+            } else {
+                Write-Warning "Device '$_' doesn't exist"
+            }
+        }
+    } elseif ($deviceId) {
+        $deviceId | % {
+            $device = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $_ -Property OperatingSystem, ManagementAgent, DeviceName
+            if ($device) {
+                if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
+                    $deviceList.$_ = ($device.DeviceName)
+                } else {
+                    Write-Warning "Device '$($device.DeviceName)' ($_) isn't Windows client or isn't managed by Intune"
                 }
             } else {
                 Write-Warning "Device '$_' doesn't exist"
@@ -6164,12 +6377,12 @@ function Invoke-IntuneCommand {
     }
 
     $deviceIdList = $deviceList.Keys
-    #endregion get device ids
 
     if (!$deviceIdList) {
-        Write-Warning " No devices to run against"
+        Write-Warning "No devices to run against"
         return
     }
+    #endregion get device ids & check validity
 
     if ($scriptFile) {
         Write-Warning "Make sure the '$scriptFile' is encoded using UTF8!"
@@ -6230,15 +6443,15 @@ function Invoke-IntuneCommand {
 
         #region invoke the remediation
         $deviceIdList | % {
-            $deviceId = $_
+            $dvcId = $_
             $i = 0
             $retryLimit = 2
 
-            Write-Verbose "Invoking command for device $deviceId"
+            Write-Verbose "Invoking command for device $dvcId"
 
             while ($i -le $retryLimit) {
                 try {
-                    Invoke-IntuneRemediationOnDemand -remediationScriptId $remediationScript.Id -deviceId $deviceId -ErrorAction Stop
+                    Invoke-IntuneRemediationOnDemand -remediationScriptId $remediationScript.Id -deviceId $dvcId -ErrorAction Stop
                     break
                 } catch {
                     ++$i
@@ -6256,7 +6469,7 @@ function Invoke-IntuneCommand {
 
             if ($i -gt $retryLimit) {
                 # failed to run the remediation
-                $null = $skippedDeviceIdList.Add($deviceId)
+                $null = $skippedDeviceIdList.Add($dvcId)
             }
         }
         #endregion invoke the remediation
@@ -6287,20 +6500,21 @@ function Invoke-IntuneCommand {
             $remediationResult = Get-MgBetaDeviceManagementDeviceHealthScriptDeviceRunState -DeviceHealthScriptId $remediationScript.Id -All
 
             foreach ($result in $remediationResult) {
-                $deviceId = $result.id.split(":")[1]
+                $dvcId = $result.id.split(":")[1]
+                $dvcName = $deviceList.$dvcId
 
-                if ($deviceId -in $finishedDeviceIdList) { continue }
+                if ($dvcId -in $finishedDeviceIdList) { continue }
 
-                Write-Verbose "Device $deviceId has finished on-demand remediation"
+                Write-Verbose "Device '$dvcName' ($dvcId) has finished on-demand remediation"
 
-                $null = $finishedDeviceIdList.Add($deviceId)
+                $null = $finishedDeviceIdList.Add($dvcId)
 
                 [PSCustomObject]@{
-                    DeviceId            = $deviceId
-                    DeviceName          = $deviceList.$deviceId
+                    DeviceId            = $dvcId
+                    DeviceName          = $dvcName
                     LastSyncDateTimeUTC = $result.LastStateUpdateDateTime # LastSyncDateTime doesn't show date when device contacted Intune last time, therefore I use LastStateUpdateDateTime (it doesn't matter, because I know the command was run now)
-                    ProcessedOutput     = _processOutput $result.PreRemediationDetectionScriptOutput
                     Output              = $result.PreRemediationDetectionScriptOutput
+                    ProcessedOutput     = _processOutput $result.PreRemediationDetectionScriptOutput
                     Error               = $result.PreRemediationDetectionScriptError
                     Status              = $result.DetectionState
                 }
@@ -6334,12 +6548,13 @@ function Invoke-IntuneCommand {
             $reallyUnfinishedDeviceIdList = New-Object System.Collections.ArrayList
             $unfinishedDeviceIdList = $deviceIdList | ? { $_ -notin $finishedDeviceIdList }
 
-            foreach ($deviceId in $unfinishedDeviceIdList) {
+            foreach ($dvcId in $unfinishedDeviceIdList) {
                 # process devices that have no processing data in the remediation object
                 # it takes time before remediation results data from the client find their way to remediation object
                 # therefore to not confuse user with inaccurate data get the real results from the clients themselves
                 # (just the last invoked on-demand remediation is stored)
-                $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $deviceId -Property DeviceActionResults, LastSyncDateTime
+                $dvcName = $deviceList.$dvcId
+                $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $dvcId -Property DeviceActionResults, LastSyncDateTime
                 $onDemandRemediationData = $deviceDetails.DeviceActionResults | ? ActionName -EQ 'initiateOnDemandProactiveRemediation'
                 $onDemandRemediationStatus = $onDemandRemediationData.ActionState
 
@@ -6349,23 +6564,23 @@ function Invoke-IntuneCommand {
                 }
 
                 # output just some basic info, because $deviceResult will not be returned if CTRL + C was pressed
-                Write-Warning "Device $deviceId has remediation in state '$onDemandRemediationStatus'"
+                Write-Warning "Device '$dvcName' ($dvcId) has remediation in state '$onDemandRemediationStatus'"
 
                 # output devices where because of reaching the time out threshold, the results weren't retrieved
                 # because that doesn't mean the code wasn't run!
                 $null = $deviceResult.Add([PSCustomObject]@{
-                        DeviceId            = $deviceId
-                        DeviceName          = $deviceList.$deviceId
+                        DeviceId            = $dvcId
+                        DeviceName          = $dvcName
                         LastSyncDateTimeUTC = $deviceDetails.LastSyncDateTime
-                        ProcessedOutput     = $null
                         Output              = $null
+                        ProcessedOutput     = $null
                         Error               = $null
                         Status              = $onDemandRemediationStatus
                     })
 
                 if ($onDemandRemediationStatus -ne "done") {
                     # "done" state means the code was run actually
-                    $null = $reallyUnfinishedDeviceIdList.Add($deviceId)
+                    $null = $reallyUnfinishedDeviceIdList.Add($dvcId)
                 }
             }
             #endregion output devices that didn't make it in time
@@ -8421,6 +8636,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneDeviceHardware, Get-IntuneDeviceOnDemandProactiveRemediationStatus, Get-IntuneDiscoveredApp, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Assign-IntuneWin32App, Deassign-IntuneWin32App, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy, Unassign-IntuneWin32App

@@ -23,7 +23,12 @@
     .PARAMETER deviceName
     Name of the Intune device(s) you want to run the command on.
 
-    If not provided, run command against ALL Windows managed devices.
+    If not provided nor 'deviceId', run command against ALL Windows managed devices.
+
+    .PARAMETER deviceId
+    ID of the Intune device(s) you want to run the command on.
+
+    If not provided nor 'deviceName', run command against ALL Windows managed devices.
 
     .PARAMETER command
     String representing the command you want to run on the devices.
@@ -167,6 +172,8 @@
     param (
         [string[]] $deviceName,
 
+        [string[]] $deviceId,
+
         [Parameter(Mandatory = $true, ParameterSetName = "Default")]
         [string] $command,
 
@@ -208,6 +215,10 @@
 
     if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    if ($deviceName -and $deviceId) {
+        throw "Use 'deviceName' or 'deviceId' parameter"
     }
 
     #region helper functions
@@ -262,19 +273,35 @@
     #endregion helper functions
 
     #region prepare
-    #region get device ids
     $deviceName = $deviceName | select -Unique
+    $deviceId = $deviceId | select -Unique
 
+    #region get device ids & check validity
     $deviceList = @{}
 
     if ($deviceName) {
         $deviceName | % {
             $device = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$_'" -Property Id, OperatingSystem, ManagementAgent
-            if ($device) {
+            if ($device.count -gt 1) {
+                Write-Warning "There are multiple devices with name '$_'. Use ID instead. Skipping"
+            } elseif ($device.count -eq 1) {
                 if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
                     $deviceList.($device.Id) = $_
                 } else {
-                    Write-Warning "Device '$_' isn't Windows client or isn't managed by Intune"
+                    Write-Warning "Device '$_' ($($device.Id)) isn't Windows client or isn't managed by Intune"
+                }
+            } else {
+                Write-Warning "Device '$_' doesn't exist"
+            }
+        }
+    } elseif ($deviceId) {
+        $deviceId | % {
+            $device = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $_ -Property OperatingSystem, ManagementAgent, DeviceName
+            if ($device) {
+                if ($device.OperatingSystem -eq "Windows" -and $device.ManagementAgent -in "mdm", "configurationManagerClientMdm") {
+                    $deviceList.$_ = ($device.DeviceName)
+                } else {
+                    Write-Warning "Device '$($device.DeviceName)' ($_) isn't Windows client or isn't managed by Intune"
                 }
             } else {
                 Write-Warning "Device '$_' doesn't exist"
@@ -288,12 +315,12 @@
     }
 
     $deviceIdList = $deviceList.Keys
-    #endregion get device ids
 
     if (!$deviceIdList) {
-        Write-Warning " No devices to run against"
+        Write-Warning "No devices to run against"
         return
     }
+    #endregion get device ids & check validity
 
     if ($scriptFile) {
         Write-Warning "Make sure the '$scriptFile' is encoded using UTF8!"
@@ -354,15 +381,15 @@
 
         #region invoke the remediation
         $deviceIdList | % {
-            $deviceId = $_
+            $dvcId = $_
             $i = 0
             $retryLimit = 2
 
-            Write-Verbose "Invoking command for device $deviceId"
+            Write-Verbose "Invoking command for device $dvcId"
 
             while ($i -le $retryLimit) {
                 try {
-                    Invoke-IntuneRemediationOnDemand -remediationScriptId $remediationScript.Id -deviceId $deviceId -ErrorAction Stop
+                    Invoke-IntuneRemediationOnDemand -remediationScriptId $remediationScript.Id -deviceId $dvcId -ErrorAction Stop
                     break
                 } catch {
                     ++$i
@@ -380,7 +407,7 @@
 
             if ($i -gt $retryLimit) {
                 # failed to run the remediation
-                $null = $skippedDeviceIdList.Add($deviceId)
+                $null = $skippedDeviceIdList.Add($dvcId)
             }
         }
         #endregion invoke the remediation
@@ -411,20 +438,21 @@
             $remediationResult = Get-MgBetaDeviceManagementDeviceHealthScriptDeviceRunState -DeviceHealthScriptId $remediationScript.Id -All
 
             foreach ($result in $remediationResult) {
-                $deviceId = $result.id.split(":")[1]
+                $dvcId = $result.id.split(":")[1]
+                $dvcName = $deviceList.$dvcId
 
-                if ($deviceId -in $finishedDeviceIdList) { continue }
+                if ($dvcId -in $finishedDeviceIdList) { continue }
 
-                Write-Verbose "Device $deviceId has finished on-demand remediation"
+                Write-Verbose "Device '$dvcName' ($dvcId) has finished on-demand remediation"
 
-                $null = $finishedDeviceIdList.Add($deviceId)
+                $null = $finishedDeviceIdList.Add($dvcId)
 
                 [PSCustomObject]@{
-                    DeviceId            = $deviceId
-                    DeviceName          = $deviceList.$deviceId
+                    DeviceId            = $dvcId
+                    DeviceName          = $dvcName
                     LastSyncDateTimeUTC = $result.LastStateUpdateDateTime # LastSyncDateTime doesn't show date when device contacted Intune last time, therefore I use LastStateUpdateDateTime (it doesn't matter, because I know the command was run now)
-                    ProcessedOutput     = _processOutput $result.PreRemediationDetectionScriptOutput
                     Output              = $result.PreRemediationDetectionScriptOutput
+                    ProcessedOutput     = _processOutput $result.PreRemediationDetectionScriptOutput
                     Error               = $result.PreRemediationDetectionScriptError
                     Status              = $result.DetectionState
                 }
@@ -458,12 +486,13 @@
             $reallyUnfinishedDeviceIdList = New-Object System.Collections.ArrayList
             $unfinishedDeviceIdList = $deviceIdList | ? { $_ -notin $finishedDeviceIdList }
 
-            foreach ($deviceId in $unfinishedDeviceIdList) {
+            foreach ($dvcId in $unfinishedDeviceIdList) {
                 # process devices that have no processing data in the remediation object
                 # it takes time before remediation results data from the client find their way to remediation object
                 # therefore to not confuse user with inaccurate data get the real results from the clients themselves
                 # (just the last invoked on-demand remediation is stored)
-                $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $deviceId -Property DeviceActionResults, LastSyncDateTime
+                $dvcName = $deviceList.$dvcId
+                $deviceDetails = Get-MgDeviceManagementManagedDevice -ManagedDeviceId $dvcId -Property DeviceActionResults, LastSyncDateTime
                 $onDemandRemediationData = $deviceDetails.DeviceActionResults | ? ActionName -EQ 'initiateOnDemandProactiveRemediation'
                 $onDemandRemediationStatus = $onDemandRemediationData.ActionState
 
@@ -473,23 +502,23 @@
                 }
 
                 # output just some basic info, because $deviceResult will not be returned if CTRL + C was pressed
-                Write-Warning "Device $deviceId has remediation in state '$onDemandRemediationStatus'"
+                Write-Warning "Device '$dvcName' ($dvcId) has remediation in state '$onDemandRemediationStatus'"
 
                 # output devices where because of reaching the time out threshold, the results weren't retrieved
                 # because that doesn't mean the code wasn't run!
                 $null = $deviceResult.Add([PSCustomObject]@{
-                        DeviceId            = $deviceId
-                        DeviceName          = $deviceList.$deviceId
+                        DeviceId            = $dvcId
+                        DeviceName          = $dvcName
                         LastSyncDateTimeUTC = $deviceDetails.LastSyncDateTime
-                        ProcessedOutput     = $null
                         Output              = $null
+                        ProcessedOutput     = $null
                         Error               = $null
                         Status              = $onDemandRemediationStatus
                     })
 
                 if ($onDemandRemediationStatus -ne "done") {
                     # "done" state means the code was run actually
-                    $null = $reallyUnfinishedDeviceIdList.Add($deviceId)
+                    $null = $reallyUnfinishedDeviceIdList.Add($dvcId)
                 }
             }
             #endregion output devices that didn't make it in time

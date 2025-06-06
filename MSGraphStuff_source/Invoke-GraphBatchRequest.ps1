@@ -29,6 +29,9 @@
 
     To be able to filter returned objects by their originated request, new property 'RequestId' is added.
 
+    .PARAMETER dontAddRequestId
+    Switch to avoid adding extra 'RequestId' property to the "beautified" results.
+
     .EXAMPLE
     $batchRequest = @((New-GraphBatchRequest -Url "applications"), (New-GraphBatchRequest -Url "servicePrincipals")))
 
@@ -85,11 +88,19 @@
         [ValidateSet('v1.0', 'beta')]
         [string] $graphVersion = "v1.0",
 
-        [switch] $dontBeautifyResult
+        [switch] $dontBeautifyResult,
+
+        [switch] $dontAddRequestId
     )
 
     begin {
-        Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+        if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
+            Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+        }
+
+        if ($dontBeautifyResult -and $dontAddRequestId) {
+            Write-Verbose "'dontAddRequestId' parameter will be ignored, 'RequestId' property is not being added when 'dontBeautifyResult' parameter is used"
+        }
 
         # api batch requests are limited to 20 requests
         $chunkSize = 20
@@ -103,13 +114,6 @@
         $extraRequestChunk = [System.Collections.ArrayList]::new()
         # throttled requests that have to be repeated after given time
         $throttledRequestChunk = [System.Collections.ArrayList]::new()
-
-        # check url validity
-        $batchRequest.URL | % {
-            if ($_ -like "http*" -or $_ -like "*/beta/*" -or $_ -like "*/v1.0/*" -or $_ -like "*/graph.microsoft.com/*") {
-                throw "url '$_' has to be relative (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
-            }
-        }
 
         function _processChunk {
             <#
@@ -155,14 +159,20 @@
                     # return just actually requested data without batch-related properties and enhance the returned object with 'RequestId' property for easier filtering
 
                     foreach ($response in $responses) {
+                        # properties to return
+                        $property = @("*")
+                        if (!$dontAddRequestId) {
+                            $property += @{n = 'RequestId'; e = { $response.Id } }
+                        }
+
                         if ($response.body.value) {
                             # the result is stored in 'value' property
-                            $response.body.value | select -Property *, @{n = 'RequestId'; e = { $response.Id } }
+                            $response.body.value | select -Property $property
                         } elseif (($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                         } elseif ($response.body) {
                             # the result is in the 'body' property itself
-                            $response.body | select -Property *, @{n = 'RequestId'; e = { $response.Id } } -ExcludeProperty '@odata.context', '@odata.nextLink'
+                            $response.body | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         } else {
                             # is there any other options to handle??
                         }
@@ -210,7 +220,7 @@
                         }
 
                         # get highest retry-after wait time
-                        if ($jobRetryAfter -gt $retryAfter) {
+                        if ($jobRetryAfter -gt $script:retryAfter) {
                             Write-Verbose "Setting $jobRetryAfter retry-after time"
                             $script:retryAfter = $jobRetryAfter
                         }
@@ -220,6 +230,7 @@
                         $problematicBatchRequest = $requestChunk | ? Id -EQ $response.Id
 
                         Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Id)', Url:'$($problematicBatchRequest.Url)' had internal error '$($problematicBatchRequest.Status)', hence will be repeated"
+
                         $null = $extraRequestChunk.Add($problematicBatchRequest)
                     } else {
                         # failed
@@ -244,6 +255,13 @@
     }
 
     process {
+        # check url validity
+        $batchRequest.URL | % {
+            if ($_ -like "http*" -or $_ -like "*/beta/*" -or $_ -like "*/v1.0/*" -or $_ -like "*/graph.microsoft.com/*") {
+                throw "url '$_' has to be relative (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
+            }
+        }
+
         foreach ($request in $batchRequest) {
             $null = $requestChunk.Add($request)
 
@@ -257,7 +275,7 @@
 
                 # process requests that need to be repeated (paginated, failed on remote server,...)
                 if ($extraRequestChunk) {
-                    Write-Verbose "Processing $($extraRequestChunk.count) paginated or remotely failed request(s)"
+                    Write-Warning "Processing $($extraRequestChunk.count) paginated or server-side-failed request(s)"
                     Invoke-GraphBatchRequest -batchRequest $extraRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
 
                     $extraRequestChunk.Clear()
@@ -284,7 +302,7 @@
 
             # process requests that need to be repeated (paginated, failed on remote server,...)
             if ($extraRequestChunk) {
-                Write-Verbose "Processing $($extraRequestChunk.count) paginated or remotely failed request(s)"
+                Write-Warning "Processing $($extraRequestChunk.count) paginated or server-side-failed request(s)"
                 Invoke-GraphBatchRequest -batchRequest $extraRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
             }
 

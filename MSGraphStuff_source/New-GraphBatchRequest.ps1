@@ -1,10 +1,21 @@
 ﻿function New-GraphBatchRequest {
     <#
     .SYNOPSIS
-    Function creates PSObject that can be used in Graph Api batching requests.
+    Function creates PSObject(s) representing request(s) that can be used in Graph Api batching.
 
     .DESCRIPTION
-    Function creates PSObject that can be used in Graph Api batching requests.
+    Function creates PSObject(s) representing request(s) that can be used in Graph Api batching.
+
+    PSObject will look like this:
+        @{
+            Method  = "GET"
+            URL     = "/deviceManagement/managedDevices/38027eb9-1f3e-49ea-bf91-f7b7f07c3a63"
+            Id      = "deviceInfo"
+        }
+
+        Method = method that will be used when sending the request
+        URL = ARM api URL that should be requested
+        Id = ID that has to be unique across the batch requests
 
     .PARAMETER method
     Request method.
@@ -16,7 +27,7 @@
 
     .PARAMETER urlWithPlaceholder
     Request URL in relative form like "/deviceManagement/managedDevices/<placeholder>" that contains "<placeholder>" string.
-    relative form means without the "https://graph.microsoft.com/<apiVersion>" prefix (API version is specified when the batch is invoked).
+    Relative form means without the "https://graph.microsoft.com/<apiVersion>" prefix (API version is specified when the batch is invoked).
     For each value in the 'placeholder' parameter, new request url will be generated with such value used instead of the "<placeholder>" string.
 
     .PARAMETER placeholder
@@ -72,7 +83,7 @@
         [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
         $placeholder,
 
-        [string] $header,
+        $header,
 
         $body,
 
@@ -90,6 +101,9 @@
     }
 
     $url | % {
+        # fix common mistake where there are multiple slashes
+        $_ = $_ -replace "(?<!^https:)/{2,}", "/"
+
         if ($_ -like "http*" -or $_ -like "*/beta/*" -or $_ -like "*/v1.0/*" -or $_ -like "*/graph.microsoft.com/*") {
             throw "url '$_' has to be relative (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
         }

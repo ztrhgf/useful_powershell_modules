@@ -12,7 +12,7 @@
 RootModule = 'MSGraphStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.1.3'
+ModuleVersion = '1.1.4'
 
 # Supported PSEditions
 CompatiblePSEditions = 'Core', 'Desktop'
@@ -127,6 +127,10 @@ PrivateData = @{
 
         # ReleaseNotes of this module
         ReleaseNotes = '
+            1.1.4
+                FIXED
+                    Invoke-GraphBatchRequest - example typo
+                                             - incorrect detection of empty body when processing results
             1.1.3
                 CHANGED
                     Invoke-GraphBatchRequest - added parameter "dontAddRequestId"

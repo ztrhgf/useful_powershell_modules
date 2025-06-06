@@ -781,7 +781,7 @@ function Invoke-GraphBatchRequest {
     Switch to avoid adding extra 'RequestId' property to the "beautified" results.
 
     .EXAMPLE
-    $batchRequest = @((New-GraphBatchRequest -Url "applications"), (New-GraphBatchRequest -Url "servicePrincipals")))
+    $batchRequest = @((New-GraphBatchRequest -Url "applications"), (New-GraphBatchRequest -Url "servicePrincipals"))
 
     Invoke-GraphBatchRequest -batchRequest $batchRequest -dontBeautifyResult
 
@@ -916,13 +916,13 @@ function Invoke-GraphBatchRequest {
                         if ($response.body.value) {
                             # the result is stored in 'value' property
                             $response.body.value | select -Property $property
-                        } elseif (($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
+                        } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                         } elseif ($response.body) {
                             # the result is in the 'body' property itself
                             $response.body | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         } else {
-                            # is there any other options to handle??
+                            # no results in 'body.value' nor 'body' property itself
                         }
                     }
                 }

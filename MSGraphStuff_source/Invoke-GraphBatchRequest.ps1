@@ -72,7 +72,7 @@
     .EXAMPLE
     $deviceId = (Get-MgBetaDeviceManagementManagedDevice -Property id -All).Id
 
-    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
 
     Creates batch request object containing dynamically generated urls for every id in the $deviceId array & run it.
 
@@ -167,7 +167,7 @@
 
                         if ($response.body.value) {
                             # the result is stored in 'value' property
-                            $response.body.value | select -Property $property
+                            $response.body.value | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                         } elseif ($response.body) {

@@ -820,7 +820,7 @@ function Invoke-GraphBatchRequest {
     .EXAMPLE
     $deviceId = (Get-MgBetaDeviceManagementManagedDevice -Property id -All).Id
 
-    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
 
     Creates batch request object containing dynamically generated urls for every id in the $deviceId array & run it.
 
@@ -915,7 +915,7 @@ function Invoke-GraphBatchRequest {
 
                         if ($response.body.value) {
                             # the result is stored in 'value' property
-                            $response.body.value | select -Property $property
+                            $response.body.value | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                         } elseif ($response.body) {
@@ -1351,13 +1351,10 @@ function New-GraphBatchRequest {
     .PARAMETER url
     Request URL in relative form like "/deviceManagement/managedDevices/38027eb9-1f3e-49ea-bf91-f7b7f07c3a63" a.k.a. without the "https://graph.microsoft.com/<apiVersion>" prefix (API version is specified when the batch is invoked).
 
-    .PARAMETER urlWithPlaceholder
-    Request URL in relative form like "/deviceManagement/managedDevices/<placeholder>" that contains "<placeholder>" string.
-    Relative form means without the "https://graph.microsoft.com/<apiVersion>" prefix (API version is specified when the batch is invoked).
-    For each value in the 'placeholder' parameter, new request url will be generated with such value used instead of the "<placeholder>" string.
+    When the 'placeholder' parameter is specified, for each value it contains, new request url will be generated with such value used instead of the '<placeholder>' string.
 
     .PARAMETER placeholder
-    Array of items (string, integers, ..) that will be used in the request url (defined in 'urlWithPlaceholder' parameter) instead of the "<placeholder>" string.
+    Array of items (string, integers, ..) that will be used in the request url ('url' parameter) instead of the "<placeholder>" string.
 
     .PARAMETER header
     Header that should be added to each request in the batch.
@@ -1367,9 +1364,10 @@ function New-GraphBatchRequest {
 
     .PARAMETER id
     Id of the request.
-    Can only be specified when only one URL is requested.
+    Can only be specified only when 'url' parameter contains one value.
+    If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
-    By default random-generated-GUID.
+    By default random-generated-number.
 
     .EXAMPLE
     $batchRequest = New-GraphBatchRequest -url "/deviceManagement/managedDevices/38027eb9-1f3e-49ea-bf91-f7b7f07c3a63?`$select=id,devicename&`$expand=DetectedApps", "/deviceManagement/managedDevices/aaa932b4-5af4-4120-86b1-ab64b964a56s?`$select=id,devicename&`$expand=DetectedApps"
@@ -1381,32 +1379,42 @@ function New-GraphBatchRequest {
     .EXAMPLE
     $deviceId = (Get-MgBetaDeviceManagementManagedDevice -Property id -All).Id
 
-    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta
 
     Creates batch request object containing dynamically generated urls for every id in the $deviceId array & run it ('DetectedApps' property can be retrieved only when requested devices one by one).
+
+    .EXAMPLE
+    $devices = Get-MgBetaDeviceManagementManagedDevice -Property Id, AzureAdDeviceId, OperatingSystem -All
+
+    $windowsClient = $devices | ? OperatingSystem -EQ 'Windows'
+    $macOSClient = $devices | ? OperatingSystem -EQ 'macOS'
+
+    $batchRequest = @(
+        # get bitlocker keys for all windows devices
+        New-GraphBatchRequest -url "/informationProtection/bitlocker/recoveryKeys?`$filter=deviceId eq '<placeholder>'" -id "bitlocker" -placeholder $windowsClient.AzureAdDeviceId
+        # get fileVault keys for all macos devices
+        New-GraphBatchRequest -url "/deviceManagement/managedDevices('<placeholder>')/getFileVaultKey" -id "fileVault" -placeholder $macOSClient.Id
+    )
+
+    $batchResult = Invoke-GraphBatchRequest -batchRequest $batchRequest -graphVersion beta
+
+    $bitlockerKeyList = $batchResult | ? RequestId -like "bitlocker*"
+    $fileVaultKeyList = $batchResult | ? RequestId -like "fileVault*"
+
+    Merging multiple different batch queries together.
 
     .NOTES
     https://learn.microsoft.com/en-us/graph/json-batching
     #>
 
-    [CmdletBinding(DefaultParameterSetName = 'Default')]
+    [CmdletBinding()]
     param (
         [string] $method = "GET",
 
-        [Parameter(Mandatory = $true, ParameterSetName = "Url")]
+        [Parameter(Mandatory = $true)]
+        [Alias("urlWithPlaceholder")]
         [string[]] $url,
 
-        [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
-        [ValidateScript( {
-                if ($_ -like "*<placeholder>*") {
-                    $true
-                } else {
-                    throw "$_ doesn't contain '<placeholder>' string (that should be replaced by real value from `$placeholder then)"
-                }
-            })]
-        [string] $urlWithPlaceholder,
-
-        [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
         $placeholder,
 
         $header,
@@ -1416,13 +1424,27 @@ function New-GraphBatchRequest {
         [string] $id
     )
 
+    #region validity checks
     if ($id -and @($url).count -gt 1) {
         throw "'id' parameter cannot be used with multiple urls"
     }
 
-    if ($urlWithPlaceholder) {
+    if ($placeholder -and $url -notlike "*<placeholder>*") {
+        throw "You have specified 'placeholder' parameter, but 'url' parameter doesn't contain string '<placeholder>' for replace."
+    }
+
+    if (!$placeholder -and $url -like "*<placeholder>*") {
+        throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
+    }
+    #endregion validity checks
+
+    if ($placeholder) {
         $url = $placeholder | % {
-            $urlWithPlaceholder -replace "<placeholder>", $_
+            $p = $_
+
+            $url | % {
+                $_ -replace "<placeholder>", $p
+            }
         }
     }
 
@@ -1441,9 +1463,13 @@ function New-GraphBatchRequest {
         }
 
         if ($id) {
-            $property.id = $id
+            if ($placeholder -and $placeholder.count -gt 1) {
+                $property.id = ($id + "_" + (Get-Random))
+            } else {
+                $property.id = $id
+            }
         } else {
-            $property.id = (New-Guid).Guid
+            $property.id = Get-Random
         }
 
         if ($header) {

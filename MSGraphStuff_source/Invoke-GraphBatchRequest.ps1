@@ -25,9 +25,11 @@
     .PARAMETER dontBeautifyResult
     Switch for returning original/non-modified batch request(s) results.
 
-    By default batch-request-related properties like batch status, headers, nextlink, etc are stripped.
+    By default batch-request-related properties like batch status, headers, nextlink, etc are stripped and the result is converted to PSCustomObject.
 
-    To be able to filter returned objects by their originated request, new property 'RequestId' is added.
+    To be able to filter returned objects by their originated request, new property 'RequestId' is added (unless 'dontAddRequestId' switch is used).
+
+    Use if you are not getting the correct results a.k.a. internal function logic may be faulty + create issue ticket so I can fix it :)
 
     .PARAMETER dontAddRequestId
     Switch to avoid adding extra 'RequestId' property to the "beautified" results.
@@ -159,22 +161,42 @@
                     # return just actually requested data without batch-related properties and enhance the returned object with 'RequestId' property for easier filtering
 
                     foreach ($response in $responses) {
-                        # properties to return
-                        $property = @("*")
-                        if (!$dontAddRequestId) {
-                            $property += @{n = 'RequestId'; e = { $response.Id } }
-                        }
+                        $value = $null
 
                         if ($response.body.value) {
                             # the result is stored in 'value' property
-                            $response.body.value | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
+                            $value = $response.body.value
                         } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                         } elseif ($response.body) {
                             # the result is in the 'body' property itself
-                            $response.body | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
+                            $value = $response.body
                         } else {
                             # no results in 'body.value' nor 'body' property itself
+                        }
+
+                        # return processed output
+                        if ($value.gettype().name -in 'String', 'Int32', 'Int64', 'Boolean', 'Float', 'Double', 'Decimal') {
+                            # it is a primitive
+
+                            if ($dontAddRequestId) {
+                                $value
+                            } else {
+                                [PSCustomObject]@{
+                                    Value     = $value
+                                    RequestId = $response.Id
+                                }
+                            }
+                        } else {
+                            # it is a complex object (hashtable, ..)
+
+                            # properties to return
+                            $property = @("*")
+                            if (!$dontAddRequestId) {
+                                $property += @{n = 'RequestId'; e = { $response.Id } }
+                            }
+
+                            $value | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         }
                     }
                 }

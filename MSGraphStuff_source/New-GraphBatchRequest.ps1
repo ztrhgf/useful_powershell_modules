@@ -100,7 +100,7 @@
     https://learn.microsoft.com/en-us/graph/json-batching
     #>
 
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Default')]
     param (
         [string] $method = "GET",
 

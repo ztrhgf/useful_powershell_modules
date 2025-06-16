@@ -12,7 +12,7 @@
 RootModule = 'MSGraphStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.1.7'
+ModuleVersion = '1.1.8'
 
 # Supported PSEditions
 CompatiblePSEditions = 'Core', 'Desktop'
@@ -127,6 +127,9 @@ PrivateData = @{
 
         # ReleaseNotes of this module
         ReleaseNotes = '
+            1.1.8
+                FIXED
+                    New-GraphBatchRequest - "Parameter set cannot be resolved using the specified named parameters"
             1.1.7
                 FIXED
                     Invoke-GraphBatchRequest - fixed "You cannot call a method on a null-valued expression" when no result is returned

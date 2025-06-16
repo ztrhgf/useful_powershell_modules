@@ -111,11 +111,11 @@
         # batch uri
         $requestUri = "$uri/$graphVersion/`$batch"
         # buffer to hold chunks of requests
-        $requestChunk = [System.Collections.ArrayList]::new()
+        $requestChunk = [System.Collections.Generic.List[Object]]::new()
         # paginated or remotely failed requests that should be processed too, to get all the results
-        $extraRequestChunk = [System.Collections.ArrayList]::new()
+        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
         # throttled requests that have to be repeated after given time
-        $throttledRequestChunk = [System.Collections.ArrayList]::new()
+        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
 
         function _processChunk {
             <#
@@ -168,11 +168,13 @@
                             $value = $response.body.value
                         } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
+                            continue
                         } elseif ($response.body) {
                             # the result is in the 'body' property itself
                             $value = $response.body
                         } else {
                             # no results in 'body.value' nor 'body' property itself
+                            continue
                         }
 
                         # return processed output
@@ -203,7 +205,7 @@
                 #endregion return the output
 
                 # check responses status
-                $failedBatchJob = [System.Collections.ArrayList]::new()
+                $failedBatchJob = [System.Collections.Generic.List[Object]]::new()
 
                 foreach ($response in $responses) {
                     # https://learn.microsoft.com/en-us/graph/errors#http-status-codes
@@ -221,7 +223,7 @@
                             # replace original URL with the nextLink
                             $nextLinkRequest.URL = $relativeNextLink
                             # add the request for later processing
-                            $null = $extraRequestChunk.Add($nextLinkRequest)
+                            $extraRequestChunk.Add($nextLinkRequest)
                         }
                     } elseif ($response.Status -in 429, 509) {
                         # throttled (will be repeated after given time)
@@ -234,11 +236,11 @@
                         if ($jobRetryAfter -eq 0) {
                             # request can be repeated without any delay
                             #TIP for performance reasons adding to $extraRequestChunk batch (to avoid invocation of unnecessary batch job)
-                            $null = $extraRequestChunk.Add($throttledBatchRequest)
+                            $extraRequestChunk.Add($throttledBatchRequest)
                         } else {
                             # request can be repeated after delay
                             # add the request for later processing
-                            $null = $throttledRequestChunk.Add($throttledBatchRequest)
+                            $throttledRequestChunk.Add($throttledBatchRequest)
                         }
 
                         # get highest retry-after wait time
@@ -253,13 +255,13 @@
 
                         Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Id)', Url:'$($problematicBatchRequest.Url)' had internal error '$($problematicBatchRequest.Status)', hence will be repeated"
 
-                        $null = $extraRequestChunk.Add($problematicBatchRequest)
+                        $extraRequestChunk.Add($problematicBatchRequest)
                     } else {
                         # failed
 
                         $failedBatchRequest = $requestChunk | ? Id -EQ $response.Id
 
-                        $null = $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)'")
+                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)'")
                     }
                 }
 
@@ -285,7 +287,7 @@
         }
 
         foreach ($request in $batchRequest) {
-            $null = $requestChunk.Add($request)
+            $requestChunk.Add($request)
 
             # check if the buffer has reached the required chunk size
             if ($requestChunk.count -eq $chunkSize) {

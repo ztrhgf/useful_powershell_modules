@@ -38,10 +38,16 @@
 
     .PARAMETER id
     Id of the request.
-    Can only be specified only when 'url' parameter contains one value.
+    If created request will be invoked via 'Invoke-GraphBatchRequest' function, this Id will be saved in the returned object's 'RequestId' property.
+    Can only be specified when 'url' parameter contains just one value.
     If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     By default random-generated-number.
+
+    .PARAMETER placeholderAsId
+    Switch to use current 'placeholder' value used in the request URL as an request ID.
+
+    BEWARE that request ID has to be unique across the pools of all batch requests, therefore use this switch with a caution!
 
     .EXAMPLE
     $batchRequest = New-GraphBatchRequest -url "/deviceManagement/managedDevices/38027eb9-1f3e-49ea-bf91-f7b7f07c3a63?`$select=id,devicename&`$expand=DetectedApps", "/deviceManagement/managedDevices/aaa932b4-5af4-4120-86b1-ab64b964a56s?`$select=id,devicename&`$expand=DetectedApps"
@@ -61,21 +67,34 @@
     $devices = Get-MgBetaDeviceManagementManagedDevice -Property Id, AzureAdDeviceId, OperatingSystem -All
 
     $windowsClient = $devices | ? OperatingSystem -EQ 'Windows'
-    $macOSClient = $devices | ? OperatingSystem -EQ 'macOS'
 
     $batchRequest = @(
         # get bitlocker keys for all windows devices
         New-GraphBatchRequest -url "/informationProtection/bitlocker/recoveryKeys?`$filter=deviceId eq '<placeholder>'" -id "bitlocker" -placeholder $windowsClient.AzureAdDeviceId
-        # get fileVault keys for all macos devices
-        New-GraphBatchRequest -url "/deviceManagement/managedDevices('<placeholder>')/getFileVaultKey" -id "fileVault" -placeholder $macOSClient.Id
+
+        # get LAPS
+        New-GraphBatchRequest -url "/directory/deviceLocalCredentials/<placeholder>?`$select=credentials" -id "laps" -placeholder $windowsClient.AzureAdDeviceId
+
+        # get all users
+        New-GraphBatchRequest -url "/users" -id "users"
     )
 
     $batchResult = Invoke-GraphBatchRequest -batchRequest $batchRequest -graphVersion beta
 
     $bitlockerKeyList = $batchResult | ? RequestId -like "bitlocker*"
-    $fileVaultKeyList = $batchResult | ? RequestId -like "fileVault*"
+    $lapsKeyList = $batchResult | ? RequestId -like "laps*"
+    $userList = $batchResult | ? RequestId -eq "users"
 
     Merging multiple different batch queries together.
+
+    .EXAMPLE
+    $devices = Get-MgBetaDeviceManagementManagedDevice -Property Id, AzureAdDeviceId, OperatingSystem -All
+
+    $macOSClient = $devices | ? OperatingSystem -EQ 'macOS'
+
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices('<placeholder>')/getFileVaultKey" -placeholderAsId -placeholder $macOSClient.Id | Invoke-GraphBatchRequest -graphVersion beta
+
+    Get fileVault keys for all MacOs devices, where returned object's RequestId property will contain Id of the corresponding MacOS device and Value property will contains the key itself.
 
     .NOTES
     https://learn.microsoft.com/en-us/graph/json-batching
@@ -95,7 +114,11 @@
 
         $body,
 
-        [string] $id
+        [Parameter(ParameterSetName = "Id")]
+        [string] $id,
+
+        [Parameter(ParameterSetName = "PlaceholderAsId")]
+        [switch] $placeholderAsId
     )
 
     #region validity checks
@@ -110,6 +133,14 @@
     if (!$placeholder -and $url -like "*<placeholder>*") {
         throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
     }
+
+    if ($placeholderAsId -and !$placeholder) {
+        throw "'placeholderAsId' parameter cannot be used without specifying 'placeholder' parameter"
+    }
+
+    if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
+        throw "'placeholderAsId' parameter cannot be used with multiple urls"
+    }
     #endregion validity checks
 
     if ($placeholder) {
@@ -122,14 +153,15 @@
         }
     }
 
+    $index = 0
+
     $url | % {
-        # fix common mistake where there are multiple slashes
+        # fix common mistake where there are multiple following slashes
         $_ = $_ -replace "(?<!^https:)/{2,}", "/"
 
         if ($_ -like "http*" -or $_ -like "*/beta/*" -or $_ -like "*/v1.0/*" -or $_ -like "*/graph.microsoft.com/*") {
-            throw "url '$_' has to be relative (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
+            throw "url '$_' has to be in the relative form (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
         }
-
 
         $property = [ordered]@{
             method = $method
@@ -142,6 +174,8 @@
             } else {
                 $property.id = $id
             }
+        } elseif ($placeholderAsId -and $placeholder) {
+            $property.id = @($placeholder)[$index]
         } else {
             $property.id = Get-Random
         }
@@ -155,5 +189,7 @@
         }
 
         New-Object -TypeName PSObject -Property $property
+
+        ++$index
     }
 }

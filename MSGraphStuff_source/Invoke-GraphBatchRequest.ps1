@@ -163,6 +163,11 @@
                     foreach ($response in $responses) {
                         $value = $null
 
+                        # there was some error, no real values were returned, skipping
+                        if ($response.Status -in (400..509)) {
+                            continue
+                        }
+
                         if ($response.body.value) {
                             # the result is stored in 'value' property
                             $value = $response.body.value
@@ -261,7 +266,7 @@
 
                         $failedBatchRequest = $requestChunk | ? Id -EQ $response.Id
 
-                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)'")
+                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)' ($($response.body.error.innerError.code))")
                     }
                 }
 

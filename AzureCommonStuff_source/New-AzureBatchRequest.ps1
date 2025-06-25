@@ -25,13 +25,11 @@
     .PARAMETER url
     Request URL in absolute (https://management.azure.com/providers/Microsoft.Management/managementGroups/SOMEMGGROUP/providers/microsoft.authorization/permissions?api-version=2018-01-01-preview) or relative form (/providers/Microsoft.Management/managementGroups/SOMEMGGROUP/providers/microsoft.authorization/permissions?api-version=2018-01-01-preview) a.k.a. without the "https://management.azure.com" prefix.
 
-    .PARAMETER urlWithPlaceholder
-    Request URL in absolute (https://management.azure.com/providers/Microsoft.Management/managementGroups/<placeholder>/providers/microsoft.authorization/permissions?api-version=2018-01-01-preview) or relative form (/providers/Microsoft.Management/managementGroups/<placeholder>/providers/microsoft.authorization/permissions?api-version=2018-01-01-preview) that contains "<placeholder>" string.
-    Relative form means without the "https://management.azure.com" prefix.
-    For each value in the 'placeholder' parameter, new request url will be generated with such value used instead of the "<placeholder>" string.
+    When the 'placeholder' parameter is specified, for each value it contains, new request url will be generated with such value used instead of the '<placeholder>' string.
+
 
     .PARAMETER placeholder
-    Array of items (string, integers, ..) that will be used in the request url (defined in 'urlWithPlaceholder' parameter) instead of the "<placeholder>" string.
+    Array of items (string, integers, ..) that will be used in the request url (defined in 'url' parameter) instead of the "<placeholder>" string.
 
     .PARAMETER requestHeaderDetails
     RequestHeaderDetails (header) as a hashtable that should be added to each request in the batch.
@@ -42,9 +40,10 @@
 
     .PARAMETER name
     Name (Id) of the request.
-    Can only be specified when only one URL is requested.
+    Can only be specified only when 'url' parameter contains one value.
+    If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
-    By default random-generated-GUID.
+    By default random-generated-number.
 
     .EXAMPLE
     $batchRequest = New-AzureBatchRequest -url "/providers/Microsoft.Authorization/roleDefinitions?%24filter=type%20eq%20%27BuiltInRole%27&api-version=2022-05-01-preview", "/subscriptions/f3b08c7f-99a9-4a70-ba56-1e877abb77f7/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01"
@@ -56,14 +55,14 @@
     .EXAMPLE
     $subscriptionId = (Get-AzSubscription | ? State -EQ 'Enabled').Id
 
-    New-AzureBatchRequest -urlWithPlaceholder "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId | Invoke-AzureBatchRequest
+    New-AzureBatchRequest -url "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId | Invoke-AzureBatchRequest
 
     Creates batch request object containing dynamically generated urls for every id in the $subscriptionId array & run it.
 
     .EXAMPLE
     $subscriptionId = (Get-AzSubscription | ? State -EQ 'Enabled').Id
 
-    $batchRequest = New-AzureBatchRequest -urlWithPlaceholder "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId
+    $batchRequest = New-AzureBatchRequest -url "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId
 
     # you need to process all requests by chunks of 20 items
     $payload = @{
@@ -81,18 +80,9 @@
         [ValidateSet('GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'PATCH')]
         [string] $method = "GET",
 
-        [Parameter(Mandatory = $true, ParameterSetName = "Url")]
+        [Parameter(Mandatory = $true)]
+        [Alias("urlWithPlaceholder")]
         [string[]] $url,
-
-        [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
-        [ValidateScript( {
-                if ($_ -like "*<placeholder>*") {
-                    $true
-                } else {
-                    throw "$_ doesn't contain '<placeholder>' string (that should be replaced by real value from `$placeholder then)"
-                }
-            })]
-        [string] $urlWithPlaceholder,
 
         [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
         $placeholder,
@@ -103,13 +93,27 @@
         [string] $name
     )
 
-    if ($name -and @($url).count -gt 1) {
-        throw "'name' parameter cannot be used with multiple urls"
+    #region validity checks
+    if ($id -and @($url).count -gt 1) {
+        throw "'id' parameter cannot be used with multiple urls"
     }
 
-    if ($urlWithPlaceholder) {
+    if ($placeholder -and $url -notlike "*<placeholder>*") {
+        throw "You have specified 'placeholder' parameter, but 'url' parameter doesn't contain string '<placeholder>' for replace."
+    }
+
+    if (!$placeholder -and $url -like "*<placeholder>*") {
+        throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
+    }
+    #endregion validity checks
+
+    if ($placeholder) {
         $url = $placeholder | % {
-            $urlWithPlaceholder -replace "<placeholder>", $_
+            $p = $_
+
+            $url | % {
+                $_ -replace "<placeholder>", $p
+            }
         }
     }
 
@@ -133,9 +137,13 @@
         }
 
         if ($name) {
-            $property.Name = $name
+            if ($placeholder -and $placeholder.count -gt 1) {
+                $property.Name = ($name + "_" + (Get-Random))
+            } else {
+                $property.Name = $name
+            }
         } else {
-            $property.Name = (New-Guid).Guid
+            $property.Name = Get-Random
         }
 
         if ($requestHeaderDetails) {

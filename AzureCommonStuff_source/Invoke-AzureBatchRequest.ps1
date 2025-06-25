@@ -54,7 +54,7 @@
     .EXAMPLE
     $subscriptionId = (Get-AzSubscription | ? State -EQ 'Enabled').Id
 
-    New-AzureBatchRequest -urlWithPlaceholder "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId | Invoke-AzureBatchRequest
+    New-AzureBatchRequest -url "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId | Invoke-AzureBatchRequest
 
     Creates batch request object containing dynamically generated urls for every id in the $subscriptionId array & run it.
 
@@ -132,7 +132,7 @@
                 throw "Batch failed with error code $($result.StatusCode) and message: $(($result.content | ConvertFrom-Json).Error.Message)"
             } elseif ($result.StatusCode -in 202, 429) {
                 # whole batch has to be retried
-                # TODO nastavit retryAfter a pridat vsechny uri do $throttledRequestChunk?
+                # FIXME nastavit retryAfter a pridat vsechny uri do $throttledRequestChunk?
                 # $retryAfter = ($result.Headers.RetryAfter.Delta).TotalSeconds
                 Write-Warning "TODO! $($result.StatusCode) tzn zopakovat po $(($result.Headers.RetryAfter.Delta).TotalSeconds)"
             }
@@ -148,6 +148,11 @@
                 # return just actually requested data without batch-related properties and enhance the returned object with 'RequestName' property for easier filtering
 
                 foreach ($response in $responses) {
+                    # there was some error, no real values were returned, skipping
+                    if ($response.httpStatusCode -in (400..509)) {
+                        continue
+                    }
+
                     # properties to return
                     $property = @("*")
                     if (!$dontAddRequestName) {
@@ -155,10 +160,9 @@
                     }
 
                     if ($response.content.value) {
-                        # the result is stored in 'value' property
                         $response.content.value | select -Property $property
                     } else {
-                        # the result is stored in 'value' property, but no results were returned, skipping
+                        # no results were returned, skipping
                     }
                 }
             }
@@ -220,8 +224,6 @@
                     # failed
 
                     $failedBatchRequest = $requestChunk | ? Name -EQ $response.Name
-
-                    $response | fl *
 
                     $null = $failedBatchJob.Add("- Name: '$($response.Name)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.httpStatusCode)', Error: '$($response.body.error.message)'")
                 }

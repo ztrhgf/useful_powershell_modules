@@ -356,7 +356,7 @@ function Get-CodeDependency {
 
                 $AST -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
                 # Class methods have a FunctionDefinitionAst under them as well, but we don't want them.
-                        ($PSVersionTable.PSVersion.Major -lt 5 -or
+                ($PSVersionTable.PSVersion.Major -lt 5 -or
                 $AST.Parent -isnot [System.Management.Automation.Language.FunctionMemberAst])
             }, [bool]$recurse)
     }
@@ -851,7 +851,7 @@ function Get-CodeDependency {
         foreach ($PSSnapin in $requiresPSSnapIns) {
             Write-Verbose "PSSnapin '$($PSSnapin.Name)' ($($PSSnapin.Version)) is required"
 
-            $alreadyProcessed = $global:processedPSSnapins | ? { $_.Name -EQ $PSSnapin.Name -and $_.Version -EQ $PSSnapin.Version }
+            $alreadyProcessed = $global:processedPSSnapins | ? { $_.Name -eq $PSSnapin.Name -and $_.Version -eq $PSSnapin.Version }
 
             if (!$alreadyProcessed) {
                 # take a note
@@ -1021,6 +1021,12 @@ function Get-CodeDependency {
             $cmdName = $cmd.CommandElements[0].Value
             $cmdCommand = $cmd.Extent.Text
 
+            if (!$cmdName) {
+                # skip commands that doesn't have a name (e.g. '&' operator)
+                Write-Warning ("`t`t`t`t`t" * $indent + "- Unable to process command: '$cmdCommand'. Skipping")
+                continue
+            }
+
             # remove command prefix added when importing command source module
             if ($importModulePrefix) {
                 foreach ($prefix in $importModulePrefix) {
@@ -1071,7 +1077,7 @@ function Get-CodeDependency {
                 }
 
                 # get command details
-                $cmdData = Get-Command $cmdName -All -Verbose:$false -ErrorAction SilentlyContinue | ? { ($_.ModuleName -or $_.CommandType -eq 'Alias') -and $_.Name -EQ $cmdName } # just exact matches (name can contain wildcard) and defined in module
+                $cmdData = Get-Command $cmdName -All -Verbose:$false -ErrorAction SilentlyContinue | ? { ($_.ModuleName -or $_.CommandType -eq 'Alias') -and $_.Name -eq $cmdName } # just exact matches (name can contain wildcard) and defined in module
 
                 if ($cmdData.count -gt 1) {
                     #region try to guess the command real source

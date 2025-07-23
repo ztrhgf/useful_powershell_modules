@@ -165,19 +165,19 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             foreach ($assignment in $policy.assignments) {
-                # Write-Verbose "`tApplied to group(s): $($assignment.target.AdditionalProperties.groupId -join ', ')"
+                # Write-Verbose "`tApplied to group(s): $($assignment.target.groupId -join ', ')"
 
-                if (!$isAssigned -and ($assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
-                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
+                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
+                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All devices' exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All users' exists"
                     $isAssigned = $true
-                } elseif (!$ignoreExcludes -and $assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
-                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
+                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
+                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isExcluded = $true
                     break # faster processing, but INCLUDE assignments process after EXCLUDE ones won't be shown
                 } else {

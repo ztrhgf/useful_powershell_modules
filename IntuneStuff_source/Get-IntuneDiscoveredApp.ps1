@@ -56,5 +56,5 @@
         }
     }
 
-    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -inputObject $deviceId | Invoke-GraphBatchRequest -graphVersion beta | ? { $_.DetectedApps.DisplayName -like "*$appName*" }
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta | ? { $_.DetectedApps.DisplayName -like "*$appName*" }
 }

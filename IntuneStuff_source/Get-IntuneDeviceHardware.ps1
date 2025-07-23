@@ -47,7 +47,7 @@
 
     # get hardware info (must be gathered device by device otherwise returned values are null!)
     Write-Verbose "Get devices ($($deviceList.count)) HW data"
-    $deviceListHardwareInfo = New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/manageddevices('<placeholder>')?`$select=id,devicename,hardwareinformation,activationLockBypassCode,iccid,udid,roleScopeTagIds,ethernetMacAddress,processorArchitecture,physicalMemoryInBytes,bootstrapTokenEscrowed" -placeholder $deviceList.Id | Invoke-GraphBatchRequest -graphVersion beta
+    $deviceListHardwareInfo = New-GraphBatchRequest -url "/deviceManagement/manageddevices('<placeholder>')?`$select=id,devicename,hardwareinformation,activationLockBypassCode,iccid,udid,roleScopeTagIds,ethernetMacAddress,processorArchitecture,physicalMemoryInBytes,bootstrapTokenEscrowed" -placeholder $deviceList.Id | Invoke-GraphBatchRequest -graphVersion beta
 
     foreach ($device in $deviceList) {
         $deviceId = $device.Id

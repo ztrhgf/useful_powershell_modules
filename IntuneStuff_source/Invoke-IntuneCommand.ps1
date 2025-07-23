@@ -233,7 +233,7 @@
         }
 
         if (($string | Measure-Object -Character).Characters -ge 2048) {
-            Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
+            Write-Warning "Output for device $dvcName ($dvcId) exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
         }
 
         # decompress the string if it is compressed
@@ -372,8 +372,14 @@
         publisher       = "on-demand"
         runAs           = $runAs
         runAs32         = $runAs32
+        errorAction     = "stop"
     }
-    $remediationScript = New-IntuneRemediation @param
+
+    try {
+        $remediationScript = New-IntuneRemediation @param
+    } catch {
+        throw "Unable to create helper remediation. Error was:`n$_"
+    }
     #endregion create the remediation
 
     try {
@@ -478,7 +484,7 @@
         if ($dontWait) {
             # nothing to do really
             if (!$letCommandFinish) {
-                Write-Warning "Because 'dontWait' was used, helper remediation '$remediationScriptName' ($($remediationScript.Id)) won't be deleted, because that would cause clients not to run the defined command. Do it manually."
+                Write-Warning "Because 'dontWait' was used, helper remediation '$remediationScriptName' ($($remediationScript.Id)) won't be deleted, because that would cause clients not to run the defined command. Use 'Get-IntuneRemediationResult -Id $($remediationScript.Id)' to check the results."
             }
         } else {
             #region output devices that didn't make it in time
@@ -526,7 +532,7 @@
             if ($reallyUnfinishedDeviceIdList -and $letCommandFinish) {
                 # command wasn't invoked on all devices, but it should be allowed to
 
-                Write-Warning "'$remediationScriptName' ($($remediationScript.Id)) helper remediation will not be deleted. Do it manually when the rest of the devices $($reallyUnfinishedDeviceIdList.count) run it."
+                Write-Warning "'$remediationScriptName' ($($remediationScript.Id)) helper remediation will not be deleted. Do it manually when the rest of the devices $($reallyUnfinishedDeviceIdList.count) run it. Use 'Get-IntuneRemediationResult -Id $($remediationScript.Id)' to check the results."
             } elseif ($reallyUnfinishedDeviceIdList) {
                 # command wasn't invoked on all devices
 

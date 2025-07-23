@@ -2286,7 +2286,7 @@ function Get-IntuneDeviceHardware {
 
     # get hardware info (must be gathered device by device otherwise returned values are null!)
     Write-Verbose "Get devices ($($deviceList.count)) HW data"
-    $deviceListHardwareInfo = New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/manageddevices('<placeholder>')?`$select=id,devicename,hardwareinformation,activationLockBypassCode,iccid,udid,roleScopeTagIds,ethernetMacAddress,processorArchitecture,physicalMemoryInBytes,bootstrapTokenEscrowed" -placeholder $deviceList.Id | Invoke-GraphBatchRequest -graphVersion beta
+    $deviceListHardwareInfo = New-GraphBatchRequest -url "/deviceManagement/manageddevices('<placeholder>')?`$select=id,devicename,hardwareinformation,activationLockBypassCode,iccid,udid,roleScopeTagIds,ethernetMacAddress,processorArchitecture,physicalMemoryInBytes,bootstrapTokenEscrowed" -placeholder $deviceList.Id | Invoke-GraphBatchRequest -graphVersion beta
 
     foreach ($device in $deviceList) {
         $deviceId = $device.Id
@@ -2420,7 +2420,7 @@ function Get-IntuneDiscoveredApp {
         }
     }
 
-    New-GraphBatchRequest -urlWithPlaceholder "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -inputObject $deviceId | Invoke-GraphBatchRequest -graphVersion beta | ? { $_.DetectedApps.DisplayName -like "*$appName*" }
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>?`$select=id,devicename&`$expand=DetectedApps" -placeholder $deviceId | Invoke-GraphBatchRequest -graphVersion beta | ? { $_.DetectedApps.DisplayName -like "*$appName*" }
 }
 
 function Get-IntuneEnrollmentStatus {
@@ -3769,7 +3769,7 @@ function Get-IntunePolicy {
         [switch] $flatOutput
     )
 
-    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+    if (!(Get-Command Get-MgContext -ErrorAction SilentlyContinue) -or !(Get-MgContext)) {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
@@ -3780,22 +3780,14 @@ function Get-IntunePolicy {
         $all = $false
     }
 
-    # create parameters hash for sub-functions and uri parameters for api calls
+    # Define select and expand parameters for API calls
     if ($basicOverview) {
         Write-Verbose "Just subset of available policy properties will be gathered"
-        $selectFilter = '&$select=id,displayName,lastModifiedDateTime,assignments' # these properties are common across all intune policies, so it is safe to use them
-        $expandFilter = '&$expand=assignments'
+        [string] $script:selectParams = 'id,displayName,lastModifiedDateTime,assignments' # these properties are common across all intune policies
+        [string] $script:expandParams = 'assignments'
     } else {
-        $selectFilter = $null
-        $expandFilter = '&$expand=assignments'
-    }
-    $sharedParam = @{
-        all    = $true
-        expand = "assignments"
-    }
-    if ($basicOverview) {
-        Write-Verbose "Just subset of available policy properties will be gathered"
-        $param.select = ('id', 'displayName', 'lastModifiedDateTime', 'assignments')
+        [string] $script:selectParams = '*'
+        [string] $script:expandParams = 'assignments'
     }
 
     # progress variables
@@ -3806,188 +3798,163 @@ function Get-IntunePolicy {
     }
     $progressActivity = "Getting Intune policies"
 
-    #region get Intune policies
-    # define main PS object property hash
-    $resultProperty = [ordered]@{}
+    #region Build Batch Requests
+    $allBatchRequests = [System.Collections.Generic.List[Object]]::new()
+    Write-Verbose "Building all batch requests"
 
     # Apps
     if ($all -or $policyType -contains 'app') {
-        # https://graph.microsoft.com/beta/deviceAppManagement/mobileApps
-        Write-Verbose "Processing Apps"
-        Write-Progress -Activity $progressActivity -Status "Processing Apps" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Apps requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Apps requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $param = $sharedParam.clone()
-        $param.filter = "microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true"
-        $app = Get-MgBetaDeviceAppManagementMobileApp @param
-
-        $resultProperty.App = $app
+        $filter = "microsoft.graph.managedApp/appAvailability eq null or microsoft.graph.managedApp/appAvailability eq 'lineOfBusiness' or isAssigned eq true"
+        $url = "/deviceAppManagement/mobileApps?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "app" -url $url))
     }
 
     # App Configuration policies
     if ($all -or $policyType -contains 'appConfigurationPolicy') {
-        Write-Verbose "Processing App Configuration policies"
-        Write-Progress -Activity $progressActivity -Status "Processing App Configuration policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding App Configuration policies requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building App Configuration policies requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $appConfigurationPolicy = @()
+        $url = "/deviceAppManagement/targetedManagedAppConfigurations?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "targetedManagedAppConfigurations" -url $url))
 
-        # targetedManagedAppConfigurations
-        Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
-        $targetedManagedAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
-
-        # mobileAppConfigurations
-        Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $param = $sharedParam.clone()
-        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false"
-        $mobileAppConfigurations = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
-        $mobileAppConfigurations | ? { $_ } | % { $appConfigurationPolicy += $_ }
-
-        if ($appConfigurationPolicy) {
-            $resultProperty.AppConfigurationPolicy = $appConfigurationPolicy
-        } else {
-            $resultProperty.AppConfigurationPolicy = $null
-        }
+        $filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq false or isof('microsoft.graph.androidManagedStoreAppConfiguration') eq false"
+        $url = "/deviceAppManagement/mobileAppConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "mobileAppConfigurations" -url $url))
     }
 
     # App Protection policies
     if ($all -or $policyType -contains 'appProtectionPolicy') {
-        Write-Verbose "Processing App Protection policies"
-        Write-Progress -Activity $progressActivity -Status "Processing App Protection policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding App Protection policies requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building App Protection policies requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $appProtectionPolicy = @()
+        $url = "/deviceAppManagement/iosManagedAppProtections?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "iosManagedAppProtections" -url $url))
 
-        # iosManagedAppProtections
-        Write-Verbose "`t- processing 'iosManagedAppProtections'"
-        $iosManagedAppProtections = Get-MgBetaDeviceAppManagementiOSManagedAppProtection @sharedParam
-        $iosManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
+        $url = "/deviceAppManagement/androidManagedAppProtections?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "androidManagedAppProtections" -url $url))
 
-        # androidManagedAppProtections
-        Write-Verbose "`t- processing 'androidManagedAppProtections'"
-        $androidManagedAppProtections = Get-MgBetaDeviceAppManagementAndroidManagedAppProtection @sharedParam
-        $androidManagedAppProtections | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # targetedManagedAppConfigurations
-        Write-Verbose "`t- processing 'targetedManagedAppConfigurations'"
-        $targetedManagedAppConfigurations = Get-MgBetaDeviceAppManagementTargetedManagedAppConfiguration @sharedParam
-        $targetedManagedAppConfigurations | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # windowsInformationProtectionPolicies
-        Write-Verbose "`t- processing 'windowsInformationProtectionPolicies'"
-        # unable to use cmdlet because of error: Get-MgBetaDeviceAppManagementWindowsInformationProtectionPolicy_List: Object reference not set to an instance of an object.
-        $uri = "https://graph.microsoft.com/beta/deviceAppManagement/windowsInformationProtectionPolicies?$expandFilter$selectFilter"
-        $windowsInformationProtectionPolicies = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-        $windowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        # mdmWindowsInformationProtectionPolicies
-        Write-Verbose "`t- processing 'mdmWindowsInformationProtectionPolicies'"
-        $mdmWindowsInformationProtectionPolicies = Get-MgBetaDeviceAppManagementMdmWindowsInformationProtectionPolicy @sharedParam
-        $mdmWindowsInformationProtectionPolicies | ? { $_ } | % { $appProtectionPolicy += $_ }
-
-        if ($appProtectionPolicy) {
-            $resultProperty.AppProtectionPolicy = $appProtectionPolicy
-        } else {
-            $resultProperty.AppProtectionPolicy = $null
+        if (!($all -or $policyType -contains 'appConfigurationPolicy')) {
+            $url = "/deviceAppManagement/targetedManagedAppConfigurations?`$select=$script:selectParams&`$expand=$script:expandParams"
+            $allBatchRequests.Add((New-GraphBatchRequest -id "targetedManagedAppConfigurations_appProt" -url $url))
         }
+
+        $url = "/deviceAppManagement/windowsInformationProtectionPolicies?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "windowsInformationProtectionPolicies" -url $url))
+
+        $url = "/deviceAppManagement/mdmWindowsInformationProtectionPolicies?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "mdmWindowsInformationProtectionPolicies" -url $url))
     }
 
     # Device Compliance
     if ($all -or $policyType -contains 'compliancePolicy') {
-        Write-Verbose "Processing Compliance policies"
-        Write-Progress -Activity $progressActivity -Status "Processing Compliance policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Compliance policies requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Compliance policies requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $compliancePolicy = Get-MgBetaDeviceManagementDeviceCompliancePolicy @sharedParam
-
-        $resultProperty.CompliancePolicy = $compliancePolicy
+        $url = "/deviceManagement/deviceCompliancePolicies?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "compliancePolicy" -url $url))
     }
 
     # Device Configuration
-    # contains all policies as can be seen in Intune web portal 'Device' > 'Device Configuration'
     if ($all -or $policyType -contains 'configurationPolicy') {
-        Write-Verbose "Processing Configuration policies"
-        Write-Progress -Activity $progressActivity -Status "Processing Configuration policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Configuration policies requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Configuration policies requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $configurationPolicy = @()
+        $filter = "not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration')"
+        $url = "/deviceManagement/deviceConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "deviceConfigurations" -url $url))
 
-        # Templates profile type
-        # api returns also Windows Update Ring policies, but they are filtered, so just policies as in GUI are returned
-        Write-Verbose "`t- processing 'deviceConfigurations'"
-        $param = $sharedParam.clone()
-        $param.filter = "not isof('microsoft.graph.windowsUpdateForBusinessConfiguration') and not isof('microsoft.graph.iosUpdateConfiguration')"
-        $dcTemplate = Get-MgBetaDeviceManagementDeviceConfiguration @param
-        $dcTemplate | ? { $_ } | % { $configurationPolicy += $_ }
+        $url = "/deviceManagement/groupPolicyConfigurations?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "groupPolicyConfigurations" -url $url))
 
-        # Administrative Templates
-        Write-Verbose "`t- processing 'groupPolicyConfigurations'"
-        $dcAdmTemplate = Get-MgBetaDeviceManagementGroupPolicyConfiguration @sharedParam
-        $dcAdmTemplate | ? { $_ } | % { $configurationPolicy += $_ }
+        $filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true"
+        $url = "/deviceAppManagement/mobileAppConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "mobileAppConfigurationsOEM" -url $url))
 
-        # mobileAppConfigurations
-        Write-Verbose "`t- processing 'mobileAppConfigurations'"
-        $param = $sharedParam.clone()
-        $param.filter = "microsoft.graph.androidManagedStoreAppConfiguration/appSupportsOemConfig eq true"
-        $dcMobileAppConf = Get-MgBetaDeviceAppManagementMobileAppConfiguration @param
-        $dcMobileAppConf | ? { $_ } | % { $configurationPolicy += $_ }
+        # configurationPolicies policies when expand operator is used gets throttled
+        # therefore at first get just basic properties and secondly get settings and assignments via batching and enhance the former object
+        Write-Verbose "Processing configuration policies"
+        $filter = "(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')"
+        $select = $script:selectParams -replace "displayName", "name"
+        $url = "/deviceManagement/configurationPolicies?`$filter=$filter&`$select=$select"
+        $configurationPolicyBatchResults = New-GraphBatchRequest -id "configurationPolicies" -url $url | Invoke-GraphBatchRequest -graphVersion beta
+        $configurationPolicy = $null
 
-        # Settings Catalog profile type
-        # api returns also Attack Surface Reduction Rules and Account protection policies (from Endpoint Security section), but they are filtered, so just policies as in GUI are returned
-        # configurationPolicies objects have property Name instead of DisplayName
-        Write-Verbose "`t- processing 'configurationPolicies'"
-        $param = $sharedParam.clone()
-        $param.select = $param.select -replace "displayname", "name"
-        $param.expand += ",settings"
-        $param.filter = "(platforms eq 'windows10' or platforms eq 'macOS' or platforms eq 'iOS') and (technologies eq 'mdm' or technologies eq 'windows10XManagement' or technologies eq 'appleRemoteManagement' or technologies eq 'mdm,appleRemoteManagement') and (templateReference/templateFamily eq 'none')"
-        $dcSettingCatalog = Get-MgBetaDeviceManagementConfigurationPolicy @param
-        $dcSettingCatalog | ? { $_ } | % { $configurationPolicy += $_ }
+        if ($configurationPolicyBatchResults) {
+            # Build batch requests for assignments and settings
+            $configurationPolicyExpandPropertyBatchRequests = [System.Collections.Generic.List[Object]]::new()
+            # if $script:expandParams will contain anything else than 'assignments', final $configurationPolicyBatchResults Select-Object output has to be modified to reflect that!
+            $expandParamsList = $script:expandParams, 'settings' | ? { $_ }
 
-        if ($configurationPolicy) {
-            $resultProperty.ConfigurationPolicy = $configurationPolicy
-        } else {
-            $resultProperty.ConfigurationPolicy = $null
+            $configurationPolicyBatchResults | % {
+                $id = $_.id
+                $expandParamsList | % {
+                    $url = "/deviceManagement/configurationPolicies/<placeholder>/$_"
+                    $configurationPolicyExpandPropertyBatchRequests.Add((New-GraphBatchRequest -id "$id`_$_" -placeholder $id -url $url))
+                }
+            }
+
+            $configurationPolicyExpandPropertyBatchResults = Invoke-GraphBatchRequest -batchRequest $configurationPolicyExpandPropertyBatchRequests -graphVersion beta
+
+            # enhance the basic object with assignments and settings properties
+            $configurationPolicy = $configurationPolicyBatchResults | select *, @{Name = 'Settings'; Expression = {
+                    $id = $_.id
+                    $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_settings" }
+                    if ($settings) {
+                        $settings.settingInstance
+                    }
+                }
+            }, @{Name = 'Assignments'; Expression = {
+                    $id = $_.id
+                    $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_assignments" }
+                    if ($assignments) {
+                        $assignments | select * -ExcludeProperty RequestId
+                    }
+                }
+            } -ExcludeProperty RequestId
         }
     }
 
     # MacOS Custom Attribute Shell scripts
     if ($all -or $policyType -contains 'customAttributeShellScript') {
-        Write-Verbose "Processing Custom Attribute Shell scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing Custom Attribute Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Custom Attribute Shell scripts requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Custom Attribute Shell scripts requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $uri = "https://graph.microsoft.com/beta/deviceManagement/deviceCustomAttributeShellScripts?$expandFilter$selectFilter"
-        $customAttributeShellScript = Invoke-MgGraphRequest -Uri $uri | Get-MgGraphAllPages | select -Property * -ExcludeProperty 'assignments@odata.context'
-
-        $resultProperty.CustomAttributeShellScript = $customAttributeShellScript
+        $url = "/deviceManagement/deviceCustomAttributeShellScripts?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "customAttributeShellScript" -url $url))
     }
 
     # ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions configurations
     if ($all -or $policyType -contains 'deviceEnrollmentConfiguration') {
-        Write-Verbose "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions"
-        Write-Progress -Activity $progressActivity -Status "Processing Device Enrollment configurations: ESP, WHFB, Enrollment Limit, Enrollment Platform Restrictions" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Device Enrollment configurations requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Device Enrollment configurations requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $deviceEnrollmentConfiguration = Get-MgBetaDeviceManagementDeviceEnrollmentConfiguration @sharedParam
-
-        $resultProperty.DeviceEnrollmentConfiguration = $deviceEnrollmentConfiguration
+        $url = "/deviceManagement/deviceEnrollmentConfigurations?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "deviceEnrollmentConfiguration" -url $url))
     }
 
     # Device Configuration Powershell Scripts
     if ($all -or $policyType -contains 'deviceManagementPSHScript') {
-        Write-Verbose "Processing PowerShell scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing PowerShell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding PowerShell scripts requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building PowerShell scripts requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $deviceConfigPSHScript = Get-MgBetaDeviceManagementScript @sharedParam
-
-        $resultProperty.DeviceManagementPSHScript = $deviceConfigPSHScript
+        $url = "/deviceManagement/deviceManagementScripts?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "deviceManagementPSHScript" -url $url))
     }
 
     # Device Configuration Shell Scripts
     if ($all -or $policyType -contains 'deviceManagementShellScript') {
-        Write-Verbose "Processing Shell scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing Shell scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        Write-Verbose "Adding Shell scripts requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Shell scripts requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
 
-        $deviceConfigShellScript = Get-MgBetaDeviceManagementDeviceShellScript @sharedParam
-
-        $resultProperty.DeviceManagementShellScript = $deviceConfigShellScript
+        $url = "/deviceManagement/deviceShellScripts?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "deviceManagementShellScript" -url $url))
     }
 
-    # Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies, Local User Group Membership, Firewall, Endpoint detection and response, Attack surface reduction
+    # Endpoint Security
+    # TIP because of the specific output format and requirement that extra data needs to be processed, Endpoint Security policies are processed separately
     if ($all -or $policyType -contains 'endpointSecurity') {
         Write-Verbose "Processing Endpoint Security policies"
         Write-Progress -Activity $progressActivity -Status "Processing Endpoint Security policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
@@ -3996,240 +3963,565 @@ function Get-IntunePolicy {
 
         #region process: Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies (not 'Local User Group Membership')
         if ($basicOverview) {
-            $endpointSecPol = Get-MgBetaDeviceManagementIntent @sharedParam
+            Write-Verbose "Processing endpoint security policies (basic)"
+            $url = "/deviceManagement/intents?`$select=$script:selectParams&`$expand=$script:expandParams"
+            $endpointSecPol = New-GraphBatchRequest -url $url -id "deviceManagementIntents" | Invoke-GraphBatchRequest -graphVersion beta -dontAddRequestId | select * -ExcludeProperty 'assignments@odata.context'
+
+            if ($endpointSecPol) {
+                # set assignments property, because it is unfortunately not returned via expand method
+                $url = "/deviceManagement/intents/<placeholder>/assignments"
+                $endpointSecPolAssignment = New-GraphBatchRequest -url $url -placeholder $endpointSecPol.Id -placeholderAsId | Invoke-GraphBatchRequest -graphVersion beta
+
+                $endpointSecPolAssignment | % {
+                    $id = $_.RequestId
+                    $assignments = $_ | select * -ExcludeProperty RequestId
+                    ($endpointSecPol | ? { $_.id -eq $id }).Assignments = $assignments
+                }
+            }
         } else {
-            $templates = Get-MgBetaDeviceManagementIntent @sharedParam
+            Write-Verbose "Processing endpoint security policies (detailed)"
+            $url = "/deviceManagement/intents?`$select=$script:selectParams&`$expand=$script:expandParams"
+            $intentList = New-GraphBatchRequest -url $url -id "deviceManagementIntents" | Invoke-GraphBatchRequest -graphVersion beta
+
             $endpointSecPol = @()
-            foreach ($template in $templates) {
-                Write-Verbose "`t- processing intent $($template.id), template $($template.templateId)"
 
-                $settings = Get-MgBetaDeviceManagementIntentSetting -DeviceManagementIntentId $template.id | Expand-MgAdditionalProperties
-                $templateDetail = Get-MgBetaDeviceManagementTemplate -DeviceManagementTemplateId $template.templateId
-                $assignments = Get-MgBetaDeviceManagementIntentAssignment -DeviceManagementIntentId $template.id
+            if ($intentList) {
+                # Build batch requests for all intents
+                $batchRequests = [System.Collections.Generic.List[Object]]::new()
 
-                $template | Add-Member Noteproperty -Name 'platforms' -Value $templateDetail.platformType -Force # to match properties of second function region objects
-                $template | Add-Member Noteproperty -Name 'type' -Value "$($templateDetail.templateType)-$($templateDetail.templateSubtype)" -Force
-
-                $templSettings = @()
-                foreach ($setting in $settings) {
-                    $displayName = $setting.definitionId -replace "deviceConfiguration--", "" -replace "admx--", "" -replace "_", " "
-                    if ($null -eq $setting.value) {
-                        if ($setting.definitionId -eq "deviceConfiguration--windows10EndpointProtectionConfiguration_firewallRules") {
-                            $v = $setting.valueJson | ConvertFrom-Json
-                            foreach ($item in $v) {
-                                $templSettings += [PSCustomObject]@{
-                                    Name  = "FW Rule - $($item.displayName)"
-                                    Value = ($item | ConvertTo-Json)
-                                }
-                            }
-                        } else {
-                            $v = ""
-                            $templSettings += [PSCustomObject]@{ Name = $displayName; Value = $v }
-                        }
-                    } else {
-                        $v = $setting.value
-                        $templSettings += [PSCustomObject]@{ Name = $displayName; Value = $v }
-                    }
+                foreach ($intent in $intentList) {
+                    # Create batch requests for settings, template details, and assignments
+                    $batchRequests.Add((New-GraphBatchRequest -url "/deviceManagement/intents/$($intent.id)/settings" -id "settings_$($intent.id)"))
+                    $batchRequests.Add((New-GraphBatchRequest -url "/deviceManagement/templates/$($intent.templateId)" -id "template_$($intent.id)"))
+                    $batchRequests.Add((New-GraphBatchRequest -url "/deviceManagement/intents/$($intent.id)/assignments" -id "assignments_$($intent.id)"))
                 }
 
-                $template | Add-Member Noteproperty -Name Settings -Value $templSettings -Force
-                $template | Add-Member Noteproperty -Name 'settingCount' -Value $templSettings.count -Force # to match properties of second function region objects
-                $template | Add-Member Noteproperty -Name Assignments -Value $assignments -Force
-                $endpointSecPol += $template | select -Property * -ExcludeProperty templateId
+                Write-Verbose "Processing $($intentList.Count) security intents"
+                $batchResults = Invoke-GraphBatchRequest -batchRequest $batchRequests -graphVersion beta
+
+                # Process each template with the batch results
+                foreach ($intent in $intentList) {
+                    Write-Verbose "`t- processing intent $($intent.id), template $($intent.templateId)"
+
+                    # Get settings, template details and assignments from batch results
+                    $settings = $batchResults | ? RequestId -EQ "settings_$($intent.id)"
+                    $templateDetail = $batchResults | ? RequestId -EQ "template_$($intent.id)"
+                    $assignments = $batchResults | ? RequestId -EQ "assignments_$($intent.id)"
+
+                    # Add properties to match the expected output format
+                    $intent | Add-Member Noteproperty -Name 'platforms' -Value $templateDetail.platformType -Force # to match properties of the second region 'endpointSecurity' object
+                    $intent | Add-Member Noteproperty -Name 'type' -Value "$($templateDetail.templateType)-$($templateDetail.templateSubtype)" -Force
+
+                    $intentSettings = @()
+
+                    foreach ($setting in $settings) {
+                        $displayName = $setting.definitionId -replace "deviceConfiguration--", "" -replace "admx--", "" -replace "_", " "
+                        if ($null -eq $setting.value) {
+                            if ($setting.definitionId -eq "deviceConfiguration--windows10EndpointProtectionConfiguration_firewallRules") {
+                                $v = $setting.valueJson | ConvertFrom-Json
+                                foreach ($item in $v) {
+                                    $intentSettings += [PSCustomObject]@{
+                                        Name  = "FW Rule - $($item.displayName)"
+                                        Value = ($item | ConvertTo-Json)
+                                    }
+                                }
+                            } else {
+                                $v = ""
+                                $intentSettings += [PSCustomObject]@{ Name = $displayName; Value = $v }
+                            }
+                        } else {
+                            $v = $setting.value
+                            $intentSettings += [PSCustomObject]@{ Name = $displayName; Value = $v }
+                        }
+                    }
+
+                    $intent | Add-Member Noteproperty -Name Settings -Value $intentSettings -Force
+                    $intent | Add-Member Noteproperty -Name 'settingCount' -Value $intentSettings.count -Force # to match properties of the second region 'endpointSecurity' object
+                    $intent | Add-Member Noteproperty -Name Assignments -Value $assignments -Force
+                    $endpointSecPol += $intent | select -Property * -ExcludeProperty 'templateId', 'assignments@odata.context', 'isMigratingToConfigurationPolicy', 'RequestId'
+                }
             }
         }
+
         $endpointSecPol | ? { $_ } | % { $endpointSecurityPolicy += $_ }
         #endregion process: Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies (not 'Local User Group Membership')
 
         #region process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
-        if ($basicOverview) {
-            $param = $sharedParam.clone()
-            $param.select = $param.select -replace "displayname", "name"
-            $param.select += ",templateReference"
-            $param.expand += ",settings"
-            $param.filter = "templateReference/templateFamily ne 'none'"
+        # because I am unable to make filtering on templateReference/templateFamily to work
+        # get just templateReference property first and then filter out the ones that are not endpoint security policies
+        Write-Verbose "Getting configuration policies"
+        $confPolicyList = Invoke-MgGraphRequest -Uri "/beta/deviceManagement/configurationPolicies?`$select=id,templateReference&`$filter=templateReference/templateFamily ne 'none'" | Get-MgGraphAllPages
 
-            $custSelectFilter = $selectFilter -replace "displayname", "name"
-            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | ? { $_.templateReference.templateFamily -like "endpointSecurity*" } | select @{ n = 'id'; e = { $_.id } }, @{ n = 'displayName'; e = { $_.name } }, * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context' # id as calculated property to have it first and still be able to use *
-        } else {
-            $param = $sharedParam.clone()
-            $param.select = ('id', 'name', 'description', 'isAssigned', 'platforms', 'lastModifiedDateTime', 'settingCount', 'roleScopeTagIds', 'templateReference')
-            $param.expand += ",settings"
-            $param.filter = "templateReference/templateFamily ne 'none'"
-            $endpointSecPol2 = Get-MgBetaDeviceManagementConfigurationPolicy @param | select -Property id, @{n = 'displayName'; e = { $_.name } }, description, isAssigned, lastModifiedDateTime, roleScopeTagIds, platforms, @{n = 'type'; e = { $_.templateReference.templateFamily } }, templateReference, @{n = 'settings'; e = { $_.settings | % { [PSCustomObject]@{
-                            # trying to have same settings format a.k.a. name/value as in previous function region
-                            Name  = $_.settinginstance.settingDefinitionId
-                            Value = $(
-                                # property with setting value isn't always same, try to get the used one
-                                $valuePropertyName = $_.settinginstance | Get-Member -MemberType NoteProperty | ? name -Like "*value" | select -ExpandProperty name
-                                if ($valuePropertyName) {
-                                    # Write-Verbose "Value property $valuePropertyName was found"
-                                    $_.settinginstance.$valuePropertyName
-                                } else {
-                                    # Write-Verbose "Value property wasn't found, therefore saving whole object as value"
-                                    $_.settinginstance
-                                }
-                            )
-                        } } }
-            }, settingCount, assignments -ExcludeProperty 'assignments@odata.context', 'settings', 'settings@odata.context', 'technologies', 'name', 'templateReference'
-            #endregion process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
+        $secPolicyList = $confPolicyList | ? { $_.templateReference.templateFamily -like "endpointSecurity*" -or $_.templateReference.templateFamily -like "baseline*" }
+
+        if ($secPolicyList) {
+            # configurationPolicies policies when expand operator is used gets throttled
+            # therefore at first get just basic properties and secondly get settings and assignments via batching and enhance the former object
+
+            if ($basicOverview) {
+                # Prepare parameters for batch request
+                $select = $script:selectParams -replace "displayName", "name"
+                $select += ",templateReference"
+
+                Write-Verbose "Processing endpoint security policies - Account Protection policies(basic)"
+                $url = "/deviceManagement/configurationPolicies/<placeholder>?`$select=$select"
+                $batchResults = New-GraphBatchRequest -url $url -placeholder $secPolicyList.id | Invoke-GraphBatchRequest -graphVersion beta
+
+                # Filter and transform results
+                $endpointSecPol2 = $batchResults |
+                    select @{ n = 'id'; e = { $_.id } },
+                    @{ n = 'displayName'; e = { $_.name } },
+                    * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context', 'settings@odata.context', 'RequestId' # id as calculated property to have it first and still be able to use *
+            } else {
+                # Prepare parameters for batch request
+                $select = 'id, name, description, isAssigned, platforms, lastModifiedDateTime, settingCount, roleScopeTagIds, templateReference'
+
+                Write-Verbose "Processing endpoint security policies - Account Protection policies (detailed)"
+                $url = "/deviceManagement/configurationPolicies/<placeholder>?`$select=$select"
+                $batchResults = New-GraphBatchRequest -url $url -placeholder $secPolicyList.id | Invoke-GraphBatchRequest -graphVersion beta
+
+                # Filter and transform results
+                $configurationPolicyBatchResults = $batchResults |
+                    select -Property id,
+                    @{n = 'displayName'; e = { $_.name } },
+                    description,
+                    isAssigned,
+                    lastModifiedDateTime,
+                    roleScopeTagIds,
+                    platforms,
+                    @{n = 'type'; e = { $_.templateReference.templateFamily } },
+                    templateReference,
+                    settingCount
+            }
         }
-        $endpointSecPol2 | ? { $_ } | % { $endpointSecurityPolicy += $_ }
 
+        if ($configurationPolicyBatchResults) {
+            # Build batch requests for assignments and settings
+            Write-Verbose "Building batch requests for assignments and settings"
+            $configurationPolicyExpandPropertyBatchRequests = [System.Collections.Generic.List[Object]]::new()
+            # if $script:expandParams will contain anything else than 'assignments', final $configurationPolicyBatchResults Select-Object output has to be modified to reflect that!
+            $expandParamsList = $script:expandParams, 'settings' | ? { $_ }
+
+            $configurationPolicyBatchResults | % {
+                $id = $_.id
+                $expandParamsList | % {
+                    $url = "/deviceManagement/configurationPolicies/<placeholder>/$_"
+                    $configurationPolicyExpandPropertyBatchRequests.Add((New-GraphBatchRequest -id "$id`_$_" -placeholder $id -url $url))
+                }
+            }
+
+            $configurationPolicyExpandPropertyBatchResults = Invoke-GraphBatchRequest -batchRequest $configurationPolicyExpandPropertyBatchRequests -graphVersion beta
+
+            # enhance the basic object with assignments and settings properties
+            $endpointSecPol2 = $configurationPolicyBatchResults | select *, @{Name = 'Settings'; Expression = {
+                    $id = $_.id
+                    $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_settings" }
+                    if ($settings) {
+                        $settings | % { [PSCustomObject]@{
+                                # trying to have same settings format a.k.a. name/value as in previous function region
+                                Name  = $_.settinginstance.settingDefinitionId
+                                Value = $(
+                                    # property with setting value isn't always same, try to get the used one
+                                    $valuePropertyName = $_.settinginstance | Get-Member -MemberType NoteProperty | ? name -Like "*value" | select -ExpandProperty name
+                                    if ($valuePropertyName) {
+                                        # Write-Verbose "Value property $valuePropertyName was found"
+                                        $_.settinginstance.$valuePropertyName
+                                    } else {
+                                        # Write-Verbose "Value property wasn't found, therefore saving whole object as value"
+                                        $_.settinginstance
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }, @{Name = 'Assignments'; Expression = {
+                    $id = $_.id
+                    $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_assignments" }
+                    if ($assignments) {
+                        $assignments | select * -ExcludeProperty RequestId
+                    }
+                }
+            } -ExcludeProperty RequestId
+        }
+
+        $endpointSecPol2 | ? { $_ } | % { $endpointSecurityPolicy += $_ }
+        #endregion process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
+    }
+
+    # iOS App Provisioning profiles
+    if ($all -or $policyType -contains 'iosAppProvisioningProfile') {
+        Write-Verbose "Adding iOS App Provisioning profiles requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building iOS App Provisioning profiles requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceAppManagement/iosLobAppProvisioningConfigurations?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "iosAppProvisioningProfile" -url $url))
+    }
+
+    # iOS Update configurations
+    if ($all -or $policyType -contains 'iosUpdateConfiguration') {
+        Write-Verbose "Adding iOS Update configurations requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building iOS Update configurations requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $filter = "isof('microsoft.graph.iosUpdateConfiguration')"
+        $url = "/deviceManagement/deviceConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "iosUpdateConfiguration" -url $url))
+    }
+
+    # macOS Update configurations
+    if ($all -or $policyType -contains 'macOSSoftwareUpdateConfiguration') {
+        Write-Verbose "Adding macOS Update configurations requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building macOS Update configurations requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $filter = "isof('microsoft.graph.macOSSoftwareUpdateConfiguration')"
+        $url = "/deviceManagement/deviceConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "macOSSoftwareUpdateConfiguration" -url $url))
+    }
+
+    # Policy Sets
+    if ($all -or $policyType -contains 'policySet') {
+        Write-Verbose "Adding Policy Sets requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Policy Sets requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceAppManagement/policySets?`$select=$script:selectParams" # Expand is handled later
+        $allBatchRequests.Add((New-GraphBatchRequest -id "policySet" -url $url))
+    }
+
+    # Remediation Scripts
+    if ($all -or $policyType -contains 'remediationScript') {
+        Write-Verbose "Adding Remediation (Health) scripts requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Remediation (Health) scripts requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceManagement/deviceHealthScripts?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "remediationScript" -url $url))
+    }
+
+    # S mode supplemental policies
+    if ($all -or $policyType -contains 'sModeSupplementalPolicy') {
+        Write-Verbose "Adding S Mode Supplemental policies requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building S mode supplemental policies requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceAppManagement/wdacSupplementalPolicies?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "sModeSupplementalPolicy" -url $url))
+    }
+
+    # Windows Autopilot Deployment profile
+    if ($all -or $policyType -contains 'windowsAutopilotDeploymentProfile') {
+        Write-Verbose "Adding Windows Autopilot Deployment profile requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Windows Autopilot Deployment profile requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceManagement/windowsAutopilotDeploymentProfiles?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "windowsAutopilotDeploymentProfile" -url $url))
+    }
+
+    # Windows Feature Update profiles
+    if ($all -or $policyType -contains 'windowsFeatureUpdateProfile') {
+        Write-Verbose "Adding Windows Feature Update profiles requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Windows Feature Update profiles requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceManagement/windowsFeatureUpdateProfiles?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "windowsFeatureUpdateProfile" -url $url))
+    }
+
+    # Windows Quality Update profiles
+    if ($all -or $policyType -contains 'windowsQualityUpdateProfile') {
+        Write-Verbose "Adding Windows Quality Update profiles requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Windows Quality Update profiles requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $url = "/deviceManagement/windowsQualityUpdateProfiles?`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "windowsQualityUpdateProfile" -url $url))
+    }
+
+    # Update rings for Windows 10 and later
+    if ($all -or $policyType -contains 'windowsUpdateRing') {
+        Write-Verbose "Adding Windows Update rings requests to batch"
+        Write-Progress -Activity $progressActivity -Status "Building Windows Update rings requests" -PercentComplete (($i++ / $policyTypeCount) * 100)
+        $filter = "isof('microsoft.graph.windowsUpdateForBusinessConfiguration')"
+        $url = "/deviceManagement/deviceConfigurations?`$filter=$filter&`$select=$script:selectParams&`$expand=$script:expandParams"
+        $allBatchRequests.Add((New-GraphBatchRequest -id "windowsUpdateRing" -url $url))
+    }
+    #endregion
+
+    # Execute all batched requests
+    Write-Verbose "Executing batch requests to retrieve all data..."
+    Write-Progress -Activity $progressActivity -Status "Executing batch requests..." -PercentComplete 90
+    if ($allBatchRequests) {
+        # endpointSecurity is processed separately so there is a possibility to have empty $allBatchRequests
+        $allBatchResults = Invoke-GraphBatchRequest -batchRequest $allBatchRequests -graphVersion beta
+    }
+
+    # Process the batch results and populate the result object
+    Write-Verbose "Processing batch results..."
+    Write-Progress -Activity $progressActivity -Status "Processing batch results..." -PercentComplete 95
+
+    function _getBatchResultOutput {
+        param (
+            [Parameter(Mandatory = $true)]
+            [string[]] $requestId
+        )
+
+        $allBatchResults | Where-Object { $_.RequestId -in $requestId } | select * -ExcludeProperty 'RequestId', 'assignments@odata.context', 'settings@odata.context', '@odata.type'
+    }
+
+    $resultProperty = [ordered]@{}
+
+    if ($all -or $policyType -contains 'app') {
+        $resultProperty.App = (_getBatchResultOutput -requestId "app")
+    }
+    if ($all -or $policyType -contains 'appConfigurationPolicy') {
+        $resultProperty.AppConfigurationPolicy = (_getBatchResultOutput -requestId ("targetedManagedAppConfigurations", "mobileAppConfigurations"))
+    }
+    if ($all -or $policyType -contains 'appProtectionPolicy') {
+        $resultProperty.AppProtectionPolicy = (_getBatchResultOutput -requestId ("iosManagedAppProtections", "androidManagedAppProtections", "targetedManagedAppConfigurations_appProt", "windowsInformationProtectionPolicies", "mdmWindowsInformationProtectionPolicies"))
+    }
+    if ($all -or $policyType -contains 'compliancePolicy') {
+        $resultProperty.CompliancePolicy = (_getBatchResultOutput -requestId "compliancePolicy")
+    }
+    if ($all -or $policyType -contains 'configurationPolicy') {
+        $resultProperty.ConfigurationPolicy = (_getBatchResultOutput -requestId ("deviceConfigurations", "groupPolicyConfigurations", "mobileAppConfigurationsOEM"))
+
+        if ($configurationPolicy) {
+            # add separately processed (to avoid throttling) configurations
+            $resultProperty.ConfigurationPolicy += $configurationPolicy
+        }
+    }
+    if ($all -or $policyType -contains 'customAttributeShellScript') {
+        $resultProperty.CustomAttributeShellScript = (_getBatchResultOutput -requestId "customAttributeShellScript")
+    }
+    if ($all -or $policyType -contains 'deviceEnrollmentConfiguration') {
+        $resultProperty.DeviceEnrollmentConfiguration = (_getBatchResultOutput -requestId "deviceEnrollmentConfiguration")
+    }
+    if ($all -or $policyType -contains 'deviceManagementPSHScript') {
+        $resultProperty.DeviceManagementPSHScript = (_getBatchResultOutput -requestId "deviceManagementPSHScript")
+    }
+    if ($all -or $policyType -contains 'deviceManagementShellScript') {
+        $resultProperty.DeviceManagementShellScript = (_getBatchResultOutput -requestId "deviceManagementShellScript")
+    }
+    if ($all -or $policyType -contains 'endpointSecurity') {
         if ($endpointSecurityPolicy) {
             $resultProperty.EndpointSecurity = $endpointSecurityPolicy
         } else {
             $resultProperty.EndpointSecurity = $null
         }
     }
-
-    # iOS App Provisioning profiles
     if ($all -or $policyType -contains 'iosAppProvisioningProfile') {
-        Write-Verbose "Processing iOS App Provisioning profiles"
-        Write-Progress -Activity $progressActivity -Status "Processing iOS App Provisioning profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $iosAppProvisioningProfile = Get-MgBetaDeviceAppManagementiOSLobAppProvisioningConfiguration @sharedParam
-
-        $resultProperty.IOSAppProvisioningProfile = $iosAppProvisioningProfile
+        $resultProperty.IOSAppProvisioningProfile = (_getBatchResultOutput -requestId "iosAppProvisioningProfile")
     }
-
-    # iOS Update configurations
     if ($all -or $policyType -contains 'iosUpdateConfiguration') {
-        Write-Verbose "Processing iOS Update configurations"
-        Write-Progress -Activity $progressActivity -Status "Processing iOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $param = $sharedParam.clone()
-        $param.filter = "isof('microsoft.graph.iosUpdateConfiguration')"
-
-        $iosUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
-
-        $resultProperty.IOSUpdateConfiguration = $iosUpdateConfiguration
+        $resultProperty.IOSUpdateConfiguration = (_getBatchResultOutput -requestId "iosUpdateConfiguration")
     }
-
-    # macOS Update configurations
     if ($all -or $policyType -contains 'macOSSoftwareUpdateConfiguration') {
-        Write-Verbose "Processing macOS Update configurations"
-        Write-Progress -Activity $progressActivity -Status "Processing macOS Update configurations" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $param = $sharedParam.clone()
-        $param.filter = "isof('microsoft.graph.macOSSoftwareUpdateConfiguration')"
-
-        $macosSoftwareUpdateConfiguration = Get-MgBetaDeviceManagementDeviceConfiguration @param
-
-        $resultProperty.MacOSSoftwareUpdateConfiguration = $macosSoftwareUpdateConfiguration
+        $resultProperty.MacOSSoftwareUpdateConfiguration = (_getBatchResultOutput -requestId "macOSSoftwareUpdateConfiguration")
     }
-
-    # Policy Sets
     if ($all -or $policyType -contains 'policySet') {
-        Write-Verbose "Processing Policy Sets"
-        Write-Progress -Activity $progressActivity -Status "Processing Policy Sets" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $policySet = @()
-
-        $param = $sharedParam.clone()
-        $param.Remove('expand')
-
-        $policySetList = Get-MgBetaDeviceAppManagementPolicySet @param
-
-        $param = $sharedParam.clone()
-        $param.Remove('all')
-        if (!$basicOverview) {
-            $param.expand += ",items"
-        }
-
-        foreach ($policy in $policySetList) {
-            $policyContent = Get-MgBetaDeviceAppManagementPolicySet -PolicySetId $policy.id @param
-
-            $policySet += $policyContent
-        }
-
-        if ($policySet) {
-            $resultProperty.PolicySet = $policySet
+        $policySets = _getBatchResultOutput -requestId "policySet" | select * -ExcludeProperty $excludedProperty
+        if ($policySets -and !$basicOverview) {
+            $policySetItemsRequests = [System.Collections.Generic.List[Object]]::new()
+            foreach ($set in $policySets) {
+                $policySetItemsRequests.Add((New-GraphBatchRequest -id "policysetitem_$($set.id)" -url "/deviceAppManagement/policySets/$($set.id)?`$expand=items"))
+            }
+            $resultProperty.PolicySet = (Invoke-GraphBatchRequest -batchRequest $policySetItemsRequests -graphVersion beta | select * -ExcludeProperty $excludedProperty)
         } else {
-            $resultProperty.PolicySet = $null
+            $resultProperty.PolicySet = $policySets
         }
     }
-
-    # Remediation Scripts
     if ($all -or $policyType -contains 'remediationScript') {
-        Write-Verbose "Processing Remediation (Health) scripts"
-        Write-Progress -Activity $progressActivity -Status "Processing Remediation (Health) scripts" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $remediationScript = Get-MgBetaDeviceManagementDeviceHealthScript @sharedParam
-        $resultProperty.RemediationScript = $remediationScript
+        $resultProperty.RemediationScript = (_getBatchResultOutput -requestId "remediationScript" | select * -ExcludeProperty $excludedProperty)
     }
-
-    # S mode supplemental policies
     if ($all -or $policyType -contains 'sModeSupplementalPolicy') {
-        Write-Verbose "Processing S Mode Supplemental policies"
-        Write-Progress -Activity $progressActivity -Status "Processing S mode supplemental policies" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $sModeSupplementalPolicy = Get-MgBetaDeviceAppManagementWdacSupplementalPolicy @sharedParam
-
-        $resultProperty.SModeSupplementalPolicy = $sModeSupplementalPolicy
+        $resultProperty.SModeSupplementalPolicy = (_getBatchResultOutput -requestId "sModeSupplementalPolicy" | select * -ExcludeProperty $excludedProperty)
     }
-
-    # Windows Autopilot Deployment profile
     if ($all -or $policyType -contains 'windowsAutopilotDeploymentProfile') {
-        Write-Verbose "Processing Windows Autopilot Deployment profile"
-        Write-Progress -Activity $progressActivity -Status "Processing Windows Autopilot Deployment profile" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $windowsAutopilotDeploymentProfile = Get-MgBetaDeviceManagementWindowsAutopilotDeploymentProfile @sharedParam
-
-        $resultProperty.WindowsAutopilotDeploymentProfile = $windowsAutopilotDeploymentProfile
+        $resultProperty.WindowsAutopilotDeploymentProfile = (_getBatchResultOutput -requestId "windowsAutopilotDeploymentProfile" | select * -ExcludeProperty $excludedProperty)
     }
-
-    # Windows Feature Update profiles
     if ($all -or $policyType -contains 'windowsFeatureUpdateProfile') {
-        Write-Verbose "Processing Windows Feature Update profiles"
-        Write-Progress -Activity $progressActivity -Status "Processing Windows Feature Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $windowsFeatureUpdateProfile = Get-MgBetaDeviceManagementWindowsFeatureUpdateProfile @sharedParam
-
-        $resultProperty.WindowsFeatureUpdateProfile = $windowsFeatureUpdateProfile
+        $resultProperty.WindowsFeatureUpdateProfile = (_getBatchResultOutput -requestId "windowsFeatureUpdateProfile" | select * -ExcludeProperty $excludedProperty)
     }
-
-    # Windows Quality Update profiles
     if ($all -or $policyType -contains 'windowsQualityUpdateProfile') {
-        Write-Verbose "Processing Windows Quality Update profiles"
-        Write-Progress -Activity $progressActivity -Status "Processing Windows Quality Update profiles" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $windowsQualityUpdateProfile = Get-MgBetaDeviceManagementWindowsQualityUpdateProfile @sharedParam
-
-        $resultProperty.WindowsQualityUpdateProfile = $windowsQualityUpdateProfile
+        $resultProperty.WindowsQualityUpdateProfile = (_getBatchResultOutput -requestId "windowsQualityUpdateProfile" | select * -ExcludeProperty $excludedProperty)
     }
-
-    # Update rings for Windows 10 and later is part of configurationPolicy (#microsoft.graph.windowsUpdateForBusinessConfiguration)
     if ($all -or $policyType -contains 'windowsUpdateRing') {
-        Write-Verbose "Processing Windows Update rings"
-        Write-Progress -Activity $progressActivity -Status "Processing Windows Update rings" -PercentComplete (($i++ / $policyTypeCount) * 100)
-
-        $param = $sharedParam.clone()
-        $param.filter = "isof('microsoft.graph.windowsUpdateForBusinessConfiguration')"
-
-        $windowsUpdateRing = Get-MgBetaDeviceManagementDeviceConfiguration @param
-
-        $resultProperty.WindowsUpdateRing = $windowsUpdateRing
+        $resultProperty.WindowsUpdateRing = (_getBatchResultOutput -requestId "windowsUpdateRing" | select * -ExcludeProperty $excludedProperty)
     }
-    #endregion get Intune policies
 
     # output result
     $result = New-Object -TypeName PSObject -Property $resultProperty
 
     if ($flatOutput) {
         # extract main object properties (policy types) and output the data as array of policies instead of one big object
-        $result | Get-Member -MemberType NoteProperty | select -ExpandProperty name | % {
+        $result | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name | ForEach-Object {
             $polType = $_
-
-            $result.$polType | ? { $_ } | % {
+            $result.$polType | Where-Object { $_ } | ForEach-Object {
                 # add parent section as property
-                $_ | Add-Member -MemberType NoteProperty -Name 'PolicyType' -Value $polType
+                $_ | Add-Member -MemberType NoteProperty -Name 'PolicyType' -Value $polType -Force
                 # output modified child object
                 $_
             }
         }
     } else {
         $result
+    }
+}
+
+function Get-IntuneRemediationResult {
+    <#
+    .SYNOPSIS
+    Get results for an Intune remediation script run.
+
+    .DESCRIPTION
+    Function gets results for a specified Intune remediation script.
+
+    Results include device information, output, errors, and status.
+
+    There is also ProcessedOutput property that contains the 'output' processed by ConvertFrom-CompressedString and ConvertFrom-Json functions. Usable in case the output was converted to compressed JSON (ConvertTo-Json -Compress) and/or converted to compressed string (ConvertTo-CompressedString)and you want the original output back.
+
+    .PARAMETER id
+    Optional ID of the remediation script to get results for.
+
+    If not provided, a list of available remediations will be shown for interactive selection.
+
+    .EXAMPLE
+    Get-IntuneRemediationResult
+
+    Shows a list of all available remediation scripts for interactive selection and then retrieves their results.
+
+    .EXAMPLE
+    Get-IntuneRemediationResult -id "12345678-1234-1234-1234-123456789012"
+
+    Gets results for the specified remediation script.
+
+    .NOTES
+    Permission requirements:
+    - DeviceManagementConfiguration.Read.All
+    - DeviceManagementManagedDevices.Read.All
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [guid] $id
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    # Helper function to process output
+    function _processOutput {
+        param (
+            [string] $string,
+            [string] $dvcId,
+            [string] $dvcName
+        )
+
+        if (!$string) {
+            return
+        }
+
+        if (($string | Measure-Object -Character).Characters -ge 2048) {
+            Write-Warning "Output for device $dvcName ($dvcId) exceeded 2048 chars a.k.a. is truncated."
+        }
+
+        # Decompress the string if it is compressed
+        try {
+            $decompressedString = ConvertFrom-CompressedString $string -ErrorAction Stop
+            $string = $decompressedString
+        } catch {
+            Write-Verbose "Not a compressed string"
+        }
+
+        # Convert to object if the string is a JSON
+        try {
+            $string | ConvertFrom-Json -ErrorAction Stop
+            return
+        } catch {
+            Write-Verbose "Not a JSON"
+        }
+
+        return
+    }
+
+    # If no id provided, show a list of available remediations
+    if (!$id) {
+        Write-Verbose "No remediation script ID provided, retrieving available remediations"
+
+        try {
+            $availableRemediations = Get-MgBetaDeviceManagementDeviceHealthScript -All -Property Id, DisplayName, Description, Publisher, CreatedDateTime | Sort-Object -Property CreatedDateTime -Descending
+
+            if ($availableRemediations.Count -eq 0) {
+                Write-Warning "No remediation scripts found"
+                return
+            }
+
+            Write-Verbose "Found $($availableRemediations.Count) remediation scripts"
+
+            $selectedRemediation = $availableRemediations |
+                Select-Object @{Name = 'Id'; Expression = { $_.Id } },
+                @{Name = 'Name'; Expression = { $_.DisplayName } },
+                @{Name = 'Publisher'; Expression = { $_.Publisher } },
+                @{Name = 'Created'; Expression = { $_.CreatedDateTime } } |
+                Out-GridView -Title "Select a remediation script" -OutputMode Single
+
+            if (!$selectedRemediation) {
+                Write-Warning "No remediation script selected"
+                return
+            }
+
+            $id = $selectedRemediation.Id
+            Write-Verbose "Selected remediation script: $($selectedRemediation.Name) ($id)"
+        } catch {
+            throw "Failed to retrieve remediation scripts: $_"
+        }
+    }
+
+    # Get remediation details
+    try {
+        Write-Verbose "Retrieving remediation script $($remediationScript.DisplayName) ($id)"
+        $remediationScript = Get-MgBetaDeviceManagementDeviceHealthScript -DeviceHealthScriptId $id
+        if (!$remediationScript) {
+            throw "Remediation script with ID $id not found"
+        }
+    } catch {
+        throw "Failed to retrieve remediation script: $_"
+    }
+
+    # Get all device results for this remediation
+    try {
+        Write-Verbose "Retrieving device run states for remediation script"
+        $remediationResults = Get-MgBetaDeviceManagementDeviceHealthScriptDeviceRunState -DeviceHealthScriptId $id -All
+
+        if ($remediationResults.Count -eq 0) {
+            Write-Warning "No results found for remediation script $($remediationScript.DisplayName)"
+            return
+        }
+
+        Write-Verbose "Found $($remediationResults.Count) device results"
+
+        # Create a lookup of device IDs to names
+        $deviceIds = $remediationResults | ForEach-Object { $_.Id.Split(":")[1] } | Select-Object -Unique
+
+        # Use Graph API batching for better performance
+        if ($deviceIds.Count -gt 0) {
+            Write-Verbose "Getting device names using Graph API batching"
+
+            # Execute batch request
+            $batchResults = New-GraphBatchRequest -placeholder $deviceIds -url "deviceManagement/managedDevices/<placeholder>`?`$select=id,deviceName" | Invoke-GraphBatchRequest
+        }
+
+        # Process and output results
+        $results = foreach ($result in $remediationResults) {
+            $dvcId = $result.Id.Split(":")[1]
+            $dvcName = $batchResults | ? id -EQ $dvcId | Select-Object -ExpandProperty deviceName
+
+            [PSCustomObject]@{
+                DeviceId            = $dvcId
+                DeviceName          = $dvcName
+                LastSyncDateTimeUTC = $result.LastStateUpdateDateTime
+                Output              = $result.PreRemediationDetectionScriptOutput
+                ProcessedOutput     = _processOutput -string $result.PreRemediationDetectionScriptOutput -dvcId $dvcId -dvcName $dvcName
+                Error               = $result.PreRemediationDetectionScriptError
+                Status              = $result.DetectionState
+                RemediationName     = $remediationScript.DisplayName
+                RemediationId       = $id
+            }
+        }
+
+        return $results
+    } catch {
+        throw "Failed to retrieve remediation results: $_"
     }
 }
 
@@ -6295,7 +6587,7 @@ function Invoke-IntuneCommand {
         }
 
         if (($string | Measure-Object -Character).Characters -ge 2048) {
-            Write-Warning "Output for device $deviceId exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
+            Write-Warning "Output for device $dvcName ($dvcId) exceeded 2048 chars a.k.a. is truncated. Limit amount of returned data for example using 'Select-Object -Property' and 'ConvertTo-Json -Compress' combined with 'ConvertTo-CompressedString'"
         }
 
         # decompress the string if it is compressed
@@ -6434,8 +6726,14 @@ function Invoke-IntuneCommand {
         publisher       = "on-demand"
         runAs           = $runAs
         runAs32         = $runAs32
+        errorAction     = "stop"
     }
-    $remediationScript = New-IntuneRemediation @param
+
+    try {
+        $remediationScript = New-IntuneRemediation @param
+    } catch {
+        throw "Unable to create helper remediation. Error was:`n$_"
+    }
     #endregion create the remediation
 
     try {
@@ -6540,7 +6838,7 @@ function Invoke-IntuneCommand {
         if ($dontWait) {
             # nothing to do really
             if (!$letCommandFinish) {
-                Write-Warning "Because 'dontWait' was used, helper remediation '$remediationScriptName' ($($remediationScript.Id)) won't be deleted, because that would cause clients not to run the defined command. Do it manually."
+                Write-Warning "Because 'dontWait' was used, helper remediation '$remediationScriptName' ($($remediationScript.Id)) won't be deleted, because that would cause clients not to run the defined command. Use 'Get-IntuneRemediationResult -Id $($remediationScript.Id)' to check the results."
             }
         } else {
             #region output devices that didn't make it in time
@@ -6588,7 +6886,7 @@ function Invoke-IntuneCommand {
             if ($reallyUnfinishedDeviceIdList -and $letCommandFinish) {
                 # command wasn't invoked on all devices, but it should be allowed to
 
-                Write-Warning "'$remediationScriptName' ($($remediationScript.Id)) helper remediation will not be deleted. Do it manually when the rest of the devices $($reallyUnfinishedDeviceIdList.count) run it."
+                Write-Warning "'$remediationScriptName' ($($remediationScript.Id)) helper remediation will not be deleted. Do it manually when the rest of the devices $($reallyUnfinishedDeviceIdList.count) run it. Use 'Get-IntuneRemediationResult -Id $($remediationScript.Id)' to check the results."
             } elseif ($reallyUnfinishedDeviceIdList) {
                 # command wasn't invoked on all devices
 
@@ -8262,19 +8560,19 @@ function Search-IntuneAccountPolicyAssignment {
             }
 
             foreach ($assignment in $policy.assignments) {
-                # Write-Verbose "`tApplied to group(s): $($assignment.target.AdditionalProperties.groupId -join ', ')"
+                # Write-Verbose "`tApplied to group(s): $($assignment.target.groupId -join ', ')"
 
-                if (!$isAssigned -and ($assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
-                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
+                if (!$isAssigned -and ($assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.groupAssignmentTarget')) {
+                    Write-Verbose "`t++  INCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allDevicesAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All devices' exists"
                     $isAssigned = $true
-                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
+                } elseif (!$isAssigned -and !$skipAllUsersAllDevicesAssignments -and ($assignment.target.'@odata.type' -eq '#microsoft.graph.allLicensedUsersAssignmentTarget')) {
                     Write-Verbose "`t++  INCLUDE assignment for 'All users' exists"
                     $isAssigned = $true
-                } elseif (!$ignoreExcludes -and $assignment.target.AdditionalProperties.groupId -in $accountMemberOfGroup.Id -and $assignment.target.AdditionalProperties.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
-                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.AdditionalProperties.groupId) exists"
+                } elseif (!$ignoreExcludes -and $assignment.target.groupId -in $accountMemberOfGroup.Id -and $assignment.target.'@odata.type' -eq '#microsoft.graph.exclusionGroupAssignmentTarget') {
+                    Write-Verbose "`t--  EXCLUDE assignment for group $($assignment.target.groupId) exists"
                     $isExcluded = $true
                     break # faster processing, but INCLUDE assignments process after EXCLUDE ones won't be shown
                 } else {
@@ -8636,6 +8934,6 @@ function Upload-IntuneAutopilotHash {
     }
 }
 
-Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneDeviceHardware, Get-IntuneDeviceOnDemandProactiveRemediationStatus, Get-IntuneDiscoveredApp, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneDeviceHardware, Get-IntuneDeviceOnDemandProactiveRemediationStatus, Get-IntuneDiscoveredApp, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationResult, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Assign-IntuneWin32App, Deassign-IntuneWin32App, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy, Unassign-IntuneWin32App

@@ -20,6 +20,8 @@
     .PARAMETER method
     Request method.
 
+    Possible values: 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'.
+
     By default GET.
 
     .PARAMETER url
@@ -96,12 +98,31 @@
 
     Get fileVault keys for all MacOs devices, where returned object's RequestId property will contain Id of the corresponding MacOS device and Value property will contains the key itself.
 
+    .EXAMPLE
+    $body = @{
+        DisplayName= "test"
+        MailEnabled= $false
+        securityEnabled= $true
+        MailNickName= "test"
+        description= "test"
+    }
+
+    $header = @{
+        "Content-Type"= "application/json"
+    }
+
+    New-GraphBatchRequest -method POST -url "/groups/" -body $body -header $header | Invoke-GraphBatchRequest -Verbose
+
+    Create specified group.
+
     .NOTES
     https://learn.microsoft.com/en-us/graph/json-batching
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
     param (
+        [ValidateNotNullOrEmpty()]
+        [ValidateSet('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')]
         [string] $method = "GET",
 
         [Parameter(Mandatory = $true)]
@@ -110,9 +131,9 @@
 
         $placeholder,
 
-        $header,
+        [hashtable] $header,
 
-        $body,
+        [hashtable] $body,
 
         [Parameter(ParameterSetName = "Id")]
         [string] $id,
@@ -141,6 +162,9 @@
     if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
         throw "'placeholderAsId' parameter cannot be used with multiple urls"
     }
+
+    # method is case sensitive!
+    $method = $method.ToUpper()
     #endregion validity checks
 
     if ($placeholder) {

@@ -881,9 +881,9 @@ function Invoke-GraphBatchRequest {
                 [System.Collections.ArrayList] $requestChunk
             )
 
-            $duplicityId = $requestChunk | Select-Object -ExpandProperty id | Group-Object | ? { $_.Count -gt 1 }
+            $duplicityId = $requestChunk.id | Group-Object | ? { $_.Count -gt 1 }
             if ($duplicityId) {
-                throw "Batch requests must have unique ids. Id $(($duplicityId | select -Unique) -join ', ') is there more than once"
+                throw "Batch requests must have unique ids. Id(s): '$(($duplicityId.Name | select -Unique) -join ', ')' is there more than once"
             }
 
             Write-Debug ($requestChunk | ConvertTo-Json)
@@ -897,7 +897,11 @@ function Invoke-GraphBatchRequest {
                 requests = [array]$requestChunk
             }
 
-            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body ($body | ConvertTo-Json -Depth 50) -ContentType "application/json" -OutputType Json | ConvertFrom-Json | % {
+            $body = $body | ConvertTo-Json -Depth 50
+
+            Write-Verbose $body
+
+            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body $body -ContentType "application/json" -OutputType Json | ConvertFrom-Json | % {
                 $responses = $_.responses
 
                 #region return the output
@@ -909,7 +913,8 @@ function Invoke-GraphBatchRequest {
                     # return just actually requested data without batch-related properties and enhance the returned object with 'RequestId' property for easier filtering
 
                     foreach ($response in $responses) {
-                        $value = $null
+                        $value, $noteProperty = $null
+                        if ($response.body) { $noteProperty = $response.body | Get-Member -MemberType NoteProperty }
 
                         # there was some error, no real values were returned, skipping
                         if ($response.Status -in (400..509)) {
@@ -919,7 +924,7 @@ function Invoke-GraphBatchRequest {
                         if ($response.body.value) {
                             # the result is stored in 'value' property
                             $value = $response.body.value
-                        } elseif ($response.body -and ($response.body | Get-Member -MemberType NoteProperty).count -eq 2 -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains '@odata.context' -and ($response.body | Get-Member -MemberType NoteProperty).Name -contains 'value') {
+                        } elseif ($response.body -and $noteProperty.Name -contains '@odata.context' -and $noteProperty.Name -contains 'value') {
                             # the result is stored in 'value' property, but no results were returned, skipping
                             continue
                         } elseif ($response.body) {
@@ -931,8 +936,10 @@ function Invoke-GraphBatchRequest {
                         }
 
                         # return processed output
-                        if ($value.gettype().name -in 'String', 'Int32', 'Int64', 'Boolean', 'Float', 'Double', 'Decimal') {
-                            # it is a primitive
+                        $primitiveTypeList = 'String', 'Int32', 'Int64', 'Boolean', 'Float', 'Double', 'Decimal', 'Char'
+
+                        if ($value.gettype().name -in $primitiveTypeList -or $value[0].gettype().name -in $primitiveTypeList) {
+                            # it is a primitive (or list of primitives)
 
                             if ($dontAddRequestId) {
                                 $value
@@ -962,7 +969,7 @@ function Invoke-GraphBatchRequest {
 
                 foreach ($response in $responses) {
                     # https://learn.microsoft.com/en-us/graph/errors#http-status-codes
-                    if ($response.Status -eq 200) {
+                    if ($response.Status -in 200, 201) {
                         # success
 
                         if ($response.body.'@odata.nextLink') {
@@ -1014,13 +1021,18 @@ function Invoke-GraphBatchRequest {
 
                         $failedBatchRequest = $requestChunk | ? Id -EQ $response.Id
 
-                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)' ($($response.body.error.innerError.code))")
+                        $innerErrorText = $null
+                        if ($response.body.error.innerError.code) {
+                            $innerErrorText = " (" + $response.body.error.innerError.code + ")"
+                        }
+
+                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)'$innerErrorText")
                     }
                 }
 
                 # exit if critical failure occurred
                 if ($failedBatchJob) {
-                    Write-Error "Following batch request(s) failed:`n$($failedBatchJob -join "`n")"
+                    Write-Error "Following batch request(s) failed:`n`n$($failedBatchJob -join "`n")"
                 }
             }
 
@@ -1375,6 +1387,8 @@ function New-GraphBatchRequest {
     .PARAMETER method
     Request method.
 
+    Possible values: 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'.
+
     By default GET.
 
     .PARAMETER url
@@ -1451,12 +1465,31 @@ function New-GraphBatchRequest {
 
     Get fileVault keys for all MacOs devices, where returned object's RequestId property will contain Id of the corresponding MacOS device and Value property will contains the key itself.
 
+    .EXAMPLE
+    $body = @{
+        DisplayName= "test"
+        MailEnabled= $false
+        securityEnabled= $true
+        MailNickName= "test"
+        description= "test"
+    }
+
+    $header = @{
+        "Content-Type"= "application/json"
+    }
+
+    New-GraphBatchRequest -method POST -url "/groups/" -body $body -header $header | Invoke-GraphBatchRequest -Verbose
+
+    Create specified group.
+
     .NOTES
     https://learn.microsoft.com/en-us/graph/json-batching
     #>
 
     [CmdletBinding(DefaultParameterSetName = 'Default')]
     param (
+        [ValidateNotNullOrEmpty()]
+        [ValidateSet('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')]
         [string] $method = "GET",
 
         [Parameter(Mandatory = $true)]
@@ -1465,9 +1498,9 @@ function New-GraphBatchRequest {
 
         $placeholder,
 
-        $header,
+        [hashtable] $header,
 
-        $body,
+        [hashtable] $body,
 
         [Parameter(ParameterSetName = "Id")]
         [string] $id,
@@ -1496,6 +1529,9 @@ function New-GraphBatchRequest {
     if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
         throw "'placeholderAsId' parameter cannot be used with multiple urls"
     }
+
+    # method is case sensitive!
+    $method = $method.ToUpper()
     #endregion validity checks
 
     if ($placeholder) {

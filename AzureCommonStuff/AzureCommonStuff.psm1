@@ -364,6 +364,103 @@ function Get-AuthenticatedSPIdentityAppId {
     (Get-AzADServicePrincipal -ObjectId $objectId -Select appid).AppId
 }
 
+function Get-AzureDirectoryObject {
+    <#
+    .SYNOPSIS
+    Alternative for Get-MgDirectoryObjectById if you want to avoid Microsoft.Graph.DirectoryObjects module dependency.
+
+    .DESCRIPTION
+    Alternative for Get-MgDirectoryObjectById if you want to avoid Microsoft.Graph.DirectoryObjects module dependency.
+
+    .PARAMETER id
+    ID(s) of the Azure object(s).
+
+    .EXAMPLE
+    Get-AzureDirectoryObject -Id 'a5834928-0f19-292d-4a69-3fbc98fd84ef'
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [Alias("ids")]
+        [string[]] $id
+    )
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    # directoryObjects/microsoft.graph.getByIds can process only 1000 ids per request
+    $chunkSize = 1000
+
+    # calculate the total number of chunks
+    $totalChunks = [Math]::Ceiling($id.Count / $chunkSize)
+
+    # process each chunk
+    for ($i = 0; $i -lt $totalChunks; $i++) {
+        # calculate the start index of the current chunk
+        $startIndex = $i * $chunkSize
+
+        # extract the current chunk
+        $currentChunk = $id[$startIndex..($startIndex + $chunkSize - 1)]
+
+        # process the current chunk
+        Write-Verbose "Processing chunk $($i + 1) with items: $($currentChunk -join ', ')"
+
+        $body = @{
+            "ids" = @($currentChunk)
+        }
+
+        Invoke-MgGraphRequest -Uri "v1.0/directoryObjects/microsoft.graph.getByIds" -Body ($body | ConvertTo-Json) -Method POST | Get-MgGraphAllPages
+    }
+}
+
+function Get-AzureDirectoryObjectMemberOf {
+    <#
+    .SYNOPSIS
+    Get permanent membership of given Azure account transitively.
+
+    .DESCRIPTION
+    Get permanent membership of given Azure account transitively.
+
+    .PARAMETER id
+    Id(s) of the Azure accounts you want membership for.
+
+    .PARAMETER securityEnabledOnly
+    Switch to return only security enabled groups.
+
+    .EXAMPLE
+    Get-AzureDirectoryObjectMemberOf -id 90daa3a7-7fed-4fa7-b979-db74bcd7cbd1
+
+    Get membership of given Azure account.
+
+    .NOTES
+    https://learn.microsoft.com/en-us/graph/api/directoryobject-getmembergroups?view=graph-rest-1.0&tabs=http
+    #>
+
+    [CmdletBinding()]
+    [Alias("Get-AzureAccountMemberOf", "Get-AzureAccountPermanentMemberOf")]
+    param (
+        [Parameter(Mandatory = $true)]
+        [guid[]] $id,
+
+        [switch] $securityEnabledOnly
+    )
+
+    $body = @{
+        securityEnabledOnly = $securityEnabledOnly.ToBool()
+    }
+
+    $header = @{'Content-Type' = "application/json" }
+
+    New-GraphBatchRequest -url "/directoryObjects/<placeholder>/getMemberGroups" -body $body -header $header -method POST -placeholder $id -placeholderAsId | Invoke-GraphBatchRequest -graphVersion beta | % {
+        [PSCustomObject]@{
+            Id       = $_.RequestId
+            MemberOf = (Get-AzureDirectoryObject -id $_.Value)
+        }
+    }
+}
+
 function Invoke-AzureBatchRequest {
     <#
     .SYNOPSIS
@@ -942,6 +1039,6 @@ function Start-AzureSync {
     } while ($ErrState -eq $true)
 }
 
-Export-ModuleMember -function Connect-AzAccount2, Connect-PnPOnline2, FilterBy-AzureScope, Get-AuthenticatedSPIdentityAppId, Invoke-AzureBatchRequest, New-AzureBatchRequest, New-AzureDevOpsAuthHeader, Start-AzureSync
+Export-ModuleMember -function Connect-AzAccount2, Connect-PnPOnline2, FilterBy-AzureScope, Get-AuthenticatedSPIdentityAppId, Get-AzureDirectoryObject, Get-AzureDirectoryObjectMemberOf, Invoke-AzureBatchRequest, New-AzureBatchRequest, New-AzureDevOpsAuthHeader, Start-AzureSync
 
-Export-ModuleMember -alias Start-AzureADSync, Sync-ADtoAzure
+Export-ModuleMember -alias Get-AzureAccountMemberOf, Get-AzureAccountPermanentMemberOf, Start-AzureADSync, Sync-ADtoAzure

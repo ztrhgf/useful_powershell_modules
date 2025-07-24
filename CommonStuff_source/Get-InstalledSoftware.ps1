@@ -55,6 +55,7 @@ function Get-InstalledSoftware {
 
                 Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' | % { try { Get-ItemPropertyValue -Path $_.pspath -Name DisplayName -ErrorAction Stop } catch { $null } } | ? { $_ -like "*$WordToComplete*" } | % { "'$_'" }
             })]
+        [Alias("programName")]
         [string[]] $appName,
 
         [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]

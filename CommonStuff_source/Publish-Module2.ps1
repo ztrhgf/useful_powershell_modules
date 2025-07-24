@@ -52,7 +52,13 @@
                     $env:PSModulePath = "$env:PSModulePath;$tempModulePath"
 
                     $manifestDataHash.RequiredModules | % {
-                        $mName = $_
+                        if ($_.gettype().Name -eq "String") {
+                            # just module name
+                            $mName = $_
+                        } else {
+                            # module name and version
+                            $mName = $_.ModuleName
+                        }
 
                         if (!(Get-Module $mName -ListAvailable)) {
                             Write-Warning "Generating temporary dummy required module $mName. It's mentioned in manifest file but missing from this PC available modules list"

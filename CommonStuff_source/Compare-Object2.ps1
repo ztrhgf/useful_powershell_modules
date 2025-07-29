@@ -75,11 +75,9 @@ function Compare-Object2 {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         $input1
         ,
         [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         $input2
         ,
         $property = @()
@@ -100,6 +98,12 @@ function Compare-Object2 {
 
     if ($trimStringProperty) {
         $trim = ".trim()"
+    }
+
+    if (!$input1 -and !$input2) {
+        return $true
+    } elseif (($input1 -and !$input2) -or (!$input1 -and $input2)) {
+        return $false
     }
 
     $input1Property = $input1 | Get-Member -MemberType CodeProperty, CodeProperty, NoteProperty, Property, ParameterizedProperty, AliasProperty | select -exp name

@@ -74,11 +74,9 @@ function Compare-Object2 {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         $input1
         ,
         [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         $input2
         ,
         $property = @()
@@ -99,6 +97,12 @@ function Compare-Object2 {
 
     if ($trimStringProperty) {
         $trim = ".trim()"
+    }
+
+    if (!$input1 -and !$input2) {
+        return $true
+    } elseif (($input1 -and !$input2) -or (!$input1 -and $input2)) {
+        return $false
     }
 
     $input1Property = $input1 | Get-Member -MemberType CodeProperty, CodeProperty, NoteProperty, Property, ParameterizedProperty, AliasProperty | select -exp name
@@ -419,6 +423,80 @@ function ConvertFrom-CompressedString {
         } catch {
             Write-Error "Unable to decompress the given string. Was it really created using ConvertTo-CompressedString?"
         }
+    }
+}
+
+function ConvertFrom-EncryptedString {
+    <#
+    .SYNOPSIS
+        Decrypts an AES-encrypted string back to plaintext.
+
+    .DESCRIPTION
+        This function decrypts a Base64-encoded string that was previously encrypted using the ConvertTo-EncryptedString function. It uses AES decryption with the key derived from the provided string key using SHA256 hashing.
+
+    .PARAMETER EncryptedText
+        The Base64-encoded encrypted string to decrypt, which contains both the IV and the encrypted data.
+
+    .PARAMETER Key
+        The encryption key as a string. Must be the same key that was used for encryption.
+        This will be hashed using SHA256 to create a 256-bit key.
+
+    .EXAMPLE
+        $decryptedText = ConvertFrom-EncryptedString -EncryptedText "d8Q3I/AtB6oQ0LyFHAUXGwEs82FUweK+XZG22P8CQq8=" -Key "MyEncryptionKey"
+
+        Returns the original plaintext string.
+
+    .OUTPUTS
+        [System.String]
+        Returns the decrypted plaintext string.
+        Returns $null if the input string is null, empty, or if decryption fails.
+
+    .NOTES
+        This function is designed to work with strings encrypted by the ConvertTo-EncryptedString function.
+        The IV is expected to be in the first 16 bytes of the decoded Base64 string.
+        If the wrong key is provided or if the encrypted string is corrupted, decryption will fail.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$EncryptedText,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    if ([string]::IsNullOrEmpty($EncryptedText)) { return $null }
+
+    try {
+        # Create a byte array from the encryption key using SHA256
+        $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Key)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $keyBytes = $sha256.ComputeHash($keyBytes)
+
+        # Convert the encrypted text from Base64
+        $encryptedBytes = [Convert]::FromBase64String($EncryptedText)
+
+        # Create AES object
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Key = $keyBytes
+
+        # Extract the IV (first 16 bytes) and the encrypted data
+        $iv = $encryptedBytes[0..15]
+        $aes.IV = $iv
+        $encryptedData = $encryptedBytes[16..($encryptedBytes.Length - 1)]
+
+        # Create decryptor and decrypt the data
+        $decryptor = $aes.CreateDecryptor()
+        $decryptedBytes = $decryptor.TransformFinalBlock($encryptedData, 0, $encryptedData.Length)
+
+        # Convert decrypted bytes to string
+        return [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
+    } catch {
+        throw "Decryption failed: $_"
+    } finally {
+        if ($aes) { $aes.Dispose() }
+        if ($sha256) { $sha256.Dispose() }
     }
 }
 
@@ -1057,6 +1135,82 @@ function ConvertTo-CompressedString {
         } catch {
             Write-Error "Unable to compress the given string"
         }
+    }
+}
+
+function ConvertTo-EncryptedString {
+    <#
+    .SYNOPSIS
+        Encrypts a string using AES encryption with a provided key.
+
+    .DESCRIPTION
+        This function takes a plaintext string and encrypts it using AES-256 encryption.
+        The encryption key is derived from the provided string key using SHA256 hashing.
+        The function returns a Base64-encoded string that includes the IV and encrypted data.
+        Portable across any system.
+
+    .PARAMETER textToEncrypt
+        The plaintext string to be encrypted.
+
+    .PARAMETER key
+        The encryption key as a string. This will be hashed using SHA256 to create a 256-bit key.
+
+    .EXAMPLE
+        $encryptedPassword = ConvertTo-EncryptedString -textToEncrypt "SecretPassword123" -key "MyEncryptionKey"
+
+        Encrypts the password with the provided key and returns an encrypted Base64 string.
+
+    .OUTPUTS
+        [System.String]
+        Returns a Base64-encoded string containing the IV and encrypted data.
+        Returns $null if the input string is null or empty.
+
+    .NOTES
+        The function uses AES encryption with a random IV for each encryption operation.
+        The IV is prepended to the encrypted data in the output string.
+        To decrypt the string, use the corresponding ConvertFrom-EncryptedString function with the same key.
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $textToEncrypt,
+
+        [Parameter(Mandatory = $true)]
+        [string] $key
+    )
+
+    if ([string]::IsNullOrEmpty($textToEncrypt)) { return $null }
+
+    try {
+        # Create a byte array from the encryption key
+        # We'll derive a 256-bit key using SHA256
+        $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($key)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $keyBytes = $sha256.ComputeHash($keyBytes)
+
+        # Create AES object
+        $aes = [System.Security.Cryptography.Aes]::Create()
+        $aes.Key = $keyBytes
+        $aes.GenerateIV() # Generate a random IV for each encryption
+
+        # Convert the text to encrypt to bytes
+        $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($textToEncrypt)
+
+        # Create encryptor and encrypt the data
+        $encryptor = $aes.CreateEncryptor()
+        $encryptedData = $encryptor.TransformFinalBlock($dataBytes, 0, $dataBytes.Length)
+
+        # Combine the IV and encrypted data for storage
+        $resultBytes = $aes.IV + $encryptedData
+
+        # Return as Base64 string
+        return [Convert]::ToBase64String($resultBytes)
+    } catch {
+        throw "Encryption failed: $_"
+    } finally {
+        if ($aes) { $aes.Dispose() }
+        if ($sha256) { $sha256.Dispose() }
     }
 }
 
@@ -5201,7 +5355,13 @@ function Quote-String {
 
     Write-Verbose "'String' parameter contains:`n$string"
 
-    $result = $string -split [regex]::escape($delimiter) | ? { $_ } | % {
+    if ($delimiter -eq "`n") {
+        # sometimes `n generates weird results, because `r`n is needed
+        $result = $string.Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)
+    } else {
+        $result = $string.Split($delimiter, [StringSplitOptions]::RemoveEmptyEntries)
+    }
+    $result = $result | % {
         $quoteBy + $_.trim() + $quoteBy
     }
 
@@ -5817,6 +5977,6 @@ function Uninstall-ApplicationViaUninstallString {
     }
 }
 
-Export-ModuleMember -function Compare-Object2, ConvertFrom-CompressedString, ConvertFrom-HTMLTable, ConvertFrom-XML, ConvertTo-CompressedString, Expand-ObjectProperty, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-RestMethod2, Invoke-SQL, Invoke-WindowsUpdate, New-BasicAuthHeader, Publish-Module2, Quote-String, Read-FromClipboard, Send-EmailViaSendGrid, Uninstall-ApplicationViaUninstallString
+Export-ModuleMember -function Compare-Object2, ConvertFrom-CompressedString, ConvertFrom-EncryptedString, ConvertFrom-HTMLTable, ConvertFrom-XML, ConvertTo-CompressedString, ConvertTo-EncryptedString, Expand-ObjectProperty, Export-ScriptsToModule, Get-InstalledSoftware, Get-PSHScriptBlockLoggingEvent, Get-SFCLogEvent, Invoke-AsLoggedUser, Invoke-AsSystem, Invoke-FileContentWatcher, Invoke-FileSystemWatcher, Invoke-MSTSC, Invoke-RestMethod2, Invoke-SQL, Invoke-WindowsUpdate, New-BasicAuthHeader, Publish-Module2, Quote-String, Read-FromClipboard, Send-EmailViaSendGrid, Uninstall-ApplicationViaUninstallString
 
 Export-ModuleMember -alias ConvertFrom-Clipboard, ConvertTo-QuotedString, Create-BasicAuthHeader, Install-WindowsUpdate, Invoke-WU, rdp, Watch-FileContent, Watch-FileSystem

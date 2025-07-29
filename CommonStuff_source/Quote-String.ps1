@@ -102,7 +102,13 @@
 
     Write-Verbose "'String' parameter contains:`n$string"
 
-    $result = $string -split [regex]::escape($delimiter) | ? { $_ } | % {
+    if ($delimiter -eq "`n") {
+        # sometimes `n generates weird results, because `r`n is needed
+        $result = $string.Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)
+    } else {
+        $result = $string.Split($delimiter, [StringSplitOptions]::RemoveEmptyEntries)
+    }
+    $result = $result | % {
         $quoteBy + $_.trim() + $quoteBy
     }
 

@@ -221,7 +221,7 @@
 
                 foreach ($response in $responses) {
                     # https://learn.microsoft.com/en-us/graph/errors#http-status-codes
-                    if ($response.Status -in 200, 201) {
+                    if ($response.Status -in 200, 201, 204) {
                         # success
 
                         if ($response.body.'@odata.nextLink') {

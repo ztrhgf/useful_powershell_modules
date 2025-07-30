@@ -594,7 +594,7 @@ function Invoke-GraphAPIRequest {
     .DESCRIPTION
     Function for creating request against Microsoft Graph API.
 
-    It supports paging and throttling.
+    It supports paging (needed in Azure).
 
     .PARAMETER uri
     Request URI.
@@ -665,13 +665,13 @@ function Invoke-GraphAPIRequest {
         $response = Invoke-RestMethod -Uri $uri -Headers $header -Method $method -ErrorAction Stop
     } catch {
         switch ($_) {
-            { $_ -like "*(429) Too Many Requests*" } {
+            { $_ -like "*(429) Too Many Requests*" -or $_ -like "*TooManyRequests*" } {
                 Write-Warning "(429) Too Many Requests. Waiting $waitTime seconds to avoid further throttling and try again"
                 Start-Sleep $waitTime
                 Invoke-GraphAPIRequest -uri $uri -header $header -method $method
             }
-            { $_ -like "*(400) Bad Request*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
-            { $_ -like "*(401) Unauthorized*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
+            { $_ -like "*(400) Bad Request*" -or $_ -like "*BadRequest*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
+            { $_ -like "*(401) Unauthorized*" -or $_ -like "*Unauthorized*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
             { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request ($uri)" }
             default { throw $_ }
         }
@@ -705,13 +705,13 @@ function Invoke-GraphAPIRequest {
                 $response = Invoke-RestMethod -Uri $NextLink -Headers $header -Method $method -ErrorAction Stop
             } catch {
                 switch ($_) {
-                    { $_ -like "*(429) Too Many Requests*" } {
+                    { $_ -like "*(429) Too Many Requests*" -or $_ -like "*TooManyRequests*" } {
                         Write-Warning "(429) Too Many Requests. Waiting $waitTime seconds to avoid further throttling and try again"
                         Start-Sleep $waitTime
                         Invoke-GraphAPIRequest -uri $NextLink -header $header -method $method
                     }
-                    { $_ -like "*(400) Bad Request*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
-                    { $_ -like "*(401) Unauthorized*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
+                    { $_ -like "*(400) Bad Request*" -or $_ -like "*BadRequest*" } { throw "(400) Bad Request. There has to be some syntax/logic mistake in this request ($uri)" }
+                    { $_ -like "*(401) Unauthorized*" -or $_ -like "*Unauthorized*" } { throw "(401) Unauthorized Request (new auth header has to be created?)" }
                     { $_ -like "*Forbidden*" } { throw "Forbidden access. Use account with correct API permissions for this request ($uri)" }
                     default { throw $_ }
                 }
@@ -955,7 +955,7 @@ function Invoke-GraphBatchRequest {
 
                 foreach ($response in $responses) {
                     # https://learn.microsoft.com/en-us/graph/errors#http-status-codes
-                    if ($response.Status -in 200, 201) {
+                    if ($response.Status -in 200, 201, 204) {
                         # success
 
                         if ($response.body.'@odata.nextLink') {

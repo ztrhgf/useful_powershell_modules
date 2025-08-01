@@ -27,6 +27,12 @@
 
     When the 'placeholder' parameter is specified, for each value it contains, new request url will be generated with such value used instead of the '<placeholder>' string.
 
+    It needs to contain the api-version parameter, otherwise it will throw an error!
+    For example: 'https://management.azure.com/subscriptions/.../roleEligibilitySchedules?api-version=2020-10-01'.
+    If you are unsure what api you can use:
+     - use the one from the example above and in case the request fails with 400 error, check the error message for the correct api version.
+     - use official corresponding Az cmdlet with -debug parameter (Get-AzStorageAccount -debug) and check the 'Absolute uri' output.
+     - developer tools (F12) in your browser when using Azure Portal and check the request url there.
 
     .PARAMETER placeholder
     Array of items (string, integers, ..) that will be used in the request url (defined in 'url' parameter) instead of the "<placeholder>" string.
@@ -104,6 +110,13 @@
 
     if (!$placeholder -and $url -like "*<placeholder>*") {
         throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
+    }
+
+    # api version check
+    $url | % {
+        if ($_ -notlike "*api-version=*") {
+            throw "URL '$_' is missing what api to use (api-version=2025-01-01 or similar). For example: 'https://management.azure.com/subscriptions/.../roleEligibilitySchedules?api-version=2020-10-01'. If you are unsure what api you can use, use the one from the example above and in case the request fails with 400 error, check the error message for the correct api version. Or use official Az cmdlet with -debug parameter and check the 'Absolute uri' output."
+        }
     }
     #endregion validity checks
 

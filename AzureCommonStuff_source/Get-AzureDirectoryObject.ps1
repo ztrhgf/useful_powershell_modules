@@ -45,6 +45,6 @@
             "ids" = @($currentChunk)
         }
 
-        Invoke-MgGraphRequest -Uri "v1.0/directoryObjects/microsoft.graph.getByIds" -Body ($body | ConvertTo-Json) -Method POST | Get-MgGraphAllPages
+        Invoke-MgGraphRequest -Uri "v1.0/directoryObjects/microsoft.graph.getByIds" -Body ($body | ConvertTo-Json) -Method POST | Get-MgGraphAllPages | select *, @{Name = 'ObjectType'; Expression = { $_.'@odata.type' -replace "#microsoft.graph." } } -ExcludeProperty '@odata.type'
     }
 }

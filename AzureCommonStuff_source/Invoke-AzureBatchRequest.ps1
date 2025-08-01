@@ -169,7 +169,7 @@
             #endregion return the output
 
             # check responses status
-            $failedBatchJob = [System.Collections.ArrayList]::new()
+            $failedBatchJob = [System.Collections.Generic.List[Object]]::new()
 
             foreach ($response in $responses) {
                 if ($response.httpStatusCode -eq 200) {
@@ -219,13 +219,13 @@
 
                     Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Name)', Url:'$($problematicBatchRequest.Url)' had internal error '$($response.httpStatusCode)', hence will be repeated"
 
-                    $null = $extraRequestChunk.Add($problematicBatchRequest)
+                    $extraRequestChunk.Add($problematicBatchRequest)
                 } else {
                     # failed
 
                     $failedBatchRequest = $requestChunk | ? Name -EQ $response.Name
 
-                    $null = $failedBatchJob.Add("- Name: '$($response.Name)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.httpStatusCode)', Error: '$($response.body.error.message)'")
+                    $failedBatchJob.Add("- Name: '$($response.Name)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.httpStatusCode)', Error: '$($response.content.error.message)'")
                 }
             }
 

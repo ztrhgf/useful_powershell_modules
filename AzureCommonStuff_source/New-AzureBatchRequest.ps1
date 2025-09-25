@@ -44,12 +44,20 @@
         "commandName" = "fx.Microsoft_Azure_AD.ServicesPermissions.getPermissions"
     }
 
+    .PARAMETER content
+    Content hashtable that should be added to each request in the batch.
+
     .PARAMETER name
     Name (Id) of the request.
     Can only be specified only when 'url' parameter contains one value.
     If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     By default random-generated-number.
+
+    .PARAMETER placeholderAsId
+    Switch to use current 'placeholder' value used in the request URL as a request ID.
+
+    BEWARE that request ID has to be unique across the pools of all batch requests, therefore use this switch with a caution!
 
     .EXAMPLE
     $batchRequest = New-AzureBatchRequest -url "/providers/Microsoft.Authorization/roleDefinitions?%24filter=type%20eq%20%27BuiltInRole%27&api-version=2022-05-01-preview", "/subscriptions/f3b08c7f-99a9-4a70-ba56-1e877abb77f7/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01"
@@ -77,6 +85,40 @@
 
     Invoke-AzRestMethod -Uri "https://management.azure.com/batch?api-version=2020-06-01" -Method POST -Payload ($payload | ConvertTo-Json -Depth 20)
 
+    .EXAMPLE
+    $arcMachines = Get-ArcMachineOverview
+
+    New-AzureBatchRequest -url "<placeholder>/providers/Microsoft.HybridConnectivity/endpoints/default?api-version=2023-03-15" -placeholder $arcMachines.resourceId -placeholderAsId | Invoke-AzureBatchRequest
+
+    Check connectivity endpoints for all ARC machines, where returned object's Name property will contain the resource ID of the corresponding ARC machine for easy identification of results.
+
+    .EXAMPLE
+    $query = @'
+        resources
+        | where isnotnull(properties.accessPolicies) and array_length(properties.accessPolicies) > 0
+        | mv-expand accessPolicy = properties.accessPolicies
+        | project
+            id,
+            resourceName = name,
+            resourceType = type,
+            resourceGroup,
+            subscriptionId,
+            accessPolicy
+'@
+
+    $content = @{
+        query = $query
+        subscriptions = @()
+        options = @{
+            '$top'=1000
+            '$skipToken' = "ew0KICAiJGlkIjogIjEiLA0KICAiTWF4Um93cyI6IDEwMDAsDQogICJSb3dzVG9Ta2lwIjogMTAwMCwNCiAgIkt1c3RvQ2x1c3RlclVybCI6ICJodHRwczovL2FyZy1uZXUtMTMtc2YuYXJnLmNvcmUud2luZG93cy5uZXQiDQp9"
+        }
+    }
+
+    New-AzureBatchRequest -method POST -url "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01" -content $content | Invoke-AzureBatchRequest
+
+    Invoke KQL query against Azure Resource Graph using batch request.
+
     .NOTES
     Uses undocumented API https://github.com/Azure/azure-sdk-for-python/issues/9271 :).
     #>
@@ -95,13 +137,19 @@
 
         [hashtable] $requestHeaderDetails,
 
+        [hashtable] $content,
+
+        [Parameter(ParameterSetName = "Name")]
         [Alias("id")]
-        [string] $name
+        [string] $name,
+
+        [Parameter(ParameterSetName = "DynamicUrl")]
+        [switch] $placeholderAsId
     )
 
     #region validity checks
-    if ($id -and @($url).count -gt 1) {
-        throw "'id' parameter cannot be used with multiple urls"
+    if ($name -and @($url).count -gt 1) {
+        throw "'name' parameter cannot be used with multiple urls"
     }
 
     if ($placeholder -and $url -notlike "*<placeholder>*") {
@@ -110,6 +158,14 @@
 
     if (!$placeholder -and $url -like "*<placeholder>*") {
         throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
+    }
+
+    if ($placeholderAsId -and !$placeholder) {
+        throw "'placeholderAsId' parameter cannot be used without specifying 'placeholder' parameter"
+    }
+
+    if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
+        throw "'placeholderAsId' parameter cannot be used with multiple urls"
     }
 
     # api version check
@@ -129,6 +185,8 @@
             }
         }
     }
+
+    $index = 0
 
     $url | % {
         # fix common mistake where there are multiple slashes
@@ -155,6 +213,8 @@
             } else {
                 $property.Name = $name
             }
+        } elseif ($placeholderAsId -and $placeholder) {
+            $property.Name = @($placeholder)[$index]
         } else {
             $property.Name = Get-Random
         }
@@ -163,6 +223,12 @@
             $property.requestHeaderDetails = $requestHeaderDetails
         }
 
+        if ($content) {
+            $property.content = $content
+        }
+
         New-Object -TypeName PSObject -Property $property
+
+        ++$index
     }
 }

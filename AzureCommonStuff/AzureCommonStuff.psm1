@@ -589,17 +589,6 @@ function Invoke-AzureBatchRequest {
             # invoke the batch
             $result = Invoke-AzRestMethod -Uri "https://management.azure.com/batch?api-version=2020-06-01" -Method POST -Payload ($payload | ConvertTo-Json -Depth 20) -ErrorAction Stop
 
-            # check the batch status
-            if ($result.StatusCode -notin 200, 202, 429) {
-                $result
-                throw "Batch failed with error code $($result.StatusCode) and message: $(($result.content | ConvertFrom-Json).Error.Message)"
-            } elseif ($result.StatusCode -in 202, 429) {
-                # whole batch has to be retried
-                # FIXME nastavit retryAfter a pridat vsechny uri do $throttledRequestChunk?
-                # $retryAfter = ($result.Headers.RetryAfter.Delta).TotalSeconds
-                Write-Warning "TODO! $($result.StatusCode) tzn zopakovat po $(($result.Headers.RetryAfter.Delta).TotalSeconds)"
-            }
-
             $responses = ($result.content | ConvertFrom-Json).responses
 
             #region return the output
@@ -611,6 +600,9 @@ function Invoke-AzureBatchRequest {
                 # return just actually requested data without batch-related properties and enhance the returned object with 'RequestName' property for easier filtering
 
                 foreach ($response in $responses) {
+                    $noteProperty = $null
+                    if ($response.content) { $noteProperty = $response.content | Get-Member -MemberType NoteProperty }
+
                     # there was some error, no real values were returned, skipping
                     if ($response.httpStatusCode -in (400..509)) {
                         continue
@@ -623,7 +615,13 @@ function Invoke-AzureBatchRequest {
                     }
 
                     if ($response.content.value) {
+                        # the result is in the 'value' property
                         $response.content.value | select -Property $property
+                    } elseif ($response.content -and $noteProperty.Name -contains 'value') {
+                        # the result is stored in 'value' property, but no results were returned, skipping
+                    } elseif ($response.content -and $response.contentLength) {
+                        # the result is in the 'content' property itself
+                        $response.content | select -Property $property
                     } else {
                         # no results were returned, skipping
                     }
@@ -631,27 +629,35 @@ function Invoke-AzureBatchRequest {
             }
             #endregion return the output
 
-            # check responses status
+            #region handle the responses based on their status code
+            # load the next pages, retry throttled requests, repeat failed requests, ...
+
             $failedBatchJob = [System.Collections.Generic.List[Object]]::new()
 
             foreach ($response in $responses) {
-                if ($response.httpStatusCode -eq 200) {
+                if ($response.httpStatusCode -in 200, 201, 204) {
                     # success
 
-                    #TODO vubec nevim jak tohle tady funguje
-                    # if ($response.body.'@odata.nextLink') {
-                    #     # paginated (get remaining results by query returned NextLink URL)
+                    # not sure where the nextLink is stored, so checking both 'body' and 'content'
+                    $nextLink = $null
+                    if ($response.body.nextLink) {
+                        $nextLink = $response.body.nextLink
+                    } elseif ($response.content.nextLink) {
+                        $nextLink = $response.content.nextLink
+                    }
 
-                    #     Write-Verbose "Batch result for request '$($response.Name)' is paginated. Nextlink will be processed in the next batch"
+                    if ($nextLink) {
+                        # paginated (get remaining results by query returned NextLink URL)
 
-                    #     $relativeNextLink = $response.body.'@odata.nextLink' -replace [regex]::Escape("https://management.azure.com")
-                    #     # make a request object copy, so I can modify it without interfering with the original object
-                    #     $nextLinkRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
-                    #     # replace original URL with the nextLink
-                    #     $nextLinkRequest.URL = $relativeNextLink
-                    #     # add the request for later processing
-                    #     $null = $extraRequestChunk.Add($nextLinkRequest)
-                    # }
+                        Write-Verbose "Batch result for request '$($response.Name)' is paginated. Nextlink will be processed in the next batch"
+
+                        # make a request object copy, so I can modify it without interfering with the original object
+                        $nextLinkRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                        # replace original URL with the nextLink
+                        $nextLinkRequest.Url = $nextLink
+                        # add the request for later processing
+                        $null = $extraRequestChunk.Add($nextLinkRequest)
+                    }
                 } elseif ($response.httpStatusCode -eq 429) {
                     # throttled (will be repeated after given time)
 
@@ -688,14 +694,24 @@ function Invoke-AzureBatchRequest {
 
                     $failedBatchRequest = $requestChunk | ? Name -EQ $response.Name
 
-                    $failedBatchJob.Add("- Name: '$($response.Name)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.httpStatusCode)', Error: '$($response.content.error.message)'")
+                    $failedBatchJob.Add(
+                        @{
+                            Name       = $response.Name
+                            Url        = $failedBatchRequest.Url
+                            StatusCode = $response.httpStatusCode
+                            Error      = $response.content.error.message
+                        }
+                    )
                 }
             }
 
             # exit if critical failure occurred
             if ($failedBatchJob) {
-                Write-Error "Following batch request(s) failed:`n$($failedBatchJob -join "`n")"
+                Write-Error "`nFollowing batch request(s) failed:`n$(($failedBatchJob | % {
+                    "Name: $($_.Name)", " - Url: $($_.Url)", " - StatusCode: $($_.StatusCode)", " - Error: $($_.Error)" -join "`n"
+                }) -join "`n`n")"
             }
+            #endregion handle the responses based on their status code
 
             $end = Get-Date
 
@@ -816,12 +832,20 @@ function New-AzureBatchRequest {
         "commandName" = "fx.Microsoft_Azure_AD.ServicesPermissions.getPermissions"
     }
 
+    .PARAMETER content
+    Content hashtable that should be added to each request in the batch.
+
     .PARAMETER name
     Name (Id) of the request.
     Can only be specified only when 'url' parameter contains one value.
     If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     By default random-generated-number.
+
+    .PARAMETER placeholderAsId
+    Switch to use current 'placeholder' value used in the request URL as a request ID.
+
+    BEWARE that request ID has to be unique across the pools of all batch requests, therefore use this switch with a caution!
 
     .EXAMPLE
     $batchRequest = New-AzureBatchRequest -url "/providers/Microsoft.Authorization/roleDefinitions?%24filter=type%20eq%20%27BuiltInRole%27&api-version=2022-05-01-preview", "/subscriptions/f3b08c7f-99a9-4a70-ba56-1e877abb77f7/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01"
@@ -849,6 +873,40 @@ function New-AzureBatchRequest {
 
     Invoke-AzRestMethod -Uri "https://management.azure.com/batch?api-version=2020-06-01" -Method POST -Payload ($payload | ConvertTo-Json -Depth 20)
 
+    .EXAMPLE
+    $arcMachines = Get-ArcMachineOverview
+
+    New-AzureBatchRequest -url "<placeholder>/providers/Microsoft.HybridConnectivity/endpoints/default?api-version=2023-03-15" -placeholder $arcMachines.resourceId -placeholderAsId | Invoke-AzureBatchRequest
+
+    Check connectivity endpoints for all ARC machines, where returned object's Name property will contain the resource ID of the corresponding ARC machine for easy identification of results.
+
+    .EXAMPLE
+    $query = @'
+        resources
+        | where isnotnull(properties.accessPolicies) and array_length(properties.accessPolicies) > 0
+        | mv-expand accessPolicy = properties.accessPolicies
+        | project
+            id,
+            resourceName = name,
+            resourceType = type,
+            resourceGroup,
+            subscriptionId,
+            accessPolicy
+'@
+
+    $content = @{
+        query = $query
+        subscriptions = @()
+        options = @{
+            '$top'=1000
+            '$skipToken' = "ew0KICAiJGlkIjogIjEiLA0KICAiTWF4Um93cyI6IDEwMDAsDQogICJSb3dzVG9Ta2lwIjogMTAwMCwNCiAgIkt1c3RvQ2x1c3RlclVybCI6ICJodHRwczovL2FyZy1uZXUtMTMtc2YuYXJnLmNvcmUud2luZG93cy5uZXQiDQp9"
+        }
+    }
+
+    New-AzureBatchRequest -method POST -url "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01" -content $content | Invoke-AzureBatchRequest
+
+    Invoke KQL query against Azure Resource Graph using batch request.
+
     .NOTES
     Uses undocumented API https://github.com/Azure/azure-sdk-for-python/issues/9271 :).
     #>
@@ -867,13 +925,19 @@ function New-AzureBatchRequest {
 
         [hashtable] $requestHeaderDetails,
 
+        [hashtable] $content,
+
+        [Parameter(ParameterSetName = "Name")]
         [Alias("id")]
-        [string] $name
+        [string] $name,
+
+        [Parameter(ParameterSetName = "DynamicUrl")]
+        [switch] $placeholderAsId
     )
 
     #region validity checks
-    if ($id -and @($url).count -gt 1) {
-        throw "'id' parameter cannot be used with multiple urls"
+    if ($name -and @($url).count -gt 1) {
+        throw "'name' parameter cannot be used with multiple urls"
     }
 
     if ($placeholder -and $url -notlike "*<placeholder>*") {
@@ -882,6 +946,14 @@ function New-AzureBatchRequest {
 
     if (!$placeholder -and $url -like "*<placeholder>*") {
         throw "You have specified 'url' with '<placeholder>' in it, but not the 'placeholder' parameter itself."
+    }
+
+    if ($placeholderAsId -and !$placeholder) {
+        throw "'placeholderAsId' parameter cannot be used without specifying 'placeholder' parameter"
+    }
+
+    if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
+        throw "'placeholderAsId' parameter cannot be used with multiple urls"
     }
 
     # api version check
@@ -901,6 +973,8 @@ function New-AzureBatchRequest {
             }
         }
     }
+
+    $index = 0
 
     $url | % {
         # fix common mistake where there are multiple slashes
@@ -927,6 +1001,8 @@ function New-AzureBatchRequest {
             } else {
                 $property.Name = $name
             }
+        } elseif ($placeholderAsId -and $placeholder) {
+            $property.Name = @($placeholder)[$index]
         } else {
             $property.Name = Get-Random
         }
@@ -935,7 +1011,13 @@ function New-AzureBatchRequest {
             $property.requestHeaderDetails = $requestHeaderDetails
         }
 
+        if ($content) {
+            $property.content = $content
+        }
+
         New-Object -TypeName PSObject -Property $property
+
+        ++$index
     }
 }
 

@@ -126,17 +126,6 @@
             # invoke the batch
             $result = Invoke-AzRestMethod -Uri "https://management.azure.com/batch?api-version=2020-06-01" -Method POST -Payload ($payload | ConvertTo-Json -Depth 20) -ErrorAction Stop
 
-            # check the batch status
-            if ($result.StatusCode -notin 200, 202, 429) {
-                $result
-                throw "Batch failed with error code $($result.StatusCode) and message: $(($result.content | ConvertFrom-Json).Error.Message)"
-            } elseif ($result.StatusCode -in 202, 429) {
-                # whole batch has to be retried
-                # FIXME nastavit retryAfter a pridat vsechny uri do $throttledRequestChunk?
-                # $retryAfter = ($result.Headers.RetryAfter.Delta).TotalSeconds
-                Write-Warning "TODO! $($result.StatusCode) tzn zopakovat po $(($result.Headers.RetryAfter.Delta).TotalSeconds)"
-            }
-
             $responses = ($result.content | ConvertFrom-Json).responses
 
             #region return the output
@@ -148,6 +137,9 @@
                 # return just actually requested data without batch-related properties and enhance the returned object with 'RequestName' property for easier filtering
 
                 foreach ($response in $responses) {
+                    $noteProperty = $null
+                    if ($response.content) { $noteProperty = $response.content | Get-Member -MemberType NoteProperty }
+
                     # there was some error, no real values were returned, skipping
                     if ($response.httpStatusCode -in (400..509)) {
                         continue
@@ -160,7 +152,13 @@
                     }
 
                     if ($response.content.value) {
+                        # the result is in the 'value' property
                         $response.content.value | select -Property $property
+                    } elseif ($response.content -and $noteProperty.Name -contains 'value') {
+                        # the result is stored in 'value' property, but no results were returned, skipping
+                    } elseif ($response.content -and $response.contentLength) {
+                        # the result is in the 'content' property itself
+                        $response.content | select -Property $property
                     } else {
                         # no results were returned, skipping
                     }
@@ -168,27 +166,35 @@
             }
             #endregion return the output
 
-            # check responses status
+            #region handle the responses based on their status code
+            # load the next pages, retry throttled requests, repeat failed requests, ...
+
             $failedBatchJob = [System.Collections.Generic.List[Object]]::new()
 
             foreach ($response in $responses) {
-                if ($response.httpStatusCode -eq 200) {
+                if ($response.httpStatusCode -in 200, 201, 204) {
                     # success
 
-                    #TODO vubec nevim jak tohle tady funguje
-                    # if ($response.body.'@odata.nextLink') {
-                    #     # paginated (get remaining results by query returned NextLink URL)
+                    # not sure where the nextLink is stored, so checking both 'body' and 'content'
+                    $nextLink = $null
+                    if ($response.body.nextLink) {
+                        $nextLink = $response.body.nextLink
+                    } elseif ($response.content.nextLink) {
+                        $nextLink = $response.content.nextLink
+                    }
 
-                    #     Write-Verbose "Batch result for request '$($response.Name)' is paginated. Nextlink will be processed in the next batch"
+                    if ($nextLink) {
+                        # paginated (get remaining results by query returned NextLink URL)
 
-                    #     $relativeNextLink = $response.body.'@odata.nextLink' -replace [regex]::Escape("https://management.azure.com")
-                    #     # make a request object copy, so I can modify it without interfering with the original object
-                    #     $nextLinkRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
-                    #     # replace original URL with the nextLink
-                    #     $nextLinkRequest.URL = $relativeNextLink
-                    #     # add the request for later processing
-                    #     $null = $extraRequestChunk.Add($nextLinkRequest)
-                    # }
+                        Write-Verbose "Batch result for request '$($response.Name)' is paginated. Nextlink will be processed in the next batch"
+
+                        # make a request object copy, so I can modify it without interfering with the original object
+                        $nextLinkRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                        # replace original URL with the nextLink
+                        $nextLinkRequest.Url = $nextLink
+                        # add the request for later processing
+                        $null = $extraRequestChunk.Add($nextLinkRequest)
+                    }
                 } elseif ($response.httpStatusCode -eq 429) {
                     # throttled (will be repeated after given time)
 
@@ -225,14 +231,24 @@
 
                     $failedBatchRequest = $requestChunk | ? Name -EQ $response.Name
 
-                    $failedBatchJob.Add("- Name: '$($response.Name)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.httpStatusCode)', Error: '$($response.content.error.message)'")
+                    $failedBatchJob.Add(
+                        @{
+                            Name       = $response.Name
+                            Url        = $failedBatchRequest.Url
+                            StatusCode = $response.httpStatusCode
+                            Error      = $response.content.error.message
+                        }
+                    )
                 }
             }
 
             # exit if critical failure occurred
             if ($failedBatchJob) {
-                Write-Error "Following batch request(s) failed:`n$($failedBatchJob -join "`n")"
+                Write-Error "`nFollowing batch request(s) failed:`n$(($failedBatchJob | % {
+                    "Name: $($_.Name)", " - Url: $($_.Url)", " - StatusCode: $($_.StatusCode)", " - Error: $($_.Error)" -join "`n"
+                }) -join "`n`n")"
             }
+            #endregion handle the responses based on their status code
 
             $end = Get-Date
 

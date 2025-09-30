@@ -621,7 +621,12 @@ function Invoke-AzureBatchRequest {
                         # the result is stored in 'value' property, but no results were returned, skipping
                     } elseif ($response.content -and $response.contentLength) {
                         # the result is in the 'content' property itself
-                        $response.content | select -Property $property
+                        if ($response.content.data -and $response.content.totalRecords -and $response.content.resultTruncated) {
+                            # the result is in the 'data' property (Resource Graph KQL response)
+                            $response.content.data | select -Property $property
+                        } else {
+                            $response.content | select -Property $property
+                        }
                     } else {
                         # no results were returned, skipping
                     }
@@ -638,7 +643,7 @@ function Invoke-AzureBatchRequest {
                 if ($response.httpStatusCode -in 200, 201, 204) {
                     # success
 
-                    # not sure where the nextLink is stored, so checking both 'body' and 'content'
+                    # not sure where the nextLink might be stored, so checking both 'body' and 'content'
                     $nextLink = $null
                     if ($response.body.nextLink) {
                         $nextLink = $response.body.nextLink
@@ -657,6 +662,28 @@ function Invoke-AzureBatchRequest {
                         $nextLinkRequest.Url = $nextLink
                         # add the request for later processing
                         $null = $extraRequestChunk.Add($nextLinkRequest)
+                    }
+
+                    $skipToken = $null
+                    if ($skipToken = $response.content.'$skipToken') {
+                        # paginated (get remaining results by using '$skipToken')
+
+                        Write-Verbose "Batch result for request '$($response.Name)' is paginated (total records: $($response.content.totalRecords)). Request will be repeated with the returned `$skipToken"
+
+                        # make a request object copy, so I can modify it without interfering with the original object
+                        $nextPageRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                        # set '$skipToken' option
+                        if ($nextPageRequest.content.Options) {
+                            if ($nextPageRequest.content.Options.'$skipToken') {
+                                $nextPageRequest.content.Options.'$skipToken' = $skipToken
+                            } else {
+                                $nextPageRequest.content.Options | Add-Member -MemberType NoteProperty -Name '$skipToken' -Value $skipToken
+                            }
+                        } else {
+                            $nextPageRequest.content | Add-Member -MemberType NoteProperty -Name Options -Value @{'$skipToken' = $skipToken }
+                        }
+                        # add the request for later processing
+                        $null = $extraRequestChunk.Add($nextPageRequest)
                     }
                 } elseif ($response.httpStatusCode -eq 429) {
                     # throttled (will be repeated after given time)

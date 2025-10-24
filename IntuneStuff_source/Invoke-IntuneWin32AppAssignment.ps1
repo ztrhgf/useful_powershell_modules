@@ -73,7 +73,7 @@ function Invoke-IntuneWin32AppAssignment {
 
     if ($appId) {
         $appId | % {
-            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            $app = Get-MgDeviceAppManagementMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
             if (!$app) {
                 throw "Win32App with ID $_ doesn't exist"
             }
@@ -94,7 +94,7 @@ function Invoke-IntuneWin32AppAssignment {
             }
         }
 
-        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -PassThru -Title "Select Win32App you want to assign" | select -ExpandProperty Id
+        $appId = Get-MgDeviceAppManagementMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -PassThru -Title "Select Win32App you want to assign" | select -ExpandProperty Id
         if (!$appId) { throw "You haven't selected any app" }
     }
 

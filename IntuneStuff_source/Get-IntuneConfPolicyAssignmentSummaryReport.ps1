@@ -65,6 +65,12 @@
     $platformDeviceCount = @{}
 
     switch (($finalResult.UnifiedPolicyPlatformType | select -Unique)) {
+        { $_ -contains "Windows81AndLater" } {
+            Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company'" -All -CountVariable windows81AndLaterDeviceCount
+
+            $platformDeviceCount.Windows81AndLater = $windows81AndLaterDeviceCount
+        }
+
         { $_ -contains "Windows10" } {
             Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company' and startswith(OSVersion,'10.')" -All -CountVariable windows10DeviceCount
 

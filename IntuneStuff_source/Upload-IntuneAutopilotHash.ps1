@@ -36,6 +36,10 @@ function Upload-IntuneAutopilotHash {
 
     By default current date.
 
+    .PARAMETER skipSync
+    Skip final autopilot database sync step.
+    It can cause throttling error message if invoked too many times in the short time period.
+
     .EXAMPLE
     Upload-IntuneAutopilotHash -thisDevice -ownerUPN johnd@contoso.com -Verbose
 
@@ -78,7 +82,9 @@ function Upload-IntuneAutopilotHash {
 
         [parameter(Mandatory = $false, HelpMessage = "Specify the order identifier, e.g. 'Purchase<ID>'.")]
         [ValidateNotNullOrEmpty()]
-        [string] $groupTag = (Get-Date -Format "dd.MM.yyyy")
+        [string] $groupTag = (Get-Date -Format "dd.MM.yyyy"),
+
+        [switch] $skipSync
     )
 
     if ($psObject) {
@@ -95,7 +101,7 @@ function Upload-IntuneAutopilotHash {
                 throw "PSObject object doesn't contain mandatory property HardwareHash"
             }
         }
-    } else {
+    } elseif ($thisDevice) {
         # gather this device hash data
         if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
             throw "You don't have administrator rights"
@@ -104,11 +110,13 @@ function Upload-IntuneAutopilotHash {
         Write-Verbose "Gather device hash data of the local machine"
         $HardwareHash = (Get-CimInstance -Namespace "root/cimv2/mdm/dmmap" -Class "MDM_DevDetail_Ext01" -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" -Verbose:$false).DeviceHardwareData
         $SerialNumber = (Get-CimInstance -ClassName "Win32_BIOS" -Verbose:$false).SerialNumber
-        [PSCustomObject]$psObject = @{
+        $psObject = [PSCustomObject]@{
             SerialNumber = $SerialNumber
             HardwareHash = $HardwareHash
             Hostname     = $env:COMPUTERNAME
         }
+    } else {
+        throw "Undefined state"
     }
 
     Connect-MgGraph -NoWelcome
@@ -213,10 +221,14 @@ function Upload-IntuneAutopilotHash {
                         continue
                     }
 
-                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname
+                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname -skipSync
                     break
                 }
             }
+        }
+
+        if (!$skipSync) {
+            Invoke-AutopilotSync
         }
     }
 }

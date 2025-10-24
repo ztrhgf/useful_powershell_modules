@@ -37,7 +37,7 @@ function Remove-IntuneWin32AppAssignment {
 
     if ($appId) {
         $appId | % {
-            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            $app = Get-MgDeviceAppManagementMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
             if (!$app) {
                 throw "Win32App with ID $_ doesn't exist"
             }
@@ -58,7 +58,7 @@ function Remove-IntuneWin32AppAssignment {
             }
         }
 
-        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | ? Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -Title "Select Win32App you want to de-assign" -PassThru | select -ExpandProperty Id
+        $appId = Get-MgDeviceAppManagementMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | ? Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -Title "Select Win32App you want to de-assign" -PassThru | select -ExpandProperty Id
         if (!$appId) { throw "You haven't selected any app" }
     }
 

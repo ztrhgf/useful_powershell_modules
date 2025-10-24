@@ -17,7 +17,7 @@
 
   $recoveryKeys = Invoke-MgGraphRequest -Uri "beta/informationProtection/bitlocker/recoveryKeys?`$select=createdDateTime,deviceId" | Get-MgGraphAllPages
 
-  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType" | Get-MgGraphAllPages
+  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType,enrolledDateTime" | Get-MgGraphAllPages
 
   $aadDevices | select *, @{n = 'ValidRecoveryBitlockerKeyInAzure'; e = {
       $deviceId = $_.azureADDeviceId

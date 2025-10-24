@@ -1164,7 +1164,7 @@ function Get-BitlockerEscrowStatusForAzureADDevices {
 
   $recoveryKeys = Invoke-MgGraphRequest -Uri "beta/informationProtection/bitlocker/recoveryKeys?`$select=createdDateTime,deviceId" | Get-MgGraphAllPages
 
-  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType" | Get-MgGraphAllPages
+  $aadDevices = Invoke-MgGraphRequest -Uri "v1.0/deviceManagement/managedDevices?`$filter=operatingSystem eq 'Windows'&select=azureADDeviceId,deviceName,id,userPrincipalName,isEncrypted,managedDeviceOwnerType,deviceEnrollmentType,enrolledDateTime" | Get-MgGraphAllPages
 
   $aadDevices | select *, @{n = 'ValidRecoveryBitlockerKeyInAzure'; e = {
       $deviceId = $_.azureADDeviceId
@@ -2085,6 +2085,12 @@ function Get-IntuneConfPolicyAssignmentSummaryReport {
     $platformDeviceCount = @{}
 
     switch (($finalResult.UnifiedPolicyPlatformType | select -Unique)) {
+        { $_ -contains "Windows81AndLater" } {
+            Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company'" -All -CountVariable windows81AndLaterDeviceCount
+
+            $platformDeviceCount.Windows81AndLater = $windows81AndLaterDeviceCount
+        }
+
         { $_ -contains "Windows10" } {
             Get-MgDeviceManagementManagedDevice -Filter "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company' and startswith(OSVersion,'10.')" -All -CountVariable windows10DeviceCount
 
@@ -2133,6 +2139,119 @@ function Get-IntuneConfPolicyAssignmentSummaryReport {
     $finalResult | % {
         $resultLine = $_
         $resultLine | select *, @{n = 'FailedDevicePercentage'; e = { _GetFailedDevicePercentage -platform $resultLine.UnifiedPolicyPlatformType -failedDeviceCount $resultLine.NumberOfNonCompliantOrErrorDevices } }, @{n = 'ConflictedDevicePercentage'; e = { _GetFailedDevicePercentage -platform $resultLine.UnifiedPolicyPlatformType -failedDeviceCount $resultLine.NumberOfConflictDevices } }, @{n = 'NumberOfAllDevices'; e = { $platformDeviceCount.($resultLine.UnifiedPolicyPlatformType) } }
+    }
+}
+
+function Get-IntuneDeviceAutopilotHashViaRemediation {
+    <#
+    .SYNOPSIS
+    Retrieve (via on-demand remediation) device autopilot hash, serial number and hostname and possibly upload it into the autopilot database .
+
+    .DESCRIPTION
+    Retrieve (via on-demand remediation) device autopilot hash, serial number and hostname and possibly upload it into the autopilot database.
+
+    .PARAMETER name
+    Device name.
+
+    .PARAMETER id
+    Device id.
+
+    .PARAMETER uploadToAutopilotDatabase
+    Switch to upload retrieved data to autopilot database.
+
+    .PARAMETER dontWait
+    Switch to not wait for command to finish a.k.a. remediation will not be deleted and no hash will be returned.
+
+    .EXAMPLE
+    Get-IntuneDeviceAutopilotHashViaRemediation -name np-10-ntb -uploadToAutopilotDatabase
+
+    .NOTES
+    Device has to be turned on.
+    #>
+
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory = $true, ParameterSetName = "name")]
+        [string] $name,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "id")]
+        [string] $id,
+
+        [switch] $uploadToAutopilotDatabase,
+
+        [switch] $dontWait
+    )
+
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
+
+    if ($uploadToAutopilotDatabase -and $dontWait) {
+        throw "Cannot use -uploadToAutopilotDatabase with -dontWait"
+    }
+
+    # import parent module so we can prepend command definition to the send scriptblock later
+    $cmdlet = Get-Command "ConvertTo-CompressedString" -ErrorAction Stop
+    if (!(Get-Module $cmdlet.ModuleName)) {
+        Import-Module $cmdlet.ModuleName
+    }
+
+    #region retrieve device serial number
+    if ($name) {
+        $request = New-GraphBatchRequest -url "/deviceManagement/managedDevices?`$filter=OperatingSystem eq 'Windows' and deviceName eq '$name'&`$select=serialNumber"
+    } else {
+        $request = New-GraphBatchRequest -url "/deviceManagement/managedDevices/$id`?&`$select=serialNumber"
+    }
+    $serialNumber = Invoke-GraphBatchRequest -batchRequest $request | select -ExpandProperty serialNumber
+
+    if (!$serialNumber) {
+        throw "Device '$name' ($id) not found in Intune"
+    }
+    #endregion retrieve device serial number
+
+    $command = {
+        $serial = (Get-CimInstance -Class Win32_BIOS).SerialNumber
+
+        # Get the hash (if available)
+        $devDetail = (Get-CimInstance -Namespace root/cimv2/mdm/dmmap -Class MDM_DevDetail_Ext01 -Filter "InstanceID='Ext' AND ParentID='./DevDetail'")
+        if ($devDetail) {
+            $hash = $devDetail.DeviceHardwareData
+        } else {
+            throw "Unable to get hash"
+        }
+
+        $result = [PSCustomObject]@{
+            SerialNumber = $serial
+            HardwareHash = $hash
+            Hostname     = $env:COMPUTERNAME
+        }
+
+        $result | ConvertTo-Json -Compress | ConvertTo-CompressedString
+    }
+
+    $param = @{
+        command                  = $command
+        remediationSuffix        = "$serialNumber`_getAutopilotHash"
+        prependCommandDefinition = "ConvertTo-CompressedString"
+    }
+    if ($name) { $param.deviceName = $name }
+    if ($id) { $param.deviceId = $id }
+    if ($dontWait) { $param.dontWait = $true }
+
+    $result = Invoke-IntuneCommand @param
+
+    if ($dontWait) { return }
+
+    if ($result.processedoutput) {
+        $result.processedoutput
+
+        if ($uploadToAutopilotDatabase) {
+            "Uploading hash for '$($result.processedoutput.hostname)'"
+            Upload-IntuneAutopilotHash -psObject $result.processedoutput -skipSync
+        }
+    } else {
+        throw "Unable to get hash for '$name' ($id)"
     }
 }
 
@@ -7498,7 +7617,7 @@ function Invoke-IntuneWin32AppAssignment {
 
     if ($appId) {
         $appId | % {
-            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            $app = Get-MgDeviceAppManagementMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
             if (!$app) {
                 throw "Win32App with ID $_ doesn't exist"
             }
@@ -7519,7 +7638,7 @@ function Invoke-IntuneWin32AppAssignment {
             }
         }
 
-        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -PassThru -Title "Select Win32App you want to assign" | select -ExpandProperty Id
+        $appId = Get-MgDeviceAppManagementMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -PassThru -Title "Select Win32App you want to assign" | select -ExpandProperty Id
         if (!$appId) { throw "You haven't selected any app" }
     }
 
@@ -8126,7 +8245,7 @@ function Remove-IntuneWin32AppAssignment {
 
     if ($appId) {
         $appId | % {
-            $app = Get-MgDeviceAppMgtMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
+            $app = Get-MgDeviceAppManagementMobileApp -Filter "id eq '$_' and isof('microsoft.graph.win32LobApp')"
             if (!$app) {
                 throw "Win32App with ID $_ doesn't exist"
             }
@@ -8147,7 +8266,7 @@ function Remove-IntuneWin32AppAssignment {
             }
         }
 
-        $appId = Get-MgDeviceAppMgtMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | ? Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -Title "Select Win32App you want to de-assign" -PassThru | select -ExpandProperty Id
+        $appId = Get-MgDeviceAppManagementMobileApp -Filter "isof('microsoft.graph.win32LobApp')" -ExpandProperty Assignments | ? Assignments | select DisplayName, Id, @{n = 'Assignments'; e = { _assignments $_.Assignments | Sort-Object } } | Out-GridView -Title "Select Win32App you want to de-assign" -PassThru | select -ExpandProperty Id
         if (!$appId) { throw "You haven't selected any app" }
     }
 
@@ -8749,6 +8868,10 @@ function Upload-IntuneAutopilotHash {
 
     By default current date.
 
+    .PARAMETER skipSync
+    Skip final autopilot database sync step.
+    It can cause throttling error message if invoked too many times in the short time period.
+
     .EXAMPLE
     Upload-IntuneAutopilotHash -thisDevice -ownerUPN johnd@contoso.com -Verbose
 
@@ -8773,6 +8896,64 @@ function Upload-IntuneAutopilotHash {
 
     Uploads device with specified serial number and hash (retrieved from SCCM database) into Intune Autopilot. Owner will be empty but hostname will be filled with value from SCCM database (ni-20-ntb).
 
+    .EXAMPLE
+    $domain = "KontentAI.onmicrosoft.com"
+
+    #region functions
+    function _getUserProperty {
+        param ($userGUID)
+        # alvao tabulky atd https://doc.alvao.com/support/doc/en/alvao_10_2/alvao_asset_management/implementation/customization/database.aspx#V_Query.Node
+        $sql = @"
+SELECT `"Object name`" as Name, `"Object kind`" as Class, `"Inventory number`" as ID, `"Warranty expiration`" as Warranty, `"BIOS serial number`" as SrvTag
+FROM Query.ObjectEnu WHERE `"Object id`" IN (
+    Select A.intNodeId
+    FROM tblNode AS A INNER JOIN
+    tblNode AS B ON B.intNodeId = A.lintParentId
+    WHERE B.txtLDAPGUID = '$userGUID'
+    )
+"@
+        $result = Invoke-SQL -dataSource $_AlvaoDBServer -database alvao -sqlCommand $sql
+        # bez ulozeni do promenne nefungovalo vypsani
+        # odeberu inventarni cislo z Name
+        # oriznu datum
+        $result = $result | select @{n = "Name"; e = { ($_.Name).Substring(0, (($_.Name).LastIndexOf(","))) } }, Class, ID, @{n = "Warranty"; e = { ($_.Warranty -split " ")[0] } }, SrvTag
+        $result
+    }
+
+    function _getDirectReports {
+        param ($samAccountName)
+
+        $currUser = (Get-ADUser $samAccountName -Properties title, Manager, SamAccountName, DisplayName, directreports, Office , Department)
+        Write-Verbose "$($currUser.DisplayName) [$($currUser.SamAccountName)] ($($currUser.title))"
+        $currUser | select *, @{Name = 'UPN'; Expression = { $_.SamAccountName + "@$domain" } }, @{Name = "Manager"; E = { (Get-ADUser $_.Manager).SamAccountName + "@$domain" } } -ExcludeProperty Manager
+        $currUser | sort | select -ExpandProperty directreports | sort | foreach { _getDirectReports $_ }
+    }
+    #endregion functions
+
+    $kontentUser = _getDirectReports "BernardusO"
+
+    $allHashes = @()
+
+    foreach ($user in $kontentUser) {
+        _getUserProperty $user.ObjectGUID | ? { $_.Class -eq "Computer/notebook" -and $_.Name -match "^n" } | select -ExpandProperty Name | % {
+            $pc = $_
+            "$($user.DisplayName) - $pc"
+            $autopilotHash = Get-CMAutopilotHash -computerName $pc
+            $autopilotHash = $autopilotHash | select *, @{n = 'OwnerUPN'; e = { $_.Owner + "@" + $domain } }
+
+            if ($autopilotHash) {
+                $allHashes += $autopilotHash
+            } else {
+                Write-Error "$pc is missing autopilot hash in SCCM"
+            }
+        }
+    }
+
+    Upload-IntuneAutopilotHash -psobject $allHashes -groupTag "migrated"
+
+
+    Retrieve device hashes of selected users (from SCCM database) and upload them into Intune Autopilot.
+
     .NOTES
     Inspired by https://www.manishbangia.com/import-autopilot-devices-sccm-sqlquery/ and https://www.powershellgallery.com/packages/Upload-WindowsAutopilotDeviceInfo/1.0.0/Content/Upload-WindowsAutopilotDeviceInfo.ps1
 
@@ -8791,7 +8972,9 @@ function Upload-IntuneAutopilotHash {
 
         [parameter(Mandatory = $false, HelpMessage = "Specify the order identifier, e.g. 'Purchase<ID>'.")]
         [ValidateNotNullOrEmpty()]
-        [string] $groupTag = (Get-Date -Format "dd.MM.yyyy")
+        [string] $groupTag = (Get-Date -Format "dd.MM.yyyy"),
+
+        [switch] $skipSync
     )
 
     if ($psObject) {
@@ -8808,7 +8991,7 @@ function Upload-IntuneAutopilotHash {
                 throw "PSObject object doesn't contain mandatory property HardwareHash"
             }
         }
-    } else {
+    } elseif ($thisDevice) {
         # gather this device hash data
         if (! ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
             throw "You don't have administrator rights"
@@ -8817,11 +9000,13 @@ function Upload-IntuneAutopilotHash {
         Write-Verbose "Gather device hash data of the local machine"
         $HardwareHash = (Get-CimInstance -Namespace "root/cimv2/mdm/dmmap" -Class "MDM_DevDetail_Ext01" -Filter "InstanceID='Ext' AND ParentID='./DevDetail'" -Verbose:$false).DeviceHardwareData
         $SerialNumber = (Get-CimInstance -ClassName "Win32_BIOS" -Verbose:$false).SerialNumber
-        [PSCustomObject]$psObject = @{
+        $psObject = [PSCustomObject]@{
             SerialNumber = $SerialNumber
             HardwareHash = $HardwareHash
             Hostname     = $env:COMPUTERNAME
         }
+    } else {
+        throw "Undefined state"
     }
 
     Connect-MgGraph -NoWelcome
@@ -8834,6 +9019,14 @@ function Upload-IntuneAutopilotHash {
     Write-Host "Upload Autopilot hash(es)" -ForegroundColor Cyan
     foreach ($autopilotItem in $psObject) {
         "Processing $($autopilotItem.SerialNumber)"
+
+        #FIXME hack!!!!
+        if ($autopilotItem.serialNumber -match "GLKF0X2") {
+            $failedUpload += $autopilotItem.SerialNumber
+            Write-Warning "Preskakuji GLKF0X2 NJ-34-NTB protoze se nechce nahrat...TODO!"
+            "https://docs.microsoft.com/en-us/troubleshoot/mem/intune/import-windows-autopilot-device-csv-files-errors"
+            continue
+        }
 
         # Construct hash table for new Autopilot device identity and convert to JSON
         Write-Verbose "Constructing required JSON body based upon parameter input data for device hash upload"
@@ -8926,14 +9119,18 @@ function Upload-IntuneAutopilotHash {
                         continue
                     }
 
-                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname
+                    Set-AutopilotDeviceName -id $deviceId -computerName $autopilotItem.Hostname -skipSync
                     break
                 }
             }
         }
+
+        if (!$skipSync) {
+            Invoke-AutopilotSync
+        }
     }
 }
 
-Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceComplianceStatus, Get-IntuneDeviceHardware, Get-IntuneDeviceOnDemandProactiveRemediationStatus, Get-IntuneDiscoveredApp, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationResult, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
+Export-ModuleMember -function Compare-IntuneSecurityBaseline, ConvertFrom-MDMDiagReport, ConvertFrom-MDMDiagReportXML, Get-BitlockerEscrowStatusForAzureADDevices, Get-ClientIntunePolicyResult, Get-HybridADJoinStatus, Get-IntuneAppInstallSummaryReport, Get-IntuneAuditEvent, Get-IntuneConfPolicyAssignmentSummaryReport, Get-IntuneDeviceAutopilotHashViaRemediation, Get-IntuneDeviceComplianceStatus, Get-IntuneDeviceHardware, Get-IntuneDeviceOnDemandProactiveRemediationStatus, Get-IntuneDiscoveredApp, Get-IntuneEnrollmentStatus, Get-IntuneLog, Get-IntuneLogRemediationScriptData, Get-IntuneLogWin32AppData, Get-IntuneLogWin32AppReportingResultData, Get-IntuneOverallComplianceStatus, Get-IntunePolicy, Get-IntuneRemediationResult, Get-IntuneRemediationScriptLocally, Get-IntuneReport, Get-IntuneScriptContentLocally, Get-IntuneScriptLocally, Get-IntuneWin32AppLocally, Get-MDMClientData, Get-UserSIDForUserAzureID, Invoke-IntuneCommand, Invoke-IntuneRemediationOnDemand, Invoke-IntuneScriptRedeploy, Invoke-IntuneWin32AppAssignment, Invoke-IntuneWin32AppRedeploy, Invoke-MDMReenrollment, Invoke-ReRegisterDeviceToIntune, New-IntuneRemediation, Remove-IntuneRemediation, Remove-IntuneWin32AppAssignment, Reset-HybridADJoin, Reset-IntuneEnrollment, Search-IntuneAccountPolicyAssignment, Upload-IntuneAutopilotHash
 
 Export-ModuleMember -alias Assign-IntuneWin32App, Deassign-IntuneWin32App, Get-IntuneAccountPolicyAssignment, Get-IntuneClientPolicyResult, Get-IntuneJoinStatus, Get-IntunePolicyResult, Invoke-IntuneEnrollmentRepair, Invoke-IntuneEnrollmentReset, Invoke-IntuneOnDemandRemediation, Invoke-IntuneReenrollment, Invoke-IntuneRemediationScriptOnDemand, Invoke-IntuneScriptRedeployLocally, Invoke-IntuneWin32AppRedeployLocally, ipresult, Repair-IntuneEnrollment, Reset-IntuneJoin, Search-IntuneAccountAppliedPolicy, Unassign-IntuneWin32App

@@ -34,8 +34,34 @@
     .PARAMETER dontAddRequestId
     Switch to avoid adding extra 'RequestId' property to the "beautified" results.
 
+    .PARAMETER dontFollowNextLink
+    Switch to avoid following nextLink urls in case of paginated results.
+    By default nextLink urls are followed and all results are returned.
+    Useful if you are only interested in the first page of results or using top filter to limit the number of returned objects (even if you use top, nextlink will be present if there are more results available!).
+
+    .PARAMETER separateErrors
+    Switch to return batch request errors one by one instead of all at once.
+
     .EXAMPLE
-    $batchRequest = @((New-GraphBatchRequest -Url "applications"), (New-GraphBatchRequest -Url "servicePrincipals"))
+    [System.Collections.Generic.List[object]] $batchRequest = @()
+
+    $batchRequest.Add((New-GraphBatchRequest -Url "applications" -id "app"))
+    $batchRequest.Add((New-GraphBatchRequest -Url "servicePrincipals" -id "sp"))
+    $batchRequest.Add((New-GraphBatchRequest -Url "users" -id "user"))
+    $batchRequest.Add((New-GraphBatchRequest -Url "groups" -id "group"))
+
+    $allResults = Invoke-GraphBatchRequest -batchRequest $batchRequest
+
+    $servicePrincipalList = $allResults | ? RequestId -eq "sp"
+    $applicationList = $allResults | ? RequestId -eq "app"
+    $userList = $allResults | ? RequestId -eq "user"
+    $groupList = $allResults | ? RequestId -eq "group"
+
+    Creates batch request object (using New-GraphBatchRequest) for getting all Azure applications, Service Principals, Users and Groups & run it.
+    The result will be beautified so you get the all results in one array, where each object is enhanced by RequestId property to easily identify the source request.
+
+    .EXAMPLE
+    $batchRequest = @((New-GraphBatchRequest -Url "applications" -id "app"), (New-GraphBatchRequest -Url "servicePrincipals" -id "sp"))
 
     Invoke-GraphBatchRequest -batchRequest $batchRequest -dontBeautifyResult
 
@@ -61,7 +87,7 @@
     $servicePrincipalList = $allResults | ? RequestId -eq "sp"
     $applicationList = $allResults | ? RequestId -eq "app"
 
-    Creates batch request object for getting all Azure applications and Service Principals & run it.
+    Creates batch request object (without using New-GraphBatchRequest) for getting all Azure applications and Service Principals & run it.
     The result will be beautified so you get the all results in one array, where each object is enhanced by RequestId property to easily identify the source request.
 
     .EXAMPLE
@@ -78,8 +104,39 @@
 
     Creates batch request object containing dynamically generated urls for every id in the $deviceId array & run it.
 
+    .EXAMPLE
+    New-GraphBatchRequest -url "auditLogs/signIns?`$top=1&`$filter=(ServicePrincipalId eq '1be6405d-592d-42dc-9c02-cce874143254') and (signInEventTypes/any(t: t eq 'managedIdentity'))" | Invoke-GraphBatchRequest -graphVersion beta -dontFollowNextLink
+
+    Get just the newest sign-in log entry for the given service principal id (managed identity).
+    The result is paginated, but since we are interested just in the newest entry, we don't need to follow the nextLink url.
+
+    .EXAMPLE
+    $deviceId = 'ef1a3624-1fae-4961-b9a2-079db366d1ea', '526c2aff-c5e0-49e5-a1fa-36fbf1c3c414'
+
+    New-GraphBatchRequest -url "/deviceManagement/managedDevices/<placeholder>" -placeholder $deviceId | Invoke-GraphBatchRequest -separateErrors -ErrorAction SilentlyContinue -ErrorVariable requestErrors
+
+    $requestErrors | % {
+        if ($_.Exception.Source -eq "BatchRequest") {
+            # batch request errors
+
+            if ($_.TargetObject.response.status -in 404) {
+                Write-Verbose "Ignoring request with id '$($_.TargetObject.request.id)' ($($_.TargetObject.request.url)) as it returned status code $($_.TargetObject.response.status)"
+            } else {
+                throw $_
+            }
+        } else {
+            # other non-batch-related errors
+
+            throw $_
+        }
+    }
+
+    Invoke batch request & run it & process errors.
+
     .NOTES
     https://learn.microsoft.com/en-us/graph/json-batching
+
+    Returned errors contain 'TargetObject' property with original request and response objects for easier troubleshooting.
     #>
 
     [CmdletBinding()]
@@ -92,7 +149,11 @@
 
         [switch] $dontBeautifyResult,
 
-        [switch] $dontAddRequestId
+        [switch] $dontAddRequestId,
+
+        [switch] $dontFollowNextLink,
+
+        [switch] $separateErrors
     )
 
     begin {
@@ -133,6 +194,30 @@
                 [System.Collections.ArrayList] $requestChunk
             )
 
+            function Is-JSON {
+                # to avoid errors when trying to convert non-json strings using ConvertFrom-Json
+                # such errors would be captured to ErrorVariable and would interfere with the error handling logic
+
+                [CmdletBinding()]
+                param (
+                    [string] $InputString
+                )
+
+                if ([string]::IsNullOrWhiteSpace($InputString)) {
+                    return $false
+                }
+
+                switch -Regex ($InputString.TrimStart()) {
+                    '^"'    { return "String" }
+                    '^{'    { return "Object" }
+                    '^\['    { return "Array" }
+                    '^true|^false' { return "Boolean" }
+                    '^null' { return "Null" }
+                    '^-?\d' { return "Number" }
+                    default { return $false }
+                }
+            }
+
             $duplicityId = $requestChunk.id | Group-Object | ? { $_.Count -gt 1 }
             if ($duplicityId) {
                 throw "Batch requests must have unique ids. Id(s): '$(($duplicityId.Name | select -Unique) -join ', ')' is there more than once"
@@ -153,7 +238,7 @@
 
             Write-Verbose $body
 
-            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body $body -ContentType "application/json" -OutputType Json | ConvertFrom-Json | % {
+            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body $body -ContentType "application/json" -OutputType PSObject | % {
                 $responses = $_.responses
 
                 #region return the output
@@ -216,7 +301,9 @@
                 }
                 #endregion return the output
 
-                # check responses status
+                #region handle the responses based on their status code
+                # load the next pages, retry throttled requests, repeat failed requests, ...
+
                 $failedBatchJob = [System.Collections.Generic.List[Object]]::new()
 
                 foreach ($response in $responses) {
@@ -227,7 +314,13 @@
                         if ($response.body.'@odata.nextLink') {
                             # paginated (get remaining results by query returned NextLink URL)
 
-                            Write-Verbose "Batch result for request '$($response.Id)' is paginated. Nextlink will be processed in the next batch"
+                            if ($dontFollowNextLink) {
+                                Write-Verbose "Batch result for request '$($response.Id)' is paginated. But 'dontFollowNextLink' switch is set, hence nextLink will not be followed"
+
+                                continue
+                            } else {
+                                Write-Verbose "Batch result for request '$($response.Id)' is paginated. Nextlink will be processed in the next batch"
+                            }
 
                             $relativeNextLink = $response.body.'@odata.nextLink' -replace [regex]::Escape("https://graph.microsoft.com/$graphVersion/")
                             # make a request object copy, so I can modify it without interfering with the original object
@@ -265,7 +358,7 @@
 
                         $problematicBatchRequest = $requestChunk | ? Id -EQ $response.Id
 
-                        Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Id)', Url:'$($problematicBatchRequest.Url)' had internal error '$($problematicBatchRequest.Status)', hence will be repeated"
+                        Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Id)', Url:'$($problematicBatchRequest.Url)' had internal error '$($response.body.error.message)', Code: $($response.Status), hence will be repeated"
 
                         $extraRequestChunk.Add($problematicBatchRequest)
                     } else {
@@ -278,14 +371,66 @@
                             $innerErrorText = " (" + $response.body.error.innerError.code + ")"
                         }
 
-                        $failedBatchJob.Add("- Id: '$($response.Id)', Url:'$($failedBatchRequest.Url)', StatusCode: '$($response.Status)', Error: '$($response.body.error.message)'$innerErrorText")
+                        $errorText = $null
+                        if ($response.body.error.message) {
+                            # sometimes the error message is not a plain string, but a JSON
+                            if (Is-JSON -InputString $response.body.error.message) {
+                                $errorText = $response.body.error.message | ConvertFrom-Json -ErrorAction Stop
+
+                                if ($errorText.Error.Message) {
+                                    $errorText = $errorText.Error.Message + "($($response.body.error.code))"
+                                } elseif ($errorText.Message) {
+                                    $errorText = $errorText.Message + " ($($response.body.error.code))"
+                                } else {
+                                    $errorText = $response.body.error.code
+                                }
+                            } else {
+                                # not a JSON, just a string
+                                $errorText = $response.body.error.message
+                            }
+                        } elseif ($response.body.error.code) {
+                                $errorText = $response.body.error.code
+                        } else {
+                            # no error message, just the status code
+                        }
+
+                        $failedBatchJob.Add(
+                            @{
+                                Id         = $response.Id
+                                Url        = $failedBatchRequest.Url
+                                StatusCode = $response.Status
+                                Error      = "$($errorText)$innerErrorText"
+                                Object     = [ordered]@{
+                                    request  = $failedBatchRequest
+                                    response = $response
+                                }
+                            }
+                        )
                     }
                 }
 
-                # exit if critical failure occurred
+                # return error if critical failure occurred
                 if ($failedBatchJob) {
-                    Write-Error "Following batch request(s) failed:`n`n$($failedBatchJob -join "`n")"
+                    if ($separateErrors) {
+                        # output errors one by one, so you can handle them separately if needed
+                        $failedBatchJob | % {
+                            #TIP only the first one will be returned if $ErrorActionPreference is set to stop!
+                            $errorMsg = "`nFailed batch request:`n$(" - Id: '$($_.Id)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'`n`n" -join "`n")"
+                            $exception = New-Object System.InvalidOperationException $errorMsg
+                            $exception.Source = "BatchRequest"
+
+                            Write-Error -ErrorRecord (New-Object System.Management.Automation.ErrorRecord($exception, $null, "InvalidOperation", $_.Object))
+                        }
+                    } else {
+                        #TIP all errors at once, because batch can contain non-related requests and if errorAction is set to stop, only the first error would be returned, which can be confusing
+                        $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | % { " - Id: '$($_.Id)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'" -join "`n" }) -join "`n`n")"
+                        $exception = New-Object System.InvalidOperationException $errorMsg
+                        $exception.Source = "BatchRequest"
+
+                        Write-Error -ErrorRecord (New-Object System.Management.Automation.ErrorRecord($exception, $null, "InvalidOperation", $failedBatchJob.Object))
+                    }
                 }
+                #endregion handle the responses based on their status code
             }
 
             $end = Get-Date
@@ -317,7 +462,9 @@
                 # process requests that need to be repeated (paginated, failed on remote server,...)
                 if ($extraRequestChunk) {
                     Write-Warning "Processing $($extraRequestChunk.count) paginated or server-side-failed request(s)"
-                    Invoke-GraphBatchRequest -batchRequest $extraRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
+
+                    $PSBoundParameters['batchRequest'] = $extraRequestChunk
+                    Invoke-GraphBatchRequest @PSBoundParameters
 
                     $extraRequestChunk.Clear()
                 }
@@ -325,8 +472,11 @@
                 # process throttled requests
                 if ($throttledRequestChunk) {
                     Write-Warning "Processing $($throttledRequestChunk.count) throttled request(s) with $script:retryAfter seconds wait time"
+
                     Start-Sleep -Seconds $script:retryAfter
-                    Invoke-GraphBatchRequest -batchRequest $throttledRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
+
+                    $PSBoundParameters['batchRequest'] = $throttledRequestChunk
+                    Invoke-GraphBatchRequest @PSBoundParameters
 
                     $throttledRequestChunk.Clear()
                 }
@@ -344,14 +494,18 @@
             # process requests that need to be repeated (paginated, failed on remote server,...)
             if ($extraRequestChunk) {
                 Write-Warning "Processing $($extraRequestChunk.count) paginated or server-side-failed request(s)"
-                Invoke-GraphBatchRequest -batchRequest $extraRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
+                $PSBoundParameters['batchRequest'] = $extraRequestChunk
+                Invoke-GraphBatchRequest @PSBoundParameters
             }
 
             # process throttled requests
             if ($throttledRequestChunk) {
                 Write-Warning "Processing $($throttledRequestChunk.count) throttled request(s) with $script:retryAfter seconds wait time"
+
                 Start-Sleep -Seconds $script:retryAfter
-                Invoke-GraphBatchRequest -batchRequest $throttledRequestChunk -graphVersion $graphVersion -dontBeautifyResult:$dontBeautifyResult
+
+                $PSBoundParameters['batchRequest'] = $throttledRequestChunk
+                Invoke-GraphBatchRequest @PSBoundParameters
             }
         }
     }

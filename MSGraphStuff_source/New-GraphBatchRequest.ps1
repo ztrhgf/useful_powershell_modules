@@ -44,6 +44,8 @@
     Can only be specified when 'url' parameter contains just one value.
     If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
+    Cannot contain "\" character, because Invoke-MgRestMethod used for sending request automatically tries to convert the returned JSON back and it fails because of this special character.
+
     By default random-generated-number.
 
     .PARAMETER placeholderAsId
@@ -126,7 +128,7 @@
         [string] $method = "GET",
 
         [Parameter(Mandatory = $true)]
-        [Alias("urlWithPlaceholder")]
+        [Alias("urlWithPlaceholder", "uri")]
         [string[]] $url,
 
         $placeholder,
@@ -136,6 +138,13 @@
         [hashtable] $body,
 
         [Parameter(ParameterSetName = "Id")]
+        [ValidateScript( {
+                if ($_ -like "*\*") {
+                    throw "Id ($_) can't contain '\' character!"
+                } else {
+                    $true
+                }
+            })]
         [string] $id,
 
         [Parameter(ParameterSetName = "PlaceholderAsId")]
@@ -161,6 +170,14 @@
 
     if ($placeholderAsId -and $placeholder -and @($url).count -gt 1) {
         throw "'placeholderAsId' parameter cannot be used with multiple urls"
+    }
+
+    if ($placeholderAsId) {
+        $placeholder | % {
+            if ($_ -like "*\*") {
+                throw "'placeholderAsId' parameter cannot be used when 'placeholder' contains '\' character (value: '$_')!"
+            }
+        }
     }
 
     # method is case sensitive!

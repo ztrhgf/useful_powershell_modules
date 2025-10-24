@@ -8,7 +8,7 @@
     .DESCRIPTION
     Function for getting Graph API permissions (scopes) that are needed to run selected code.
 
-    All official Graph SDK commands (*-Mg*) AND commands making direct Graph API calls (Invoke-MsGraphRequest, Invoke-RestMethod, Invoke-WebRequest and their aliases) are extracted using 'Get-CodeDependency' function (DependencySearch module).
+    All official Graph SDK commands (*-Mg*) AND commands making direct Graph API calls (Invoke-MgGraphRequest, Invoke-MsGraphRequest, Invoke-RestMethod, Invoke-WebRequest and their aliases) are extracted using 'Get-CodeDependency' function (DependencySearch module).
     Permissions required to use these commands are retrieved using official 'Find-MgGraphCommand' command then.
 
     By default not all found permissions are returned, but just filtered subset, to make the output more readable and support principle of least privilege. Check parameter 'dontFilterPermissions' help for more details.
@@ -103,7 +103,7 @@
     }
 
     # commands that can be used to directly call Graph API
-    $webCommandList = "Invoke-MgGraphRequest", "Invoke-MsGraphRequest", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget"
+    $webCommandList = "New-GraphBatchRequest", "Invoke-MgGraphRequest", "Invoke-MsGraphRequest", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget"
 
     $param = @{
         scriptPath                   = $scriptPath
@@ -149,11 +149,22 @@
 
                 #region get called URI
                 if ($mgCommand -in "Invoke-MgGraphRequest", "Invoke-MsGraphRequest") {
-                    # these commands should have call Graph API, hence more relaxed search for Graph URI
+                    # these commands should call Graph API, hence more relaxed search for Graph URI
                     $uri = $invocationText -split " " | ? { $_ -like "*graph.microsoft.com/*" -or $_ -like "*v1.0/*" -or $_ -like "*beta/*" -or $_ -like "*/*" }
                 } elseif ($mgCommand -in "Invoke-RestMethod", "irm", "Invoke-WebRequest", "curl", "iwr", "wget") {
                     # these commands can, but don't have to call Graph API, hence more restrictive search for Graph URI
                     $uri = $invocationText -split " " | ? { $_ -like "*graph.microsoft.com/*" -or $_ -like "*v1.0/*" -or $_ -like "*beta/*" }
+                } elseif ($mgCommand -eq "New-GraphBatchRequest") {
+                    # this command should call Graph API, hence more relaxed search for Graph URI
+                    $uri = $invocationText -split " " | ? { $_ -like "*/*" }
+
+                    if (!$uri) {
+                        # try to extract URI from -url parameter
+                        $urlParamIndex = ($invocationText -split "\s+") | ? { $_ -like "-u*" } | % { [Array]::IndexOf(($invocationText -split " "), $_) }
+                        if ($urlParamIndex -ne -1) {
+                            $uri = ($invocationText -split "\s+")[$urlParamIndex + 1]
+                        }
+                    }
                 } else {
                     throw "$mgCommand is in `$webCommandList, but missing elseif statement in the function code. Fix it"
                 }
@@ -176,8 +187,10 @@
                 $uri = $uri -replace "`"|'"
                 # get rid of filter section
                 $uri = ($uri -split "\?")[0]
-                # replace variables for {id} placeholder (it is just guessing that user put variable int he url instead of ID)
+                # replace variables for {id} placeholder (it is just guessing that user put variable in the url instead of ID)
                 $uri = $uri -replace "\$[^/]+", "{id}"
+                # replace <placeholder> (used by New-GraphBatchRequest) for {id} placeholder
+                $uri = $uri -replace "<placeholder>", "{id}"
                 #endregion convert called URI to searchable form
 
                 # find requested method
@@ -188,6 +201,7 @@
                 }
 
                 # find requested api version
+                #TIP unfortunately for New-GraphBatchRequest this won't work, because api version is selected only when Invoke-GraphBatchRequest is used
                 if ($uri -like "*beta*") {
                     $apiVersion = "beta"
                 } else {

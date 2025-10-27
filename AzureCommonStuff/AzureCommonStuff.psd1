@@ -124,6 +124,9 @@ PrivateData = @{
 
         # ReleaseNotes of this module
         ReleaseNotes = '
+            1.0.12
+                FIXED
+                    New-AzureBatchRequest - possible to use "placeholder" with "name" parameter now
             1.0.11
                 CHANGED
                     Invoke-AzureBatchRequest - new parameter "separateErrors"

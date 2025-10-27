@@ -49,8 +49,8 @@
 
     .PARAMETER name
     Name (Id) of the request.
-    Can only be specified only when 'url' parameter contains one value.
-    If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
+    If created request will be invoked via 'Invoke-AzureBatchRequest' function, this Id will be saved in the returned object's 'RequestName' property.
+    If 'placeholder' parameter is also specified, suffix "_<randomNumber>" will be added to each generated request id (a.k.a final ID will be: <name>_<randomNumber>). This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     By default random-generated-number.
 
@@ -132,24 +132,27 @@
         [Alias("urlWithPlaceholder", "uri")]
         [string[]] $url,
 
-        [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
         $placeholder,
 
         [hashtable] $requestHeaderDetails,
 
         [hashtable] $content,
 
-        [Parameter(ParameterSetName = "Name")]
+        [Parameter(ParameterSetName = "Id")]
         [Alias("id")]
         [string] $name,
 
-        [Parameter(ParameterSetName = "DynamicUrl")]
+        [Parameter(ParameterSetName = "PlaceholderAsId")]
         [switch] $placeholderAsId
     )
 
     #region validity checks
     if ($name -and @($url).count -gt 1) {
         throw "'name' parameter cannot be used with multiple urls"
+    }
+
+    if ($name -and $placeholderAsId) {
+        throw "'name' and 'placeholderAsId' parameters cannot be used together"
     }
 
     if ($placeholder -and $url -notlike "*<placeholder>*") {
@@ -208,12 +211,12 @@
         }
 
         if ($name) {
-            if ($placeholder -and $placeholder.count -gt 1) {
+            if ($placeholder) {
                 $property.Name = ($name + "_" + (Get-Random))
             } else {
                 $property.Name = $name
             }
-        } elseif ($placeholderAsId -and $placeholder) {
+        } elseif ($placeholderAsId) {
             $property.Name = @($placeholder)[$index]
         } else {
             $property.Name = Get-Random

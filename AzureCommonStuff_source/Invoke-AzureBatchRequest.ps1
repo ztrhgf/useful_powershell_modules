@@ -25,6 +25,10 @@
     .PARAMETER dontAddRequestName
     Switch to avoid adding extra 'RequestName' property to the "beautified" results.
 
+    .PARAMETER separateErrors
+    Switch to return batch request errors one by one instead of all at once.
+    Moreover returned errors will contain 'TargetObject' property with original request and response objects for easier troubleshooting.
+
     .EXAMPLE
     $batch = (
         @{
@@ -58,6 +62,54 @@
 
     Creates batch request object containing dynamically generated urls for every id in the $subscriptionId array & run it.
 
+    .EXAMPLE
+    $subscriptionId = (Get-AzSubscription | ? State -EQ 'Enabled').Id
+
+    New-AzureBatchRequest -url "https://management.azure.com/subscriptions/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01" -placeholder $subscriptionId | Invoke-AzureBatchRequest -separateErrors -ErrorAction SilentlyContinue -ErrorVariable requestErrors
+
+    $requestErrors | % {
+        if ($_.Exception.Source -eq "BatchRequest") {
+            # batch request errors
+
+            if ($_.TargetObject.response.status -in 404) {
+                Write-Verbose "Ignoring request with id '$($_.TargetObject.request.id)' ($($_.TargetObject.request.url)) as it returned status code $($_.TargetObject.response.status)"
+            } else {
+                throw $_
+            }
+        } else {
+            # other non-batch-related errors
+
+            throw $_
+        }
+    }
+
+    Creates batch request object containing dynamically generated urls for every id in the $subscriptionId array & run it & process errors.
+
+    .EXAMPLE
+    [System.Collections.Generic.List[object]] $batchRequest = @()
+    $queryUrl = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01"
+
+    $diskQuery = @"
+ExtensibilityResources
+    | where type =~ "microsoft.azurestackhci/virtualmachineinstances"
+"@
+    $batchRequest.add((New-AzureBatchRequest -method POST -url $queryUrl -content @{ query = $diskQuery } -name "diskInfo" ))
+
+    $nicQuery = @"
+resources
+| where type =~ "Microsoft.AzureStackHCI/networkinterfaces" and
+    properties.provisioningState =~ "succeeded"
+"@
+
+    $batchRequest.add((New-AzureBatchRequest -method POST -url $queryUrl -content @{ query = $nicQuery } -name "nicInfo"))
+
+    $batchResult = Invoke-AzureBatchRequest -batchRequest $batchRequest
+
+    $vmListDiskInfo = $batchResult | ? RequestName -EQ "diskInfo"
+    $vmListNicInfo = $batchResult | ? RequestName -EQ "nicInfo"
+
+    Invoking two KQL queries in a batch to get Azure Stack HCI VM disk and NIC information.
+
     .NOTES
     Uses undocumented API https://github.com/Azure/azure-sdk-for-python/issues/9271 :).
     #>
@@ -70,7 +122,9 @@
         [switch] $dontBeautifyResult,
 
         [Alias("dontAddRequestId")]
-        [switch] $dontAddRequestName
+        [switch] $dontAddRequestName,
+
+        [switch] $separateErrors
     )
 
     begin {
@@ -85,11 +139,11 @@
         # api batch requests are limited to 20 requests
         $chunkSize = 20
         # buffer to hold chunks of requests
-        $requestChunk = [System.Collections.ArrayList]::new()
+        $requestChunk = [System.Collections.Generic.List[Object]]::new()
         # paginated or remotely failed requests that should be processed too, to get all the results
-        $extraRequestChunk = [System.Collections.ArrayList]::new()
+        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
         # throttled requests that have to be repeated after given time
-        $throttledRequestChunk = [System.Collections.ArrayList]::new()
+        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
 
         function _processChunk {
             <#
@@ -104,7 +158,7 @@
             [CmdletBinding()]
             param (
                 [Parameter(Mandatory = $true)]
-                [System.Collections.ArrayList] $requestChunk
+                [System.Collections.Generic.List[Object]] $requestChunk
             )
 
             $duplicityId = $requestChunk | Select-Object -ExpandProperty Name | Group-Object | ? { $_.Count -gt 1 }
@@ -198,7 +252,7 @@
                         # replace original URL with the nextLink
                         $nextLinkRequest.Url = $nextLink
                         # add the request for later processing
-                        $null = $extraRequestChunk.Add($nextLinkRequest)
+                        $extraRequestChunk.Add($nextLinkRequest)
                     }
 
                     $skipToken = $null
@@ -220,7 +274,7 @@
                             $nextPageRequest.content | Add-Member -MemberType NoteProperty -Name Options -Value @{'$skipToken' = $skipToken }
                         }
                         # add the request for later processing
-                        $null = $extraRequestChunk.Add($nextPageRequest)
+                        $extraRequestChunk.Add($nextPageRequest)
                     }
                 } elseif ($response.httpStatusCode -eq 429) {
                     # throttled (will be repeated after given time)
@@ -233,11 +287,11 @@
                     if ($jobRetryAfter -eq 0) {
                         # request can be repeated without any delay
                         #TIP for performance reasons adding to $extraRequestChunk batch (to avoid invocation of unnecessary batch job)
-                        $null = $extraRequestChunk.Add($throttledBatchRequest)
+                        $extraRequestChunk.Add($throttledBatchRequest)
                     } else {
                         # request can be repeated after delay
                         # add the request for later processing
-                        $null = $throttledRequestChunk.Add($throttledBatchRequest)
+                        $throttledRequestChunk.Add($throttledBatchRequest)
                     }
 
                     # get highest retry-after wait time
@@ -264,6 +318,10 @@
                             Url        = $failedBatchRequest.Url
                             StatusCode = $response.httpStatusCode
                             Error      = $response.content.error.message
+                            Object     = [ordered]@{
+                                request  = $failedBatchRequest
+                                response = $response
+                            }
                         }
                     )
                 }
@@ -271,9 +329,26 @@
 
             # exit if critical failure occurred
             if ($failedBatchJob) {
-                Write-Error "`nFollowing batch request(s) failed:`n$(($failedBatchJob | % {
-                    "Name: $($_.Name)", " - Url: $($_.Url)", " - StatusCode: $($_.StatusCode)", " - Error: $($_.Error)" -join "`n"
-                }) -join "`n`n")"
+                if ($separateErrors) {
+                    # output errors one by one, so you can handle them separately if needed
+                    $failedBatchJob | % {
+                        #TIP only the first one will be returned if $ErrorActionPreference is set to stop!
+                        $errorMsg = "`nFailed batch request:`n$(" - Name: '$($_.Name)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'`n`n" -join "`n")"
+                        $exception = New-Object System.InvalidOperationException $errorMsg
+                        $exception.Source = "BatchRequest"
+
+                        Write-Error -ErrorRecord (New-Object System.Management.Automation.ErrorRecord($exception, $null, "InvalidOperation", $_.Object))
+                    }
+                } else {
+                    #TIP all errors at once, because batch can contain non-related requests and if errorAction is set to stop, only the first error would be returned, which can be confusing
+                    $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | % {
+                        " - Name: '$($_.Name)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'" -join "`n"
+                    }) -join "`n`n")"
+                    $exception = New-Object System.InvalidOperationException $errorMsg
+                    $exception.Source = "BatchRequest"
+
+                    Write-Error -ErrorRecord (New-Object System.Management.Automation.ErrorRecord($exception, $null, "InvalidOperation", $failedBatchJob.Object))
+                }
             }
             #endregion handle the responses based on their status code
 
@@ -291,13 +366,13 @@
                 throw "url '$_' has to be relative (without the whole 'https://management.azure.com' part) or absolute!"
             }
 
-            if ($_ -notlike "*/subscriptions/*" -and $_ -notlike "*/providers/Microsoft.Management/managementGroups/*" -and $_ -notlike "*/providers/Microsoft.ResourceGraph/*" -and $_ -notlike "*/resources/*" -and $_ -notlike "*/locations/*" -and $_ -notlike "*/tenants/*" -and $_ -notlike "*/bulkdelete/*") {
-                throw "url '$_' is not valid. Is should starts with:`n'/subscriptions/{subscriptionId}'`n'/providers/Microsoft.Management/managementGroups/{entityId}'`n'/providers/Microsoft.ResourceGraph/{action}'`n'/resources, /locations, /tenants, /bulkdelete'!"
+            if ($_ -notmatch "/subscriptions/|\?" -and $_ -notmatch "/providers/|\?" -and $_ -notmatch "/resources/|\?" -and $_ -notmatch "/locations/|\?" -and $_ -notmatch "/tenants/|\?" -and $_ -notmatch "/bulkdelete/|\?") {
+                throw "url '$_' is not valid. Is should starts with:`n/subscriptions, /providers, /resources, /locations, /tenants or /bulkdelete!"
             }
         }
 
         foreach ($request in $batchRequest) {
-            $null = $requestChunk.Add($request)
+            $requestChunk.Add($request)
 
             # check if the buffer has reached the required chunk size
             if ($requestChunk.count -eq $chunkSize) {

@@ -85,6 +85,10 @@ function Connect-PnPOnline2 {
         $credential = $null
     }
 
+    if (!(Get-Module Pnp.PowerShell) -and !(Get-Module Pnp.PowerShell -ListAvailable)) {
+        throw "Module Pnp.PowerShell is missing. Function $($MyInvocation.MyCommand) cannot continue"
+    }
+
     try {
         $existingConnection = Get-PnPConnection -ea Stop
     } catch {

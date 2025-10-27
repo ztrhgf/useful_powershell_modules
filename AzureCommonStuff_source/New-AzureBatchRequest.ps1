@@ -129,7 +129,7 @@
         [string] $method = "GET",
 
         [Parameter(Mandatory = $true)]
-        [Alias("urlWithPlaceholder")]
+        [Alias("urlWithPlaceholder", "uri")]
         [string[]] $url,
 
         [Parameter(Mandatory = $true, ParameterSetName = "DynamicUrl")]
@@ -197,8 +197,8 @@
             throw "url '$_' has to be in the relative (without the 'https://management.azure.com' prefix and starting with the '/') or absolute form!"
         }
 
-        if ($_ -notlike "*/subscriptions/*" -and $_ -notlike "*/providers/Microsoft.Management/managementGroups/*" -and $_ -notlike "*/providers/Microsoft.ResourceGraph/*" -and $_ -notlike "*/resources/*" -and $_ -notlike "*/locations/*" -and $_ -notlike "*/tenants/*" -and $_ -notlike "*/bulkdelete/*") {
-            throw "url '$_' is not valid. Is should starts with:`n'/subscriptions/{subscriptionId}'`n'/providers/Microsoft.Management/managementGroups/{entityId}'`n'/providers/Microsoft.ResourceGraph/{action}'`n'/resources, /locations, /tenants, /bulkdelete'!"
+        if ($_ -notmatch "/subscriptions/|\?" -and $_ -notmatch "/providers/|\?" -and $_ -notmatch "/resources/|\?" -and $_ -notmatch "/locations/|\?" -and $_ -notmatch "/tenants/|\?" -and $_ -notmatch "/bulkdelete/|\?") {
+            throw "url '$_' is not valid. Is should starts with:`n/subscriptions, /providers, /resources, /locations, /tenants or /bulkdelete!"
         }
         #endregion url validity checks
 

@@ -128,6 +128,31 @@ resources
     )
 
     begin {
+        #region flatten the batch request array
+        function ConvertTo-FlatArray {
+            # flattens input in case, that primitive(s) and array(s) are entered at the same time
+            [CmdletBinding()]
+            param (
+                [Parameter(Mandatory = $true)]
+                $inputArray
+            )
+
+            foreach ($item in $inputArray) {
+                if ($null -ne $item) {
+                    # recurse for arrays
+                    if ($item.gettype().BaseType -eq [System.Array]) {
+                        ConvertTo-FlatArray $item
+                    } else {
+                        # output non-arrays
+                        $item
+                    }
+                }
+            }
+        }
+
+        $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
+        #endregion flatten the batch request array
+
         if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
             Write-Verbose "Total number of requests to process is $($batchRequest.count)"
         }
@@ -161,14 +186,14 @@ resources
                 [System.Collections.Generic.List[Object]] $requestChunk
             )
 
-            $duplicityId = $requestChunk | Select-Object -ExpandProperty Name | Group-Object | ? { $_.Count -gt 1 }
+            $duplicityId = $requestChunk | Select-Object -ExpandProperty Name | Group-Object | Where-Object { $_.Count -gt 1 }
             if ($duplicityId) {
-                throw "Batch requests must have unique names. Name $(($duplicityId | select -Unique) -join ', ') is there more than once"
+                throw "Batch requests must have unique names. Name $(($duplicityId | Select-Object -Unique) -join ', ') is there more than once"
             }
 
             Write-Debug ($requestChunk | ConvertTo-Json)
 
-            Write-Verbose "Processing batch of $($requestChunk.count) request(s):`n$(($requestChunk | sort Url | % {" - $($_.Name) - $($_.Url)"} ) -join "`n")"
+            Write-Verbose "Processing batch of $($requestChunk.count) request(s):`n$(($requestChunk | Sort-Object Url | ForEach-Object {" - $($_.Name) - $($_.Url)"} ) -join "`n")"
 
             #region process given chunk of batch requests
             $start = Get-Date
@@ -207,16 +232,16 @@ resources
 
                     if ($response.content.value) {
                         # the result is in the 'value' property
-                        $response.content.value | select -Property $property
+                        $response.content.value | Select-Object -Property $property
                     } elseif ($response.content -and $noteProperty.Name -contains 'value') {
                         # the result is stored in 'value' property, but no results were returned, skipping
                     } elseif ($response.content -and $response.contentLength) {
                         # the result is in the 'content' property itself
                         if ($response.content.data -and $response.content.totalRecords -and $response.content.resultTruncated) {
                             # the result is in the 'data' property (Resource Graph KQL response)
-                            $response.content.data | select -Property $property
+                            $response.content.data | Select-Object -Property $property
                         } else {
-                            $response.content | select -Property $property
+                            $response.content | Select-Object -Property $property
                         }
                     } else {
                         # no results were returned, skipping
@@ -248,7 +273,7 @@ resources
                         Write-Verbose "Batch result for request '$($response.Name)' is paginated. Nextlink will be processed in the next batch"
 
                         # make a request object copy, so I can modify it without interfering with the original object
-                        $nextLinkRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                        $nextLinkRequest = $requestChunk | Where-Object Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
                         # replace original URL with the nextLink
                         $nextLinkRequest.Url = $nextLink
                         # add the request for later processing
@@ -262,7 +287,7 @@ resources
                         Write-Verbose "Batch result for request '$($response.Name)' is paginated (total records: $($response.content.totalRecords)). Request will be repeated with the returned `$skipToken"
 
                         # make a request object copy, so I can modify it without interfering with the original object
-                        $nextPageRequest = $requestChunk | ? Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                        $nextPageRequest = $requestChunk | Where-Object Name -EQ $response.Name | ConvertTo-Json -Depth 10 | ConvertFrom-Json
                         # set '$skipToken' option
                         if ($nextPageRequest.content.Options) {
                             if ($nextPageRequest.content.Options.'$skipToken') {
@@ -280,7 +305,7 @@ resources
                     # throttled (will be repeated after given time)
 
                     $jobRetryAfter = $response.Headers.'Retry-After'
-                    $throttledBatchRequest = $requestChunk | ? Name -EQ $response.Name
+                    $throttledBatchRequest = $requestChunk | Where-Object Name -EQ $response.Name
 
                     Write-Verbose "Batch request with Id: '$($throttledBatchRequest.Name)', Url:'$($throttledBatchRequest.Url)' was throttled, hence will be repeated after $jobRetryAfter seconds"
 
@@ -302,7 +327,7 @@ resources
                 } elseif ($response.httpStatusCode -in 500, 502, 503, 504) {
                     # some internal error on remote side (will be repeated)
 
-                    $problematicBatchRequest = $requestChunk | ? Name -EQ $response.Name
+                    $problematicBatchRequest = $requestChunk | Where-Object Name -EQ $response.Name
 
                     Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Name)', Url:'$($problematicBatchRequest.Url)' had internal error '$($response.httpStatusCode)', hence will be repeated"
 
@@ -310,7 +335,7 @@ resources
                 } else {
                     # failed
 
-                    $failedBatchRequest = $requestChunk | ? Name -EQ $response.Name
+                    $failedBatchRequest = $requestChunk | Where-Object Name -EQ $response.Name
 
                     $failedBatchJob.Add(
                         @{
@@ -331,7 +356,7 @@ resources
             if ($failedBatchJob) {
                 if ($separateErrors) {
                     # output errors one by one, so you can handle them separately if needed
-                    $failedBatchJob | % {
+                    $failedBatchJob | ForEach-Object {
                         #TIP only the first one will be returned if $ErrorActionPreference is set to stop!
                         $errorMsg = "`nFailed batch request:`n$(" - Name: '$($_.Name)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'`n`n" -join "`n")"
                         $exception = New-Object System.InvalidOperationException $errorMsg
@@ -341,7 +366,7 @@ resources
                     }
                 } else {
                     #TIP all errors at once, because batch can contain non-related requests and if errorAction is set to stop, only the first error would be returned, which can be confusing
-                    $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | % {
+                    $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | ForEach-Object {
                         " - Name: '$($_.Name)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'" -join "`n"
                     }) -join "`n`n")"
                     $exception = New-Object System.InvalidOperationException $errorMsg
@@ -361,7 +386,7 @@ resources
 
     process {
         # check url validity
-        $batchRequest.URL | % {
+        $batchRequest.URL | ForEach-Object {
             if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {
                 throw "url '$_' has to be relative (without the whole 'https://management.azure.com' part) or absolute!"
             }

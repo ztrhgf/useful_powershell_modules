@@ -172,7 +172,7 @@
     }
 
     # api version check
-    $url | % {
+    $url | ForEach-Object {
         if ($_ -notlike "*api-version=*") {
             throw "URL '$_' is missing what api to use (api-version=2025-01-01 or similar). For example: 'https://management.azure.com/subscriptions/.../roleEligibilitySchedules?api-version=2020-10-01'. If you are unsure what api you can use, use the one from the example above and in case the request fails with 400 error, check the error message for the correct api version. Or use official Az cmdlet with -debug parameter and check the 'Absolute uri' output."
         }
@@ -180,10 +180,10 @@
     #endregion validity checks
 
     if ($placeholder) {
-        $url = $placeholder | % {
+        $url = $placeholder | ForEach-Object {
             $p = $_
 
-            $url | % {
+            $url | ForEach-Object {
                 $_ -replace "<placeholder>", $p
             }
         }
@@ -191,7 +191,7 @@
 
     $index = 0
 
-    $url | % {
+    $url | ForEach-Object {
         # fix common mistake where there are multiple slashes
         $_ = $_ -replace "(?<!^https:)/{2,}", "/"
 

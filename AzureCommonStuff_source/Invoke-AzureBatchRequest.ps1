@@ -128,7 +128,7 @@ resources
     )
 
     begin {
-        #region flatten the batch request array
+        #region helper functions
         function ConvertTo-FlatArray {
             # flattens input in case, that primitive(s) and array(s) are entered at the same time
             [CmdletBinding()]
@@ -140,7 +140,7 @@ resources
             foreach ($item in $inputArray) {
                 if ($null -ne $item) {
                     # recurse for arrays
-                    if ($item.gettype().BaseType -eq [System.Array]) {
+                    if ($item.GetType().BaseType -eq [System.Array]) {
                         ConvertTo-FlatArray $item
                     } else {
                         # output non-arrays
@@ -149,26 +149,6 @@ resources
                 }
             }
         }
-
-        $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
-        #endregion flatten the batch request array
-
-        if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
-            Write-Verbose "Total number of requests to process is $($batchRequest.count)"
-        }
-
-        if ($dontBeautifyResult -and $dontAddRequestName) {
-            Write-Verbose "'dontAddRequestName' parameter will be ignored, 'RequestName' property is not being added when 'dontBeautifyResult' parameter is used"
-        }
-
-        # api batch requests are limited to 20 requests
-        $chunkSize = 20
-        # buffer to hold chunks of requests
-        $requestChunk = [System.Collections.Generic.List[Object]]::new()
-        # paginated or remotely failed requests that should be processed too, to get all the results
-        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
-        # throttled requests that have to be repeated after given time
-        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
 
         function _processChunk {
             <#
@@ -382,9 +362,37 @@ resources
             Write-Verbose "It took $((New-TimeSpan -Start $start -End $end).TotalSeconds) seconds to process the batch"
             #endregion process given chunk of batch requests
         }
+        #endregion helper functions
+
+        # flatten the batch request array
+        if ($batchRequest | Where-Object { $_ -and $_.GetType().BaseType -eq [System.Array] }) {
+            $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
+        }
+
+        if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
+            Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+        }
+
+        if ($dontBeautifyResult -and $dontAddRequestName) {
+            Write-Verbose "'dontAddRequestName' parameter will be ignored, 'RequestName' property is not being added when 'dontBeautifyResult' parameter is used"
+        }
+
+        # api batch requests are limited to 20 requests
+        $chunkSize = 20
+        # buffer to hold chunks of requests
+        $requestChunk = [System.Collections.Generic.List[Object]]::new()
+        # paginated or remotely failed requests that should be processed too, to get all the results
+        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
+        # throttled requests that have to be repeated after given time
+        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
     }
 
     process {
+        # flatten the batch request array
+        if ($batchRequest | Where-Object { $_ -and $_.GetType().BaseType -eq [System.Array] }) {
+            $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
+        }
+
         # check url validity
         $batchRequest.URL | ForEach-Object {
             if ($_ -notlike "https://management.azure.com/*" -and $_ -notlike "/*") {

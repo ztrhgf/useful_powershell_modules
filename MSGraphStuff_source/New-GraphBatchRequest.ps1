@@ -41,8 +41,7 @@
     .PARAMETER id
     Id of the request.
     If created request will be invoked via 'Invoke-GraphBatchRequest' function, this Id will be saved in the returned object's 'RequestId' property.
-    Can only be specified when 'url' parameter contains just one value.
-    If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
+    If 'placeholder' parameter is also specified, suffix "_<randomNumber>" will be added to each generated request id (a.k.a final ID will be: <id>_<randomNumber>). This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     Cannot contain "\" character, because Invoke-MgRestMethod used for sending request automatically tries to convert the returned JSON back and it fails because of this special character.
 
@@ -156,6 +155,10 @@
         throw "'id' parameter cannot be used with multiple urls"
     }
 
+    if ($id -and $placeholderAsId) {
+        throw "'id' and 'placeholderAsId' parameters cannot be used together"
+    }
+
     if ($placeholder -and $url -notlike "*<placeholder>*") {
         throw "You have specified 'placeholder' parameter, but 'url' parameter doesn't contain string '<placeholder>' for replace."
     }
@@ -210,12 +213,12 @@
         }
 
         if ($id) {
-            if ($placeholder -and $placeholder.count -gt 1) {
+            if ($placeholder) {
                 $property.id = ($id + "_" + (Get-Random))
             } else {
                 $property.id = $id
             }
-        } elseif ($placeholderAsId -and $placeholder) {
+        } elseif ($placeholderAsId) {
             $property.id = @($placeholder)[$index]
         } else {
             $property.id = Get-Random

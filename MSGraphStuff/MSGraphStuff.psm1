@@ -905,26 +905,27 @@ function Invoke-GraphBatchRequest {
     )
 
     begin {
-        if ($PSCmdlet.MyInvocation.PipelineLength -eq 1) {
-            Write-Verbose "Total number of requests to process is $($batchRequest.count)"
-        }
+        #region helper functions
+        function ConvertTo-FlatArray {
+            # flattens input in case, that primitive(s) and array(s) are entered at the same time
+            [CmdletBinding()]
+            param (
+                [Parameter(Mandatory = $true)]
+                $inputArray
+            )
 
-        if ($dontBeautifyResult -and $dontAddRequestId) {
-            Write-Verbose "'dontAddRequestId' parameter will be ignored, 'RequestId' property is not being added when 'dontBeautifyResult' parameter is used"
+            foreach ($item in $inputArray) {
+                if ($null -ne $item) {
+                    # recurse for arrays
+                    if ($item.GetType().BaseType -eq [System.Array]) {
+                        ConvertTo-FlatArray $item
+                    } else {
+                        # output non-arrays
+                        $item
+                    }
+                }
+            }
         }
-
-        # api batch requests are limited to 20 requests
-        $chunkSize = 20
-        # base graph api uri
-        $uri = "https://graph.microsoft.com"
-        # batch uri
-        $requestUri = "$uri/$graphVersion/`$batch"
-        # buffer to hold chunks of requests
-        $requestChunk = [System.Collections.Generic.List[Object]]::new()
-        # paginated or remotely failed requests that should be processed too, to get all the results
-        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
-        # throttled requests that have to be repeated after given time
-        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
 
         function _processChunk {
             <#
@@ -956,9 +957,9 @@ function Invoke-GraphBatchRequest {
                 }
 
                 switch -Regex ($InputString.TrimStart()) {
-                    '^"'    { return "String" }
-                    '^{'    { return "Object" }
-                    '^\['    { return "Array" }
+                    '^"' { return "String" }
+                    '^{' { return "Object" }
+                    '^\[' { return "Array" }
                     '^true|^false' { return "Boolean" }
                     '^null' { return "Null" }
                     '^-?\d' { return "Number" }
@@ -966,14 +967,14 @@ function Invoke-GraphBatchRequest {
                 }
             }
 
-            $duplicityId = $requestChunk.id | Group-Object | ? { $_.Count -gt 1 }
+            $duplicityId = $requestChunk.id | Group-Object | Where-Object { $_.Count -gt 1 }
             if ($duplicityId) {
-                throw "Batch requests must have unique ids. Id(s): '$(($duplicityId.Name | select -Unique) -join ', ')' is there more than once"
+                throw "Batch requests must have unique ids. Id(s): '$(($duplicityId.Name | Select-Object -Unique) -join ', ')' is there more than once"
             }
 
             Write-Debug ($requestChunk | ConvertTo-Json)
 
-            Write-Verbose "Processing batch of $($requestChunk.count) request(s):`n$(($requestChunk | sort Url | % {" - $($_.Id) - $($_.Url)"} ) -join "`n")"
+            Write-Verbose "Processing batch of $($requestChunk.count) request(s):`n$(($requestChunk | Sort-Object Url | ForEach-Object {" - $($_.Id) - $($_.Url)"} ) -join "`n")"
 
             #region process given chunk of batch requests
             $start = Get-Date
@@ -986,7 +987,7 @@ function Invoke-GraphBatchRequest {
 
             Write-Verbose $body
 
-            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body $body -ContentType "application/json" -OutputType PSObject | % {
+            Invoke-MgRestMethod -Method Post -Uri $requestUri -Body $body -ContentType "application/json" -OutputType PSObject | ForEach-Object {
                 $responses = $_.responses
 
                 #region return the output
@@ -1043,7 +1044,7 @@ function Invoke-GraphBatchRequest {
                                 $property += @{n = 'RequestId'; e = { $response.Id } }
                             }
 
-                            $value | select -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
+                            $value | Select-Object -Property $property -ExcludeProperty '@odata.context', '@odata.nextLink'
                         }
                     }
                 }
@@ -1072,7 +1073,7 @@ function Invoke-GraphBatchRequest {
 
                             $relativeNextLink = $response.body.'@odata.nextLink' -replace [regex]::Escape("https://graph.microsoft.com/$graphVersion/")
                             # make a request object copy, so I can modify it without interfering with the original object
-                            $nextLinkRequest = $requestChunk | ? Id -EQ $response.Id | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+                            $nextLinkRequest = $requestChunk | Where-Object Id -EQ $response.Id | ConvertTo-Json -Depth 10 | ConvertFrom-Json
                             # replace original URL with the nextLink
                             $nextLinkRequest.URL = $relativeNextLink
                             # add the request for later processing
@@ -1082,7 +1083,7 @@ function Invoke-GraphBatchRequest {
                         # throttled (will be repeated after given time)
 
                         $jobRetryAfter = $response.Headers.'Retry-After'
-                        $throttledBatchRequest = $requestChunk | ? Id -EQ $response.Id
+                        $throttledBatchRequest = $requestChunk | Where-Object Id -EQ $response.Id
 
                         Write-Verbose "Batch request with Id: '$($throttledBatchRequest.Id)', Url:'$($throttledBatchRequest.Url)' was throttled, hence will be repeated after $jobRetryAfter seconds"
 
@@ -1104,7 +1105,7 @@ function Invoke-GraphBatchRequest {
                     } elseif ($response.Status -in 500, 502, 503, 504) {
                         # some internal error on remote side (will be repeated)
 
-                        $problematicBatchRequest = $requestChunk | ? Id -EQ $response.Id
+                        $problematicBatchRequest = $requestChunk | Where-Object Id -EQ $response.Id
 
                         Write-Verbose "Batch request with Id: '$($problematicBatchRequest.Id)', Url:'$($problematicBatchRequest.Url)' had internal error '$($response.body.error.message)', Code: $($response.Status), hence will be repeated"
 
@@ -1112,7 +1113,7 @@ function Invoke-GraphBatchRequest {
                     } else {
                         # failed
 
-                        $failedBatchRequest = $requestChunk | ? Id -EQ $response.Id
+                        $failedBatchRequest = $requestChunk | Where-Object Id -EQ $response.Id
 
                         $innerErrorText = $null
                         if ($response.body.error.innerError.code) {
@@ -1137,7 +1138,7 @@ function Invoke-GraphBatchRequest {
                                 $errorText = $response.body.error.message
                             }
                         } elseif ($response.body.error.code) {
-                                $errorText = $response.body.error.code
+                            $errorText = $response.body.error.code
                         } else {
                             # no error message, just the status code
                         }
@@ -1161,7 +1162,7 @@ function Invoke-GraphBatchRequest {
                 if ($failedBatchJob) {
                     if ($separateErrors) {
                         # output errors one by one, so you can handle them separately if needed
-                        $failedBatchJob | % {
+                        $failedBatchJob | ForEach-Object {
                             #TIP only the first one will be returned if $ErrorActionPreference is set to stop!
                             $errorMsg = "`nFailed batch request:`n$(" - Id: '$($_.Id)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'`n`n" -join "`n")"
                             $exception = New-Object System.InvalidOperationException $errorMsg
@@ -1171,7 +1172,7 @@ function Invoke-GraphBatchRequest {
                         }
                     } else {
                         #TIP all errors at once, because batch can contain non-related requests and if errorAction is set to stop, only the first error would be returned, which can be confusing
-                        $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | % { " - Id: '$($_.Id)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'" -join "`n" }) -join "`n`n")"
+                        $errorMsg = "`nFollowing batch request(s) failed:`n`n$(($failedBatchJob | ForEach-Object { " - Id: '$($_.Id)'", " - Url: '$($_.Url)'", " - StatusCode: '$($_.StatusCode)'", " - Error: '$($_.Error)'" -join "`n" }) -join "`n`n")"
                         $exception = New-Object System.InvalidOperationException $errorMsg
                         $exception.Source = "BatchRequest"
 
@@ -1186,11 +1187,41 @@ function Invoke-GraphBatchRequest {
             Write-Verbose "It took $((New-TimeSpan -Start $start -End $end).TotalSeconds) seconds to process the batch"
             #endregion process given chunk of batch requests
         }
+        #endregion helper functions
+
+        # flatten the batch request array
+        if ($batchRequest | Where-Object { $_ -and $_.GetType().BaseType -eq [System.Array] }) {
+            $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
+        }
+
+        Write-Verbose "Total number of requests to process is $($batchRequest.count)"
+
+        if ($dontBeautifyResult -and $dontAddRequestId) {
+            Write-Verbose "'dontAddRequestId' parameter will be ignored, 'RequestId' property is not being added when 'dontBeautifyResult' parameter is used"
+        }
+
+        # api batch requests are limited to 20 requests
+        $chunkSize = 20
+        # base graph api uri
+        $uri = "https://graph.microsoft.com"
+        # batch uri
+        $requestUri = "$uri/$graphVersion/`$batch"
+        # buffer to hold chunks of requests
+        $requestChunk = [System.Collections.Generic.List[Object]]::new()
+        # paginated or remotely failed requests that should be processed too, to get all the results
+        $extraRequestChunk = [System.Collections.Generic.List[Object]]::new()
+        # throttled requests that have to be repeated after given time
+        $throttledRequestChunk = [System.Collections.Generic.List[Object]]::new()
     }
 
     process {
+        # flatten the batch request array
+        if ($batchRequest | Where-Object { $_ -and $_.GetType().BaseType -eq [System.Array] }) {
+            $batchRequest = ConvertTo-FlatArray -inputArray $batchRequest
+        }
+
         # check url validity
-        $batchRequest.URL | % {
+        $batchRequest.URL | ForEach-Object {
             if ($_ -like "http*" -or $_ -like "*/beta/*" -or $_ -like "*/v1.0/*" -or $_ -like "*/graph.microsoft.com/*") {
                 throw "url '$_' has to be relative (without the whole 'https://graph.microsoft.com/<apiversion>' part)!"
             }
@@ -1562,8 +1593,7 @@ function New-GraphBatchRequest {
     .PARAMETER id
     Id of the request.
     If created request will be invoked via 'Invoke-GraphBatchRequest' function, this Id will be saved in the returned object's 'RequestId' property.
-    Can only be specified when 'url' parameter contains just one value.
-    If url with placeholder is used, suffix "_<randomnumber>" will be added to each generated request id. This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
+    If 'placeholder' parameter is also specified, suffix "_<randomNumber>" will be added to each generated request id (a.k.a final ID will be: <id>_<randomNumber>). This way each one is unique and at the same time you are able to filter the request results based on it in case you merge multiple different requests in one final batch.
 
     Cannot contain "\" character, because Invoke-MgRestMethod used for sending request automatically tries to convert the returned JSON back and it fails because of this special character.
 
@@ -1677,6 +1707,10 @@ function New-GraphBatchRequest {
         throw "'id' parameter cannot be used with multiple urls"
     }
 
+    if ($id -and $placeholderAsId) {
+        throw "'id' and 'placeholderAsId' parameters cannot be used together"
+    }
+
     if ($placeholder -and $url -notlike "*<placeholder>*") {
         throw "You have specified 'placeholder' parameter, but 'url' parameter doesn't contain string '<placeholder>' for replace."
     }
@@ -1731,12 +1765,12 @@ function New-GraphBatchRequest {
         }
 
         if ($id) {
-            if ($placeholder -and $placeholder.count -gt 1) {
+            if ($placeholder) {
                 $property.id = ($id + "_" + (Get-Random))
             } else {
                 $property.id = $id
             }
-        } elseif ($placeholderAsId -and $placeholder) {
+        } elseif ($placeholderAsId) {
             $property.id = @($placeholder)[$index]
         } else {
             $property.id = Get-Random

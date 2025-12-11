@@ -65,12 +65,16 @@
     }
     #endregion checks
 
-    if (!$PIMGroupList) {
+    # check via $PSBoundParameters, because there can be no PIM groups at all aka PIMGroupList is $null
+    if (!($PSBoundParameters.ContainsKey('PIMGroupList'))) {
+        Write-Verbose "Getting groups with eligible PIM assignments"
         $PIMGroupList = Get-PIMGroup
     }
 
     # no PIM group exist, exit
     if (!$PIMGroupList) {
+        Write-Warning "No PIM groups found"
+
         if ($onlyMembers) {
             return
         } else {

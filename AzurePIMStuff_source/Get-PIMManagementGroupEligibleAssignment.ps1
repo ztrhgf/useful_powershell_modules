@@ -37,7 +37,10 @@
     if ($name) {
         $managementGroupNameList = $name
     } else {
-        $managementGroupNameList = (Get-AzManagementGroup).Name
+        #TIP KQL instead of Get-AzManagementGroup to avoid error: ... does not have authorization to perform action 'Microsoft.Management/register/action' over scope ...
+        $managementGroupNameList = Search-AzGraph2 -query "ResourceContainers
+| where type =~ 'microsoft.management/managementgroups'
+| project name" | Select-Object -ExpandProperty Name
     }
 
     New-AzureBatchRequest -url "https://management.azure.com/providers/Microsoft.Management/managementGroups/<placeholder>/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01&`$filter=atScope()" -placeholder $managementGroupNameList | Invoke-AzureBatchRequest | Expand-ObjectProperty -propertyName Properties | Expand-ObjectProperty -propertyName ExpandedProperties | ? memberType -EQ 'Direct' | % {

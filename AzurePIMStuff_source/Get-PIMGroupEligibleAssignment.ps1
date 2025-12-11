@@ -42,7 +42,7 @@
         # by searching for eligible role assignments for every PIM-supported-type group
         Write-Warning "Searching for groups with PIM eligible assignment. This can take a while."
 
-        $possiblePIMGroupId = (Invoke-MgGraphRequest -Uri "v1.0/groups?`$select=Id,DisplayName,OnPremisesSyncEnabled,GroupTypes,MailEnabled,SecurityEnabled" | Get-MgGraphAllPages | ? { $_.onPremisesSyncEnabled -eq $null -and $_.GroupTypes -notcontains 'DynamicMembership' -and !($_.MailEnabled -and $_.SecurityEnabled -and $_.GroupTypes -notcontains 'Unified') -and !($_.MailEnabled -and !$_.SecurityEnabled) }).id
+        $possiblePIMGroupId = (Get-PIMSupportedGroup).id
     }
 
     if (!$possiblePIMGroupId) { return }

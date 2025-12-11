@@ -24,7 +24,7 @@
     }
 
     # I don't know how to get PIM enabled groups in better way than just get all PIM capable groups and find whether they have some eligible assignment set
-    $possiblePIMGroup = Invoke-MgGraphRequest -Uri "v1.0/groups?`$select=Id,DisplayName,OnPremisesSyncEnabled,GroupTypes,MailEnabled,SecurityEnabled" | Get-MgGraphAllPages | ? { $_.onPremisesSyncEnabled -eq $null -and $_.GroupTypes -notcontains 'DynamicMembership' -and !($_.MailEnabled -and $_.SecurityEnabled -and $_.GroupTypes -notcontains 'Unified') -and !($_.MailEnabled -and !$_.SecurityEnabled) }
+    $possiblePIMGroup = Get-PIMSupportedGroup
 
     if (!$possiblePIMGroup) { return }
 

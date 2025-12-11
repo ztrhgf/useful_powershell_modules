@@ -1,6 +1,6 @@
 ﻿@{
     RootModule           = 'AzurePIMStuff.psm1'
-    ModuleVersion        = '0.0.2'
+    ModuleVersion        = '0.0.3'
     GUID                 = '38677584-d79f-4f27-81db-c6bdd8fa3b32'
     Author               = '@AndrewZtrhgf'
     CompanyName          = 'Unknown'
@@ -16,6 +16,11 @@ Some of the interesting functions:
 - Get-PIMManagementGroupEligibleAssignment: Returns all PIM eligible IAM assignments on selected (all) Azure Management group(s).
 - Get-PIMResourceRoleAssignmentSetting: Gets PIM assignment settings for a given Azure resource role at a specific scope.
 - Get-PIMSubscriptionEligibleAssignment: Returns eligible role assignments on selected subscription(s) and below (resources included).
+- Invoke-PIMDirectoryRoleActivation: Activates PIM eligible directory role for current user (supports FIDO2 auth context).
+- Invoke-PIMResourceRoleActivation: Activates PIM eligible resource role for current user (supports FIDO2 auth context).
+- New-PIMResourceEligibleRoleAssignment - function for creating PIM eligible role assignment for specified Azure resource
+- Set-PIMResourceRoleAssignmentSetting - function for setting PIM assignment settings for a given Azure resource role at a specific scope
+
 '
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = 'Core', 'Desktop'
@@ -34,6 +39,19 @@ Some of the interesting functions:
             Tags         = @('Azure', 'PIM', 'AzurePIMStuff')
             ProjectUri   = 'https://github.com/ztrhgf/useful_powershell_modules'
             ReleaseNotes = '
+            0.0.3
+                ADDED
+                    Get-PIMGraphTokenWithClaim - function for getting Graph token with custom claims (for FIDO2 auth context scenarios)
+                    Get-PIMMyActiveDirectoryRole
+                    Get-PIMMyActiveResourceRole
+                    Get-PIMMyEligibleResourceRole
+                    Get-PIMSupportedGroup
+                    Invoke-PIMDirectoryRoleActivation - function for activating PIM eligible directory role for current user (supports FIDO2 auth context)
+                    Invoke-PIMResourceRoleActivation - function for activating PIM eligible resource role for current user (supports FIDO2 auth context)
+                    New-PIMResourceEligibleRoleAssignment - function for creating PIM eligible role assignment for specified Azure resource
+                    Set-PIMResourceRoleAssignmentSetting - function for setting PIM assignment settings for a given Azure resource role at a specific scope
+                CHANGED
+                    Various fixes
             0.0.2
                 Added additional PIM functions for enhanced management.
             0.0.1

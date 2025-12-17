@@ -47,6 +47,9 @@
     $response = Invoke-MgGraphRequest -Uri "v1.0/policies/roleManagementPolicyAssignments?`$filter=scopeType eq 'DirectoryRole' and roleDefinitionId eq '$roleID' and scopeId eq '/' " | Get-MgGraphAllPages
     $policyID = $response.policyID
     Write-Verbose "policyID = $policyID"
+    if (!$policyID) {
+        throw "PIM assignment settings for $roleID role wasn't found?!"
+    }
 
     # get the rules
     $response = Invoke-MgGraphRequest -Uri "v1.0/policies/roleManagementPolicies/$policyID/rules" | Get-MgGraphAllPages

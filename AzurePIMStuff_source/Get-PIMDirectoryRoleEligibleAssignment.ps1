@@ -22,13 +22,13 @@
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
-    Invoke-MgGraphRequest -Uri "v1.0/roleManagement/directory/roleEligibilityScheduleInstances?`$expand=roleDefinition,principal" | Get-MgGraphAllPages | % {
+    Invoke-MgGraphRequest -Uri "v1.0/roleManagement/directory/roleEligibilityScheduleInstances?`$expand=roleDefinition,principal" | Get-MgGraphAllPages | ForEach-Object {
         if ($skipAssignmentSettings) {
-            $_ | select *, @{n = 'PrincipalName'; e = { $_.principal.displayName } }, @{n = 'RoleName'; e = { $_.roleDefinition.displayName } }
+            $_ | Select-Object *, @{n = 'PrincipalName'; e = { $_.principal.displayName } }, @{n = 'RoleName'; e = { $_.roleDefinition.displayName } }
         } else {
-            $rules = Get-PIMDirectoryRoleAssignmentSetting -roleId $_.roleDefinitionId
+            $rules = Get-PIMDirectoryRoleAssignmentSetting -roleId $_.roleDefinition.templateId
 
-            $_ | select *, @{n = 'PrincipalName'; e = { $_.principal.displayName } }, @{n = 'RoleName'; e = { $_.roleDefinition.displayName } }, @{n = 'Policy'; e = { $rules } }
+            $_ | Select-Object *, @{n = 'PrincipalName'; e = { $_.principal.displayName } }, @{n = 'RoleName'; e = { $_.roleDefinition.displayName } }, @{n = 'Policy'; e = { $rules } }
         }
     }
 }

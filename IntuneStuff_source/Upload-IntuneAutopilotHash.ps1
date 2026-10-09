@@ -119,7 +119,9 @@ function Upload-IntuneAutopilotHash {
         throw "Undefined state"
     }
 
-    Connect-MgGraph -NoWelcome
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
 
     $failedUpload = @()
     $processedDevice = @()
@@ -208,7 +210,7 @@ function Upload-IntuneAutopilotHash {
                 while (1) {
                     ++$i
                     # trying to get the autopilot device record
-                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | select -ExpandProperty id
+                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | Select-Object -ExpandProperty id
 
                     if (!$deviceId) {
                         if ($i -gt 50) {

@@ -1808,26 +1808,23 @@ function Get-IntuneAppInstallSummaryReport {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
+    function Get-AppsInstallSummaryReportPage {
+        param ([int] $top, [int] $skip)
+
+        $body = @{ top = $top; skip = $skip } | ConvertTo-Json
+        $outputFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        try {
+            Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/beta/deviceManagement/reports/microsoft.graph.getAppsInstallSummaryReport' -Body $body -ContentType 'application/json' -OutputFilePath $outputFile -ErrorAction Stop | Out-Null
+            Get-Content -LiteralPath $outputFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        } finally {
+            Remove-Item -LiteralPath $outputFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $finalResult = [System.Collections.Generic.List[Object]]::new()
 
     do {
-        $tmpFile = (Join-Path $env:TEMP (Get-Random))
-
-        $param = @{
-            OutFile     = $tmpFile
-            Top         = 25
-            ErrorAction = "Stop"
-        }
-        if ($finalResult.count) {
-            $param.skip = $finalResult.count
-        }
-
-        # command doesn't support -All hence we need to do pagination ourself
-        Get-MgBetaDeviceManagementReportAppInstallSummaryReport @param
-
-        $result = Get-Content $tmpFile -Raw | ConvertFrom-Json
-
-        Remove-Item $tmpFile -Force
+        $result = Get-AppsInstallSummaryReportPage -top 25 -skip $finalResult.Count
 
         $columnList = $result.Schema.Column
 
@@ -2039,26 +2036,23 @@ function Get-IntuneConfPolicyAssignmentSummaryReport {
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
+    function Get-ConfigurationPolicyNonComplianceSummaryReportPage {
+        param ([int] $top, [int] $skip)
+
+        $body = @{ top = $top; skip = $skip } | ConvertTo-Json
+        $outputFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        try {
+            Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/beta/deviceManagement/reports/microsoft.graph.getConfigurationPolicyNonComplianceSummaryReport' -Body $body -ContentType 'application/json' -OutputFilePath $outputFile -ErrorAction Stop | Out-Null
+            Get-Content -LiteralPath $outputFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        } finally {
+            Remove-Item -LiteralPath $outputFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $finalResult = [System.Collections.Generic.List[Object]]::new()
 
     do {
-        $tmpFile = (Join-Path $env:TEMP (Get-Random))
-
-        $param = @{
-            OutFile     = $tmpFile
-            Top         = 25
-            ErrorAction = "Stop"
-        }
-        if ($finalResult.count) {
-            $param.skip = $finalResult.count
-        }
-
-        # command doesn't support -All hence we need to do pagination ourself
-        Get-MgBetaDeviceManagementReportConfigurationPolicyNonComplianceSummaryReport @param
-
-        $result = Get-Content $tmpFile -Raw | ConvertFrom-Json
-
-        Remove-Item $tmpFile -Force
+        $result = Get-ConfigurationPolicyNonComplianceSummaryReportPage -top 25 -skip $finalResult.Count
 
         $columnList = $result.Schema.Column
 
@@ -8896,64 +8890,6 @@ function Upload-IntuneAutopilotHash {
 
     Uploads device with specified serial number and hash (retrieved from SCCM database) into Intune Autopilot. Owner will be empty but hostname will be filled with value from SCCM database (ni-20-ntb).
 
-    .EXAMPLE
-    $domain = "KontentAI.onmicrosoft.com"
-
-    #region functions
-    function _getUserProperty {
-        param ($userGUID)
-        # alvao tabulky atd https://doc.alvao.com/support/doc/en/alvao_10_2/alvao_asset_management/implementation/customization/database.aspx#V_Query.Node
-        $sql = @"
-SELECT `"Object name`" as Name, `"Object kind`" as Class, `"Inventory number`" as ID, `"Warranty expiration`" as Warranty, `"BIOS serial number`" as SrvTag
-FROM Query.ObjectEnu WHERE `"Object id`" IN (
-    Select A.intNodeId
-    FROM tblNode AS A INNER JOIN
-    tblNode AS B ON B.intNodeId = A.lintParentId
-    WHERE B.txtLDAPGUID = '$userGUID'
-    )
-"@
-        $result = Invoke-SQL -dataSource $_AlvaoDBServer -database alvao -sqlCommand $sql
-        # bez ulozeni do promenne nefungovalo vypsani
-        # odeberu inventarni cislo z Name
-        # oriznu datum
-        $result = $result | select @{n = "Name"; e = { ($_.Name).Substring(0, (($_.Name).LastIndexOf(","))) } }, Class, ID, @{n = "Warranty"; e = { ($_.Warranty -split " ")[0] } }, SrvTag
-        $result
-    }
-
-    function _getDirectReports {
-        param ($samAccountName)
-
-        $currUser = (Get-ADUser $samAccountName -Properties title, Manager, SamAccountName, DisplayName, directreports, Office , Department)
-        Write-Verbose "$($currUser.DisplayName) [$($currUser.SamAccountName)] ($($currUser.title))"
-        $currUser | select *, @{Name = 'UPN'; Expression = { $_.SamAccountName + "@$domain" } }, @{Name = "Manager"; E = { (Get-ADUser $_.Manager).SamAccountName + "@$domain" } } -ExcludeProperty Manager
-        $currUser | sort | select -ExpandProperty directreports | sort | foreach { _getDirectReports $_ }
-    }
-    #endregion functions
-
-    $kontentUser = _getDirectReports "BernardusO"
-
-    $allHashes = @()
-
-    foreach ($user in $kontentUser) {
-        _getUserProperty $user.ObjectGUID | ? { $_.Class -eq "Computer/notebook" -and $_.Name -match "^n" } | select -ExpandProperty Name | % {
-            $pc = $_
-            "$($user.DisplayName) - $pc"
-            $autopilotHash = Get-CMAutopilotHash -computerName $pc
-            $autopilotHash = $autopilotHash | select *, @{n = 'OwnerUPN'; e = { $_.Owner + "@" + $domain } }
-
-            if ($autopilotHash) {
-                $allHashes += $autopilotHash
-            } else {
-                Write-Error "$pc is missing autopilot hash in SCCM"
-            }
-        }
-    }
-
-    Upload-IntuneAutopilotHash -psobject $allHashes -groupTag "migrated"
-
-
-    Retrieve device hashes of selected users (from SCCM database) and upload them into Intune Autopilot.
-
     .NOTES
     Inspired by https://www.manishbangia.com/import-autopilot-devices-sccm-sqlquery/ and https://www.powershellgallery.com/packages/Upload-WindowsAutopilotDeviceInfo/1.0.0/Content/Upload-WindowsAutopilotDeviceInfo.ps1
 
@@ -9009,7 +8945,9 @@ FROM Query.ObjectEnu WHERE `"Object id`" IN (
         throw "Undefined state"
     }
 
-    Connect-MgGraph -NoWelcome
+    if (!(Get-Command Get-MgContext -ErrorAction silentlycontinue) -or !(Get-MgContext)) {
+        throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
+    }
 
     $failedUpload = @()
     $processedDevice = @()
@@ -9019,14 +8957,6 @@ FROM Query.ObjectEnu WHERE `"Object id`" IN (
     Write-Host "Upload Autopilot hash(es)" -ForegroundColor Cyan
     foreach ($autopilotItem in $psObject) {
         "Processing $($autopilotItem.SerialNumber)"
-
-        #FIXME hack!!!!
-        if ($autopilotItem.serialNumber -match "GLKF0X2") {
-            $failedUpload += $autopilotItem.SerialNumber
-            Write-Warning "Preskakuji GLKF0X2 NJ-34-NTB protoze se nechce nahrat...TODO!"
-            "https://docs.microsoft.com/en-us/troubleshoot/mem/intune/import-windows-autopilot-device-csv-files-errors"
-            continue
-        }
 
         # Construct hash table for new Autopilot device identity and convert to JSON
         Write-Verbose "Constructing required JSON body based upon parameter input data for device hash upload"
@@ -9106,7 +9036,7 @@ FROM Query.ObjectEnu WHERE `"Object id`" IN (
                 while (1) {
                     ++$i
                     # trying to get the autopilot device record
-                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | select -ExpandProperty id
+                    $deviceId = Get-AutopilotDevice -serialNumber $autopilotItem.SerialNumber | Select-Object -ExpandProperty id
 
                     if (!$deviceId) {
                         if ($i -gt 50) {

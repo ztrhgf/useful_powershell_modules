@@ -19,26 +19,23 @@
         throw "$($MyInvocation.MyCommand): Authentication needed. Please call Connect-MgGraph."
     }
 
+    function Get-ConfigurationPolicyNonComplianceSummaryReportPage {
+        param ([int] $top, [int] $skip)
+
+        $body = @{ top = $top; skip = $skip } | ConvertTo-Json
+        $outputFile = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        try {
+            Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/beta/deviceManagement/reports/microsoft.graph.getConfigurationPolicyNonComplianceSummaryReport' -Body $body -ContentType 'application/json' -OutputFilePath $outputFile -ErrorAction Stop | Out-Null
+            Get-Content -LiteralPath $outputFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        } finally {
+            Remove-Item -LiteralPath $outputFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $finalResult = [System.Collections.Generic.List[Object]]::new()
 
     do {
-        $tmpFile = (Join-Path $env:TEMP (Get-Random))
-
-        $param = @{
-            OutFile     = $tmpFile
-            Top         = 25
-            ErrorAction = "Stop"
-        }
-        if ($finalResult.count) {
-            $param.skip = $finalResult.count
-        }
-
-        # command doesn't support -All hence we need to do pagination ourself
-        Get-MgBetaDeviceManagementReportConfigurationPolicyNonComplianceSummaryReport @param
-
-        $result = Get-Content $tmpFile -Raw | ConvertFrom-Json
-
-        Remove-Item $tmpFile -Force
+        $result = Get-ConfigurationPolicyNonComplianceSummaryReportPage -top 25 -skip $finalResult.Count
 
         $columnList = $result.Schema.Column
 

@@ -381,12 +381,25 @@ function ConvertFrom-MDMDiagReportXML {
 
         [switch] $showConnectionData
     )
-    
+
     if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
         throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
     }
 
-    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
+    #region make sure to use ConvertFrom-XML function from CommonStuff module instead of PoshFunctions
+    $command = Get-Command "ConvertFrom-XML" -ErrorAction SilentlyContinue
+
+    if (!$command -or $command.Source -ne 'CommonStuff') {
+        $modulePath = @((Get-Module 'CommonStuff').Path)[-1]
+        if (!$modulePath) {
+            $modulePath = @((Get-Module 'CommonStuff' -ListAvailable).Path)[-1]
+        }
+
+        $modulePath = Split-Path $modulePath -Parent
+
+        Import-Module $modulePath -Force -WarningAction SilentlyContinue
+    }
+    #endregion make sure to use ConvertFrom-XML function from CommonStuff module instead of PoshFunctions
 
     if ($asHTML) {
         # array of results that will be in the end transformed into HTML report
@@ -756,7 +769,7 @@ function ConvertFrom-MDMDiagReportXML {
 
         Write-Verbose "Getting Policies winning provider (MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues)"
         $winningProviderPolicyAreaNameMetadata = $xml.MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues | % {
-            $_.psobject.properties | ? { $_.Name -Match "_WinningProvider$" } | Select-Object Name, Value
+            $_.psobject.properties | ? { $_.Name -match "_WinningProvider$" } | Select-Object Name, Value
         }
 
         $policyManager | % {
@@ -877,7 +890,7 @@ function ConvertFrom-MDMDiagReportXML {
                                             <AdmxMetadataDevice>30313D0100000000323D000000000000</AdmxMetadataDevice>
                                         </PolicyMetadata>
                                 #>
-                                $additionalData = ($admxPolicyAreaNameMetadata.AreaName | ? { $_.ADMXIngestedAreaName -eq $policyAreaName }).PolicyMetadata | ? { $_.PolicyName -EQ $settingName } | select -First 1 # sometimes there are duplicities in results
+                                $additionalData = ($admxPolicyAreaNameMetadata.AreaName | ? { $_.ADMXIngestedAreaName -eq $policyAreaName }).PolicyMetadata | ? { $_.PolicyName -eq $settingName } | select -First 1 # sometimes there are duplicities in results
 
                                 if ($additionalData) {
                                     Write-Verbose "Additional data for '$settingName' was found in admxPolicyAreaNameMetadata"
@@ -1245,6 +1258,11 @@ function Get-ClientIntunePolicyResult {
 
         Will return HTML page containing Intune policy processing report data and connection data.
         URLs to policies/settings and Intune policies names (if available) will be included.
+
+        .EXAMPLE
+        Get-ClientIntunePolicyResult -intuneXMLReport (ConvertFrom-MDMDiagReportXML -MDMDiagReport C:\temp\MDMDiagReport.xml)
+
+        Will return PowerShell object containing Intune policy processing report data.
         #>
 
     [Alias("ipresult", "Get-IntunePolicyResult", "Get-IntuneClientPolicyResult")]
@@ -1252,7 +1270,6 @@ function Get-ClientIntunePolicyResult {
     param (
         [string] $computerName,
 
-        [ValidateScript( { $_.GetType().Name -eq 'Object[]' } )]
         $intuneXMLReport,
 
         [switch] $asHTML,
@@ -1345,7 +1362,7 @@ function Get-ClientIntunePolicyResult {
             } else {
                 # it is AzureAD account
                 if ($getDataFromIntune) {
-                    return ($intuneUser | ? id -EQ $id).userPrincipalName
+                    return ($intuneUser | Where-Object id -EQ $id).userPrincipalName
                 } else {
                     # unable to translate ID to name because there is no connection to the Intune Graph API
                     return $id
@@ -1360,18 +1377,18 @@ function Get-ClientIntunePolicyResult {
     function _getIntuneScript {
         param ([string] $scriptID)
 
-        $intuneScript | ? id -EQ $scriptID
+        $intuneScript | Where-Object id -EQ $scriptID
     }
 
     function _getIntuneApp {
         param ([string] $appID)
 
-        $intuneApp | ? id -EQ $appID
+        $intuneApp | Where-Object id -EQ $appID
     }
 
     function _getRemediationScript {
         param ([string] $scriptID)
-        $intuneRemediationScript | ? id -EQ $scriptID
+        $intuneRemediationScript | Where-Object id -EQ $scriptID
     }
 
     # create helper functions text definition for usage in remote sessions
@@ -1381,12 +1398,12 @@ function Get-ClientIntunePolicyResult {
     #endregion helper functions
 
     #region enrich SoftwareInstallation section
-    if ($intuneXMLReport | ? PolicyName -EQ 'SoftwareInstallation') {
+    if ($intuneXMLReport | Where-Object PolicyName -EQ 'SoftwareInstallation') {
         Write-Verbose "Modifying 'SoftwareInstallation' section"
         # list of installed MSI applications
         $scriptBlock = {
-            Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' -ErrorAction SilentlyContinue -Recurse | % {
-                Get-ItemProperty -Path $_.PSPath | select -Property DisplayName, DisplayVersion, UninstallString
+            Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' -ErrorAction SilentlyContinue -Recurse | ForEach-Object {
+                Get-ItemProperty -Path $_.PSPath | Select-Object -Property DisplayName, DisplayVersion, UninstallString
             }
         }
 
@@ -1401,20 +1418,20 @@ function Get-ClientIntunePolicyResult {
         $installedMSI = Invoke-Command @param
 
         if ($installedMSI) {
-            $intuneXMLReport = $intuneXMLReport | % {
-                if ($_.PolicyName -EQ 'SoftwareInstallation') {
+            $intuneXMLReport = $intuneXMLReport | ForEach-Object {
+                if ($_.PolicyName -eq 'SoftwareInstallation') {
                     $softwareInstallation = $_
 
-                    $softwareInstallationSettingDetails = $softwareInstallation.SettingDetails | ? { $_ } | % {
+                    $softwareInstallationSettingDetails = $softwareInstallation.SettingDetails | Where-Object { $_ } | ForEach-Object {
                         $item = $_
                         $packageId = $item.PackageId
 
                         Write-Verbose "`tPackageId $packageId"
 
-                        Add-Member -InputObject $item -MemberType NoteProperty -Force -Name DisplayName -Value ($installedMSI | ? UninstallString -Match ([regex]::Escape($packageId)) | select -Last 1 -ExpandProperty DisplayName)
+                        Add-Member -InputObject $item -MemberType NoteProperty -Force -Name DisplayName -Value ($installedMSI | Where-Object UninstallString -Match ([regex]::Escape($packageId)) | Select-Object -Last 1 -ExpandProperty DisplayName)
 
                         #return modified MSI object (put Displayname as a second property)
-                        $item | select -Property Scope, DisplayName, Type, Status, LastError, ProductVersion, CommandLine, RetryIndex, MaxRetryCount, PackageId
+                        $item | Select-Object -Property Scope, DisplayName, Type, Status, LastError, ProductVersion, CommandLine, RetryIndex, MaxRetryCount, PackageId
                     }
 
                     # save results back to original object
@@ -1446,7 +1463,7 @@ function Get-ClientIntunePolicyResult {
         $win32App = Get-IntuneWin32AppLocally
 
         if ($showURLs) {
-            $win32App | % {
+            $win32App | ForEach-Object {
                 $_ | Add-Member -MemberType NoteProperty -Name "IntuneWin32AppURL" -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$($_.id)"
             }
         } else {
@@ -1504,7 +1521,7 @@ function Get-ClientIntunePolicyResult {
         $script = Get-IntuneScriptLocally @param
 
         if ($showURLs) {
-            $script | % {
+            $script | ForEach-Object {
                 $_ | Add-Member -MemberType NoteProperty -Name IntuneScriptURL -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_DeviceSettings/ConfigureWMPolicyMenuBlade/properties/policyId/$($_.ID)/policyType/0"
             }
         } else {
@@ -1590,7 +1607,7 @@ function Get-ClientIntunePolicyResult {
         $resultsWithSettings = @()
         $resultsWithoutSettings = @()
         $resultsConnectionData = $null
-        $intuneXMLReport | % {
+        $intuneXMLReport | ForEach-Object {
             if ($_.settingDetails) {
                 $resultsWithSettings += $_
             } elseif ($_.MDMServerName) {
@@ -1652,7 +1669,7 @@ function Get-ClientIntunePolicyResult {
                     } -SkipTags
 
                     New-HTMLSection -HeaderText "Policies with settings details" -HeaderTextAlignment left -CanCollapse -BackgroundColor DeepSkyBlue -HeaderBackGroundColor DeepSkyBlue -HeaderTextSize 10 -HeaderTextColor EgyptianBlue -Direction row {
-                        $resultsWithSettings | % {
+                        $resultsWithSettings | ForEach-Object {
                             $policy = $_
                             $policySetting = $_.settingDetails
 
@@ -3999,11 +4016,11 @@ function Get-IntunePolicy {
             # Build batch requests for assignments and settings
             $configurationPolicyExpandPropertyBatchRequests = [System.Collections.Generic.List[Object]]::new()
             # if $script:expandParams will contain anything else than 'assignments', final $configurationPolicyBatchResults Select-Object output has to be modified to reflect that!
-            $expandParamsList = $script:expandParams, 'settings' | ? { $_ }
+            $expandParamsList = $script:expandParams, 'settings' | Where-Object { $_ }
 
-            $configurationPolicyBatchResults | % {
+            $configurationPolicyBatchResults | ForEach-Object {
                 $id = $_.id
-                $expandParamsList | % {
+                $expandParamsList | ForEach-Object {
                     $url = "/deviceManagement/configurationPolicies/<placeholder>/$_"
                     $configurationPolicyExpandPropertyBatchRequests.Add((New-GraphBatchRequest -id "$id`_$_" -placeholder $id -url $url))
                 }
@@ -4012,18 +4029,18 @@ function Get-IntunePolicy {
             $configurationPolicyExpandPropertyBatchResults = Invoke-GraphBatchRequest -batchRequest $configurationPolicyExpandPropertyBatchRequests -graphVersion beta
 
             # enhance the basic object with assignments and settings properties
-            $configurationPolicy = $configurationPolicyBatchResults | select *, @{Name = 'Settings'; Expression = {
+            $configurationPolicy = $configurationPolicyBatchResults | Select-Object *, @{Name = 'Settings'; Expression = {
                     $id = $_.id
-                    $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_settings" }
+                    $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -like "$id`_settings_*" }
                     if ($settings) {
                         $settings.settingInstance
                     }
                 }
             }, @{Name = 'Assignments'; Expression = {
                     $id = $_.id
-                    $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_assignments" }
+                    $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -like "$id`_assignments_*" }
                     if ($assignments) {
-                        $assignments | select * -ExcludeProperty RequestId
+                        $assignments | Select-Object * -ExcludeProperty RequestId
                     }
                 }
             } -ExcludeProperty RequestId
@@ -4078,17 +4095,17 @@ function Get-IntunePolicy {
         if ($basicOverview) {
             Write-Verbose "Processing endpoint security policies (basic)"
             $url = "/deviceManagement/intents?`$select=$script:selectParams&`$expand=$script:expandParams"
-            $endpointSecPol = New-GraphBatchRequest -url $url -id "deviceManagementIntents" | Invoke-GraphBatchRequest -graphVersion beta -dontAddRequestId | select * -ExcludeProperty 'assignments@odata.context'
+            $endpointSecPol = New-GraphBatchRequest -url $url -id "deviceManagementIntents" | Invoke-GraphBatchRequest -graphVersion beta -dontAddRequestId | Select-Object * -ExcludeProperty 'assignments@odata.context'
 
             if ($endpointSecPol) {
                 # set assignments property, because it is unfortunately not returned via expand method
                 $url = "/deviceManagement/intents/<placeholder>/assignments"
                 $endpointSecPolAssignment = New-GraphBatchRequest -url $url -placeholder $endpointSecPol.Id -placeholderAsId | Invoke-GraphBatchRequest -graphVersion beta
 
-                $endpointSecPolAssignment | % {
+                $endpointSecPolAssignment | ForEach-Object {
                     $id = $_.RequestId
-                    $assignments = $_ | select * -ExcludeProperty RequestId
-                    ($endpointSecPol | ? { $_.id -eq $id }).Assignments = $assignments
+                    $assignments = $_ | Select-Object * -ExcludeProperty RequestId
+                    ($endpointSecPol | Where-Object { $_.id -eq $id }).Assignments = $assignments
                 }
             }
         } else {
@@ -4117,9 +4134,9 @@ function Get-IntunePolicy {
                     Write-Verbose "`t- processing intent $($intent.id), template $($intent.templateId)"
 
                     # Get settings, template details and assignments from batch results
-                    $settings = $batchResults | ? RequestId -EQ "settings_$($intent.id)"
-                    $templateDetail = $batchResults | ? RequestId -EQ "template_$($intent.id)"
-                    $assignments = $batchResults | ? RequestId -EQ "assignments_$($intent.id)"
+                    $settings = $batchResults | Where-Object RequestId -EQ "settings_$($intent.id)"
+                    $templateDetail = $batchResults | Where-Object RequestId -EQ "template_$($intent.id)"
+                    $assignments = $batchResults | Where-Object RequestId -EQ "assignments_$($intent.id)"
 
                     # Add properties to match the expected output format
                     $intent | Add-Member Noteproperty -Name 'platforms' -Value $templateDetail.platformType -Force # to match properties of the second region 'endpointSecurity' object
@@ -4151,12 +4168,12 @@ function Get-IntunePolicy {
                     $intent | Add-Member Noteproperty -Name Settings -Value $intentSettings -Force
                     $intent | Add-Member Noteproperty -Name 'settingCount' -Value $intentSettings.count -Force # to match properties of the second region 'endpointSecurity' object
                     $intent | Add-Member Noteproperty -Name Assignments -Value $assignments -Force
-                    $endpointSecPol += $intent | select -Property * -ExcludeProperty 'templateId', 'assignments@odata.context', 'isMigratingToConfigurationPolicy', 'RequestId'
+                    $endpointSecPol += $intent | Select-Object -Property * -ExcludeProperty 'templateId', 'assignments@odata.context', 'isMigratingToConfigurationPolicy', 'RequestId'
                 }
             }
         }
 
-        $endpointSecPol | ? { $_ } | % { $endpointSecurityPolicy += $_ }
+        $endpointSecPol | Where-Object { $_ } | ForEach-Object { $endpointSecurityPolicy += $_ }
         #endregion process: Security Baselines, Antivirus policies, Defender policies, Disk Encryption policies, Account Protection policies (not 'Local User Group Membership')
 
         #region process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
@@ -4165,8 +4182,9 @@ function Get-IntunePolicy {
         Write-Verbose "Getting configuration policies"
         $confPolicyList = Invoke-MgGraphRequest -Uri "/beta/deviceManagement/configurationPolicies?`$select=id,templateReference&`$filter=templateReference/templateFamily ne 'none'" | Get-MgGraphAllPages
 
-        $secPolicyList = $confPolicyList | ? { $_.templateReference.templateFamily -like "endpointSecurity*" -or $_.templateReference.templateFamily -like "baseline*" }
+        $secPolicyList = $confPolicyList | Where-Object { $_.templateReference.templateFamily -like "endpointSecurity*" -or $_.templateReference.templateFamily -like "baseline*" }
 
+        $configurationPolicyBatchResults = $null
         if ($secPolicyList) {
             # configurationPolicies policies when expand operator is used gets throttled
             # therefore at first get just basic properties and secondly get settings and assignments via batching and enhance the former object
@@ -4181,10 +4199,10 @@ function Get-IntunePolicy {
                 $batchResults = New-GraphBatchRequest -url $url -placeholder $secPolicyList.id | Invoke-GraphBatchRequest -graphVersion beta
 
                 # Filter and transform results
-                $endpointSecPol2 = $batchResults |
-                    select @{ n = 'id'; e = { $_.id } },
+                $configurationPolicyBatchResults = $batchResults |
+                    Select-Object @{ n = 'id'; e = { $_.id } },
                     @{ n = 'displayName'; e = { $_.name } },
-                    * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments@odata.context', 'settings@odata.context', 'RequestId' # id as calculated property to have it first and still be able to use *
+                    * -ExcludeProperty 'templateReference', 'id', 'name', 'assignments', 'assignments@odata.context', 'settings@odata.context', 'RequestId' # id as calculated property to have it first and still be able to use *
             } else {
                 # Prepare parameters for batch request
                 $select = 'id, name, description, isAssigned, platforms, lastModifiedDateTime, settingCount, roleScopeTagIds, templateReference'
@@ -4195,7 +4213,7 @@ function Get-IntunePolicy {
 
                 # Filter and transform results
                 $configurationPolicyBatchResults = $batchResults |
-                    select -Property id,
+                    Select-Object -Property id,
                     @{n = 'displayName'; e = { $_.name } },
                     description,
                     isAssigned,
@@ -4213,11 +4231,14 @@ function Get-IntunePolicy {
             Write-Verbose "Building batch requests for assignments and settings"
             $configurationPolicyExpandPropertyBatchRequests = [System.Collections.Generic.List[Object]]::new()
             # if $script:expandParams will contain anything else than 'assignments', final $configurationPolicyBatchResults Select-Object output has to be modified to reflect that!
-            $expandParamsList = $script:expandParams, 'settings' | ? { $_ }
+            $expandParamsList = $script:expandParams, 'settings' | Where-Object { $_ }
+            if (!$basicOverview) {
+                $expandParamsList += 'settings'
+            }
 
-            $configurationPolicyBatchResults | % {
+            $configurationPolicyBatchResults | ForEach-Object {
                 $id = $_.id
-                $expandParamsList | % {
+                $expandParamsList | ForEach-Object {
                     $url = "/deviceManagement/configurationPolicies/<placeholder>/$_"
                     $configurationPolicyExpandPropertyBatchRequests.Add((New-GraphBatchRequest -id "$id`_$_" -placeholder $id -url $url))
                 }
@@ -4225,40 +4246,51 @@ function Get-IntunePolicy {
 
             $configurationPolicyExpandPropertyBatchResults = Invoke-GraphBatchRequest -batchRequest $configurationPolicyExpandPropertyBatchRequests -graphVersion beta
 
-            # enhance the basic object with assignments and settings properties
-            $endpointSecPol2 = $configurationPolicyBatchResults | select *, @{Name = 'Settings'; Expression = {
-                    $id = $_.id
-                    $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_settings" }
-                    if ($settings) {
-                        $settings | % { [PSCustomObject]@{
-                                # trying to have same settings format a.k.a. name/value as in previous function region
-                                Name  = $_.settinginstance.settingDefinitionId
-                                Value = $(
-                                    # property with setting value isn't always same, try to get the used one
-                                    $valuePropertyName = $_.settinginstance | Get-Member -MemberType NoteProperty | ? name -Like "*value" | select -ExpandProperty name
-                                    if ($valuePropertyName) {
-                                        # Write-Verbose "Value property $valuePropertyName was found"
-                                        $_.settinginstance.$valuePropertyName
-                                    } else {
-                                        # Write-Verbose "Value property wasn't found, therefore saving whole object as value"
-                                        $_.settinginstance
-                                    }
-                                )
+            if ($basicOverview) {
+                $endpointSecPol2 = $configurationPolicyBatchResults | Select-Object *, @{Name = 'Assignments'; Expression = {
+                        $id = $_.id
+                        $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -like "$id`_assignments_*" }
+                        if ($assignments) {
+                            $assignments | Select-Object * -ExcludeProperty RequestId
+                        }
+                    }
+                } -ExcludeProperty RequestId
+            } else {
+                # enhance the detailed object with assignments and settings properties
+                $endpointSecPol2 = $configurationPolicyBatchResults | Select-Object *, @{Name = 'Settings'; Expression = {
+                        $id = $_.id
+                        $settings = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -like "$id`_settings_*" }
+                        if ($settings) {
+                            $settings | ForEach-Object { [PSCustomObject]@{
+                                    # trying to have same settings format a.k.a. name/value as in previous function region
+                                    Name  = $_.settinginstance.settingDefinitionId
+                                    Value = $(
+                                        # property with setting value isn't always same, try to get the used one
+                                        $valuePropertyName = $_.settinginstance | Get-Member -MemberType NoteProperty | Where-Object name -Like "*value" | Select-Object -ExpandProperty name
+                                        if ($valuePropertyName) {
+                                            # Write-Verbose "Value property $valuePropertyName was found"
+                                            $_.settinginstance.$valuePropertyName
+                                        } else {
+                                            # Write-Verbose "Value property wasn't found, therefore saving whole object as value"
+                                            $_.settinginstance
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-                }
-            }, @{Name = 'Assignments'; Expression = {
-                    $id = $_.id
-                    $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -eq "$id`_assignments" }
-                    if ($assignments) {
-                        $assignments | select * -ExcludeProperty RequestId
+                }, @{Name = 'Assignments'; Expression = {
+                        $id = $_.id
+                        $assignments = $configurationPolicyExpandPropertyBatchResults | Where-Object { $_.RequestId -like "$id`_assignments_*" }
+                        if ($assignments) {
+                            $assignments | Select-Object * -ExcludeProperty RequestId
+                        }
                     }
-                }
-            } -ExcludeProperty RequestId
+                } -ExcludeProperty RequestId
+            }
         }
 
-        $endpointSecPol2 | ? { $_ } | % { $endpointSecurityPolicy += $_ }
+        $endpointSecPol2 | Where-Object { $_ } | ForEach-Object { $endpointSecurityPolicy += $_ }
         #endregion process: Account Protection policies (just 'Local User Group Membership'), Firewall, Endpoint Detection and Response, Attack Surface Reduction
     }
 
@@ -4364,7 +4396,7 @@ function Get-IntunePolicy {
             [string[]] $requestId
         )
 
-        $allBatchResults | Where-Object { $_.RequestId -in $requestId } | select * -ExcludeProperty 'RequestId', 'assignments@odata.context', 'settings@odata.context', '@odata.type'
+        $allBatchResults | Where-Object { $_.RequestId -in $requestId } | Select-Object * -ExcludeProperty 'RequestId', 'assignments@odata.context', 'settings@odata.context', '@odata.type'
     }
 
     $resultProperty = [ordered]@{}
@@ -4418,34 +4450,34 @@ function Get-IntunePolicy {
         $resultProperty.MacOSSoftwareUpdateConfiguration = (_getBatchResultOutput -requestId "macOSSoftwareUpdateConfiguration")
     }
     if ($all -or $policyType -contains 'policySet') {
-        $policySets = _getBatchResultOutput -requestId "policySet" | select * -ExcludeProperty $excludedProperty
+        $policySets = _getBatchResultOutput -requestId "policySet" | Select-Object * -ExcludeProperty $excludedProperty
         if ($policySets -and !$basicOverview) {
             $policySetItemsRequests = [System.Collections.Generic.List[Object]]::new()
             foreach ($set in $policySets) {
                 $policySetItemsRequests.Add((New-GraphBatchRequest -id "policysetitem_$($set.id)" -url "/deviceAppManagement/policySets/$($set.id)?`$expand=items"))
             }
-            $resultProperty.PolicySet = (Invoke-GraphBatchRequest -batchRequest $policySetItemsRequests -graphVersion beta | select * -ExcludeProperty $excludedProperty)
+            $resultProperty.PolicySet = (Invoke-GraphBatchRequest -batchRequest $policySetItemsRequests -graphVersion beta | Select-Object * -ExcludeProperty $excludedProperty)
         } else {
             $resultProperty.PolicySet = $policySets
         }
     }
     if ($all -or $policyType -contains 'remediationScript') {
-        $resultProperty.RemediationScript = (_getBatchResultOutput -requestId "remediationScript" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.RemediationScript = (_getBatchResultOutput -requestId "remediationScript" | Select-Object * -ExcludeProperty $excludedProperty)
     }
     if ($all -or $policyType -contains 'sModeSupplementalPolicy') {
-        $resultProperty.SModeSupplementalPolicy = (_getBatchResultOutput -requestId "sModeSupplementalPolicy" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.SModeSupplementalPolicy = (_getBatchResultOutput -requestId "sModeSupplementalPolicy" | Select-Object * -ExcludeProperty $excludedProperty)
     }
     if ($all -or $policyType -contains 'windowsAutopilotDeploymentProfile') {
-        $resultProperty.WindowsAutopilotDeploymentProfile = (_getBatchResultOutput -requestId "windowsAutopilotDeploymentProfile" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.WindowsAutopilotDeploymentProfile = (_getBatchResultOutput -requestId "windowsAutopilotDeploymentProfile" | Select-Object * -ExcludeProperty $excludedProperty)
     }
     if ($all -or $policyType -contains 'windowsFeatureUpdateProfile') {
-        $resultProperty.WindowsFeatureUpdateProfile = (_getBatchResultOutput -requestId "windowsFeatureUpdateProfile" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.WindowsFeatureUpdateProfile = (_getBatchResultOutput -requestId "windowsFeatureUpdateProfile" | Select-Object * -ExcludeProperty $excludedProperty)
     }
     if ($all -or $policyType -contains 'windowsQualityUpdateProfile') {
-        $resultProperty.WindowsQualityUpdateProfile = (_getBatchResultOutput -requestId "windowsQualityUpdateProfile" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.WindowsQualityUpdateProfile = (_getBatchResultOutput -requestId "windowsQualityUpdateProfile" | Select-Object * -ExcludeProperty $excludedProperty)
     }
     if ($all -or $policyType -contains 'windowsUpdateRing') {
-        $resultProperty.WindowsUpdateRing = (_getBatchResultOutput -requestId "windowsUpdateRing" | select * -ExcludeProperty $excludedProperty)
+        $resultProperty.WindowsUpdateRing = (_getBatchResultOutput -requestId "windowsUpdateRing" | Select-Object * -ExcludeProperty $excludedProperty)
     }
 
     # output result

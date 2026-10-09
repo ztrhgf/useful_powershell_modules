@@ -69,6 +69,11 @@
 
         Will return HTML page containing Intune policy processing report data and connection data.
         URLs to policies/settings and Intune policies names (if available) will be included.
+
+        .EXAMPLE
+        Get-ClientIntunePolicyResult -intuneXMLReport (ConvertFrom-MDMDiagReportXML -MDMDiagReport C:\temp\MDMDiagReport.xml)
+
+        Will return PowerShell object containing Intune policy processing report data.
         #>
 
     [Alias("ipresult", "Get-IntunePolicyResult", "Get-IntuneClientPolicyResult")]
@@ -76,7 +81,6 @@
     param (
         [string] $computerName,
 
-        [ValidateScript( { $_.GetType().Name -eq 'Object[]' } )]
         $intuneXMLReport,
 
         [switch] $asHTML,
@@ -169,7 +173,7 @@
             } else {
                 # it is AzureAD account
                 if ($getDataFromIntune) {
-                    return ($intuneUser | ? id -EQ $id).userPrincipalName
+                    return ($intuneUser | Where-Object id -EQ $id).userPrincipalName
                 } else {
                     # unable to translate ID to name because there is no connection to the Intune Graph API
                     return $id
@@ -184,18 +188,18 @@
     function _getIntuneScript {
         param ([string] $scriptID)
 
-        $intuneScript | ? id -EQ $scriptID
+        $intuneScript | Where-Object id -EQ $scriptID
     }
 
     function _getIntuneApp {
         param ([string] $appID)
 
-        $intuneApp | ? id -EQ $appID
+        $intuneApp | Where-Object id -EQ $appID
     }
 
     function _getRemediationScript {
         param ([string] $scriptID)
-        $intuneRemediationScript | ? id -EQ $scriptID
+        $intuneRemediationScript | Where-Object id -EQ $scriptID
     }
 
     # create helper functions text definition for usage in remote sessions
@@ -205,12 +209,12 @@
     #endregion helper functions
 
     #region enrich SoftwareInstallation section
-    if ($intuneXMLReport | ? PolicyName -EQ 'SoftwareInstallation') {
+    if ($intuneXMLReport | Where-Object PolicyName -EQ 'SoftwareInstallation') {
         Write-Verbose "Modifying 'SoftwareInstallation' section"
         # list of installed MSI applications
         $scriptBlock = {
-            Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' -ErrorAction SilentlyContinue -Recurse | % {
-                Get-ItemProperty -Path $_.PSPath | select -Property DisplayName, DisplayVersion, UninstallString
+            Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\', 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\' -ErrorAction SilentlyContinue -Recurse | ForEach-Object {
+                Get-ItemProperty -Path $_.PSPath | Select-Object -Property DisplayName, DisplayVersion, UninstallString
             }
         }
 
@@ -225,20 +229,20 @@
         $installedMSI = Invoke-Command @param
 
         if ($installedMSI) {
-            $intuneXMLReport = $intuneXMLReport | % {
-                if ($_.PolicyName -EQ 'SoftwareInstallation') {
+            $intuneXMLReport = $intuneXMLReport | ForEach-Object {
+                if ($_.PolicyName -eq 'SoftwareInstallation') {
                     $softwareInstallation = $_
 
-                    $softwareInstallationSettingDetails = $softwareInstallation.SettingDetails | ? { $_ } | % {
+                    $softwareInstallationSettingDetails = $softwareInstallation.SettingDetails | Where-Object { $_ } | ForEach-Object {
                         $item = $_
                         $packageId = $item.PackageId
 
                         Write-Verbose "`tPackageId $packageId"
 
-                        Add-Member -InputObject $item -MemberType NoteProperty -Force -Name DisplayName -Value ($installedMSI | ? UninstallString -Match ([regex]::Escape($packageId)) | select -Last 1 -ExpandProperty DisplayName)
+                        Add-Member -InputObject $item -MemberType NoteProperty -Force -Name DisplayName -Value ($installedMSI | Where-Object UninstallString -Match ([regex]::Escape($packageId)) | Select-Object -Last 1 -ExpandProperty DisplayName)
 
                         #return modified MSI object (put Displayname as a second property)
-                        $item | select -Property Scope, DisplayName, Type, Status, LastError, ProductVersion, CommandLine, RetryIndex, MaxRetryCount, PackageId
+                        $item | Select-Object -Property Scope, DisplayName, Type, Status, LastError, ProductVersion, CommandLine, RetryIndex, MaxRetryCount, PackageId
                     }
 
                     # save results back to original object
@@ -270,7 +274,7 @@
         $win32App = Get-IntuneWin32AppLocally
 
         if ($showURLs) {
-            $win32App | % {
+            $win32App | ForEach-Object {
                 $_ | Add-Member -MemberType NoteProperty -Name "IntuneWin32AppURL" -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_Apps/SettingsMenu/0/appId/$($_.id)"
             }
         } else {
@@ -328,7 +332,7 @@
         $script = Get-IntuneScriptLocally @param
 
         if ($showURLs) {
-            $script | % {
+            $script | ForEach-Object {
                 $_ | Add-Member -MemberType NoteProperty -Name IntuneScriptURL -Value "https://endpoint.microsoft.com/#blade/Microsoft_Intune_DeviceSettings/ConfigureWMPolicyMenuBlade/properties/policyId/$($_.ID)/policyType/0"
             }
         } else {
@@ -414,7 +418,7 @@
         $resultsWithSettings = @()
         $resultsWithoutSettings = @()
         $resultsConnectionData = $null
-        $intuneXMLReport | % {
+        $intuneXMLReport | ForEach-Object {
             if ($_.settingDetails) {
                 $resultsWithSettings += $_
             } elseif ($_.MDMServerName) {
@@ -476,7 +480,7 @@
                     } -SkipTags
 
                     New-HTMLSection -HeaderText "Policies with settings details" -HeaderTextAlignment left -CanCollapse -BackgroundColor DeepSkyBlue -HeaderBackGroundColor DeepSkyBlue -HeaderTextSize 10 -HeaderTextColor EgyptianBlue -Direction row {
-                        $resultsWithSettings | % {
+                        $resultsWithSettings | ForEach-Object {
                             $policy = $_
                             $policySetting = $_.settingDetails
 

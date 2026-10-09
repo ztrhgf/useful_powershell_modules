@@ -80,12 +80,25 @@ function ConvertFrom-MDMDiagReportXML {
 
         [switch] $showConnectionData
     )
-    
+
     if (!(Get-Module 'CommonStuff') -and (!(Get-Module 'CommonStuff' -ListAvailable))) {
         throw "Module CommonStuff is missing. To get it use command: Install-Module CommonStuff -Scope CurrentUser"
     }
 
-    Import-Module CommonStuff -Force # to override ConvertFrom-XML function in case user has module PoshFunctions 
+    #region make sure to use ConvertFrom-XML function from CommonStuff module instead of PoshFunctions
+    $command = Get-Command "ConvertFrom-XML" -ErrorAction SilentlyContinue
+
+    if (!$command -or $command.Source -ne 'CommonStuff') {
+        $modulePath = @((Get-Module 'CommonStuff').Path)[-1]
+        if (!$modulePath) {
+            $modulePath = @((Get-Module 'CommonStuff' -ListAvailable).Path)[-1]
+        }
+
+        $modulePath = Split-Path $modulePath -Parent
+
+        Import-Module $modulePath -Force -WarningAction SilentlyContinue
+    }
+    #endregion make sure to use ConvertFrom-XML function from CommonStuff module instead of PoshFunctions
 
     if ($asHTML) {
         # array of results that will be in the end transformed into HTML report
@@ -455,7 +468,7 @@ function ConvertFrom-MDMDiagReportXML {
 
         Write-Verbose "Getting Policies winning provider (MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues)"
         $winningProviderPolicyAreaNameMetadata = $xml.MDMEnterpriseDiagnosticsReport.PolicyManager.CurrentPolicies.CurrentPolicyValues | % {
-            $_.psobject.properties | ? { $_.Name -Match "_WinningProvider$" } | Select-Object Name, Value
+            $_.psobject.properties | ? { $_.Name -match "_WinningProvider$" } | Select-Object Name, Value
         }
 
         $policyManager | % {
@@ -576,7 +589,7 @@ function ConvertFrom-MDMDiagReportXML {
                                             <AdmxMetadataDevice>30313D0100000000323D000000000000</AdmxMetadataDevice>
                                         </PolicyMetadata>
                                 #>
-                                $additionalData = ($admxPolicyAreaNameMetadata.AreaName | ? { $_.ADMXIngestedAreaName -eq $policyAreaName }).PolicyMetadata | ? { $_.PolicyName -EQ $settingName } | select -First 1 # sometimes there are duplicities in results
+                                $additionalData = ($admxPolicyAreaNameMetadata.AreaName | ? { $_.ADMXIngestedAreaName -eq $policyAreaName }).PolicyMetadata | ? { $_.PolicyName -eq $settingName } | select -First 1 # sometimes there are duplicities in results
 
                                 if ($additionalData) {
                                     Write-Verbose "Additional data for '$settingName' was found in admxPolicyAreaNameMetadata"

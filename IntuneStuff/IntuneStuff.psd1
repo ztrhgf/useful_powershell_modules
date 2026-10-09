@@ -12,7 +12,7 @@
 RootModule = 'IntuneStuff.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.7.3'
+ModuleVersion = '1.7.4'
 
 # Supported PSEditions
 CompatiblePSEditions = 'Core', 'Desktop'
@@ -178,6 +178,11 @@ PrivateData = @{
 
         # ReleaseNotes of this module
         ReleaseNotes = '
+            1.7.4
+                FIXED
+                    Get-IntunePolicy - fixed missing settings & assignment for security policies
+                    Get-ClientIntunePolicyResult - remove faulty XML validation
+                    ConvertFrom-MDMDiagReportXML - better CommonStuff module import handling
             1.7.3
                 CHANGED
                     Removed Microsoft.Graph.Beta.DeviceManagement.Actions from RequiredModules (it was causing issues as it still requires 2.25.0 Auth module) by rewriting Get-IntuneConfPolicyAssignmentSummaryReport and Get-IntuneAppInstallSummaryReport functions to direct api calls
